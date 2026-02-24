@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment (user-specific settings)
+.env
+
+# Logs
+*.log
+shared/logs.log
+
+# Debug / temp scripts (session artifacts)
+fix_start.py
+fix_start2.py
+parse_nemesis*.py
+check_element_format.py
+verify_type.py
+debug_wrapper.sh
+body.json
+shared/check_txs*.py
+
+# User-specific preset & runtime data
+shared/custom-preset.yml
+shared/.ui-meta.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+*~

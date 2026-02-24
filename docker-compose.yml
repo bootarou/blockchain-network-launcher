@@ -1,0 +1,42 @@
+services:
+  symbol-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: symbol-manager
+    ports:
+      - "4000:4000"   # Backend API & WebSocket
+      - "5173:5173"   # Frontend Vite dev server
+      - "80:80"       # Frontend production (future)
+      # NOTE: 3000 and 7900 are NOT mapped here.
+      # symbol-bootstrap creates sibling containers (rest-gateway, api-node)
+      # via the shared docker.sock, and those containers bind directly to
+      # host ports 3000 / 7900 themselves.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # Docker-in-Docker
+      - ./shared:/app/shared                         # Preset & config persistence
+      - ${SYMBOL_TARGET_DIR:-/opt/symbol-target}:${SYMBOL_TARGET_DIR:-/opt/symbol-target}  # DinD: same path on host VM & container
+      - ./backend:/app/backend                       # Live reload (dev)
+      - ./frontend:/app/frontend                     # Live reload (dev)
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - TARGET_DIR=${SYMBOL_TARGET_DIR:-/opt/symbol-target}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - manager-net
+
+# Use a dedicated subnet for the manager so it does NOT overlap with
+# symbol-bootstrap's internal docker_default network (172.20.0.0/24).
+networks:
+  manager-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
