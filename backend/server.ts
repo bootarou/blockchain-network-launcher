@@ -710,6 +710,125 @@ app.get('/api/storage', async (_req, res) => {
 });
 
 // =============================================================================
+// Docker Image Management — list, export (docker save), import (docker load)
+// =============================================================================
+
+/**
+ * GET /api/images — list Symbol-related Docker images on the host.
+ */
+app.get('/api/images', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const raw = execSync(
+      `docker images --format '{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.ID}}\t{{.CreatedSince}}'`,
+      { encoding: 'utf-8', timeout: 15_000 },
+    ).trim();
+
+    const images = raw
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [repository, tag, size, id, created] = line.split('\t');
+        return { repository, tag, size, id: id?.slice(0, 12), created, fullName: `${repository}:${tag}` };
+      })
+      .filter(
+        (img) =>
+          img.repository.includes('symbol') ||
+          img.repository.includes('catapult') ||
+          img.repository.includes('mongo'),
+      );
+
+    res.json({ images });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/images/export?image=repo:tag — stream `docker save` as a .tar download.
+ * Images are 1-2 GB — streamed directly without temp files.
+ */
+app.get('/api/images/export', (req, res) => {
+  const image = String(req.query.image || '');
+  if (!image) { res.status(400).json({ error: 'image parameter required' }); return; }
+
+  // Basic security: allow only reasonable Docker image names
+  if (!/^[\w./_-]+:[\w./_-]+$/.test(image)) {
+    res.status(400).json({ error: 'Invalid image name' }); return;
+  }
+
+  const safeName = image.replace(/[/:]/g, '_');
+  res.setHeader('Content-Type', 'application/x-tar');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}.tar"`);
+  res.setHeader('Transfer-Encoding', 'chunked');
+
+  broadcastLog(`[Images] Exporting ${image} ...\n`);
+
+  const cp = spawn('docker', ['save', image], { shell: true });
+  cp.stdout.pipe(res);
+
+  cp.stderr.on('data', (d: Buffer) => {
+    broadcastLog(`[Images] ${d.toString()}`);
+  });
+
+  cp.on('close', (code) => {
+    if (code === 0) {
+      broadcastLog(`[Images] ✅ Export complete: ${image}\n`);
+    } else {
+      broadcastLog(`[Images] ❌ Export failed (exit ${code})\n`);
+      if (!res.headersSent) res.status(500).end();
+    }
+  });
+
+  cp.on('error', (err) => {
+    broadcastLog(`[Images] ❌ Export error: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).end();
+  });
+
+  // If client aborts the download, kill the docker save process
+  req.on('close', () => { cp.kill(); });
+});
+
+/**
+ * POST /api/images/import — stream request body (raw .tar) into `docker load`.
+ * Send with Content-Type: application/octet-stream.
+ * express.json() ignores non-JSON content-types, so req is still a readable stream.
+ */
+app.post('/api/images/import', (req, res) => {
+  broadcastLog('[Images] Importing Docker image from tar...\n');
+
+  const cp = spawn('docker', ['load'], { shell: true });
+  let output = '';
+
+  req.pipe(cp.stdin);
+
+  cp.stdout.on('data', (d: Buffer) => {
+    output += d.toString();
+    broadcastLog(`[Images] ${d.toString()}`);
+  });
+
+  cp.stderr.on('data', (d: Buffer) => {
+    output += d.toString();
+    broadcastLog(`[Images] ${d.toString()}`);
+  });
+
+  cp.on('close', (code) => {
+    if (code === 0) {
+      broadcastLog(`[Images] ✅ Import complete\n`);
+      res.json({ success: true, output: output.trim() });
+    } else {
+      broadcastLog(`[Images] ❌ Import failed\n`);
+      res.status(500).json({ error: output.trim() || 'docker load failed' });
+    }
+  });
+
+  cp.on('error', (err) => {
+    broadcastLog(`[Images] ❌ Import error: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
+// =============================================================================
 // Patch: add missing properties that symbol-bootstrap 1.1.10 omits
 // =============================================================================
 

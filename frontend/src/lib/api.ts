@@ -1,6 +1,8 @@
 const API_BASE =
   import.meta.env.VITE_API_URL ?? `http://${window.location.hostname}:4000/api`;
 
+export { API_BASE };
+
 export const api = {
   // ── Preset CRUD ────────────────────────────────────────────────────────
 
@@ -66,6 +68,47 @@ export const api = {
   getStorage: async () => {
     const res = await fetch(`${API_BASE}/storage`);
     return res.json();
+  },
+
+  // ── Docker Image Management ────────────────────────────────────────────
+
+  getImages: async () => {
+    const res = await fetch(`${API_BASE}/images`);
+    return res.json();
+  },
+
+  getImageExportUrl: (image: string) => {
+    return `${API_BASE}/images/export?image=${encodeURIComponent(image)}`;
+  },
+
+  importImage: (
+    file: File,
+    onProgress?: (percent: number) => void,
+  ): Promise<{ success: boolean; output: string }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/images/import`);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status === 200) resolve(data);
+          else reject(new Error(data.error || `HTTP ${xhr.status}`));
+        } catch {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(file);
+    });
   },
 
   // ── Join Network — fetch from remote node ──────────────────────────────

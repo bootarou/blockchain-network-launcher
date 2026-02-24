@@ -19,6 +19,7 @@ import { configToYaml, yamlToConfig } from '../lib/utils';
 import type { PresetConfig } from '../constants';
 import { TerminalLogs } from './TerminalLogs';
 import { NodeStats } from './NodeStats';
+import { ImageManager } from './ImageManager';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -332,6 +333,9 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
           </pre>
         </div>
       )}
+
+      {/* ── Docker Images ── */}
+      <ImageManager />
 
       {/* ── Terminal ── */}
       <TerminalLogs />
