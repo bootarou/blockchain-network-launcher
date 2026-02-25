@@ -23,6 +23,7 @@ import { DEFAULT_PRESET } from '../constants';
 import { api } from '../lib/api';
 import { networkPropertiesToConfig } from '../lib/utils';
 import { cn } from '../lib/utils';
+import { useTranslation } from '../i18n';
 
 interface JoinNetworkProps {
   onConfigImport: (config: PresetConfig) => void;
@@ -45,6 +46,7 @@ const KNOWN_NODES = [
 ];
 
 export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
+  const { t } = useTranslation();
   const [nodeUrl, setNodeUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,7 +100,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
       }
 
       if (files.length === 0) {
-        setSeedError('有効なseedファイルが見つかりません。00001.dat (または 00000.dat), 00001.stmt (または 00000.stmt), hashes.dat が必要です。');
+        setSeedError(t('join.seedInvalid'));
         return;
       }
 
@@ -112,7 +114,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
   };
 
   const handleClearSeed = async () => {
-    if (!confirm('インポートしたseedファイルを削除しますか？')) return;
+    if (!confirm(t('join.seedDeleteConfirm'))) return;
     try {
       await api.clearSeed();
       await refreshSeedStatus();
@@ -197,17 +199,16 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
       <div>
         <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
           <Globe className="w-5 h-5 text-emerald-400" />
-          既存ネットワークに参加
+          {t('join.title')}
         </h2>
         <p className="text-sm text-zinc-500 mt-1">
-          稼働中のSymbolノードURLを入力して、そのネットワークの設定を取得します。
-          取得した設定をConfigurationに反映して、同じネットワークに参加するノードを構築できます。
+          {t('join.description')}
         </p>
       </div>
 
       {/* ── Known Nodes ── */}
       <div className="flex flex-wrap gap-2">
-        <span className="text-xs text-zinc-500 self-center mr-1">既知ノード:</span>
+        <span className="text-xs text-zinc-500 self-center mr-1">{t('join.knownNodes')}</span>
         {KNOWN_NODES.map((n) => (
           <button
             key={n.url}
@@ -236,7 +237,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               setApplied(false);
               setError(null);
             }}
-            placeholder="http://node-hostname:3000"
+            placeholder={t('join.placeholder')}
             className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-4 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600"
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleFetch();
@@ -253,7 +254,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
           ) : (
             <Globe className="w-4 h-4" />
           )}
-          取得
+          {t('join.fetch')}
         </button>
       </div>
 
@@ -262,7 +263,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
         <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <HardDrive className="w-4 h-4 text-amber-400" />
-            <span className="text-sm font-medium text-zinc-200">ネメシスSeedデータ</span>
+            <span className="text-sm font-medium text-zinc-200">{t('join.seedTitle')}</span>
           </div>
           {seedStatus?.imported && (
             <button
@@ -270,19 +271,18 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               className="flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition-colors"
             >
               <Trash2 className="w-3 h-3" />
-              クリア
+              {t('join.clear')}
             </button>
           )}
         </div>
 
         <div className="p-4 space-y-3">
           <p className="text-xs text-zinc-500 leading-relaxed">
-            カスタムネットワークの管理者からジェネシスブロックのseedファイルを入手してインポートしてください。
-            ネメシスブロックはネットワーク秘密鍵で署名されており、REST APIからの再構築では完全な一致が困難です。
+            {t('join.seedDescription')}
           </p>
           <details className="text-xs text-zinc-600">
             <summary className="cursor-pointer hover:text-zinc-400 transition-colors">
-              管理者向け: Seedファイルの取得方法
+              {t('join.seedAdminGuide')}
             </summary>
             <div className="mt-2 pl-3 border-l-2 border-zinc-800 space-y-1 text-zinc-500">
               <p>symbol-bootstrap の target ディレクトリ内にある以下のファイルを提供してください:</p>
@@ -304,7 +304,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
             <div className="flex items-start gap-3 bg-emerald-950/30 border border-emerald-900/40 rounded-lg px-4 py-3">
               <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
               <div className="flex-1">
-                <p className="text-sm font-medium text-emerald-300">Seedデータ インポート済み</p>
+                <p className="text-sm font-medium text-emerald-300">{t('join.seedImported')}</p>
                 <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5">
                   {Object.entries(seedStatus.files).map(([name, size]) => (
                     <div key={name} className="flex items-center gap-1.5 text-xs">
@@ -339,20 +339,18 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               {seedUploading ? (
                 <div className="flex flex-col items-center gap-2">
                   <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
-                  <p className="text-sm text-zinc-400">アップロード中...</p>
+                  <p className="text-sm text-zinc-400">{t('join.seedUploading')}</p>
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-2">
                   <Upload className="w-8 h-8 text-zinc-500" />
                   <p className="text-sm text-zinc-300">
-                    Seedファイルをドラッグ＆ドロップ、またはクリックして選択
+                    {t('join.seedDropzone')}
                   </p>
                   <p className="text-xs text-zinc-600">
-                    必須: <span className="text-amber-400/80">00001.dat</span>,{' '}
-                    <span className="text-amber-400/80">00001.stmt</span>,{' '}
-                    <span className="text-amber-400/80">hashes.dat</span>
+                    {t('join.seedRequired')}
                     <br />
-                    任意: 00001.proof, proof.heights.dat, index.dat
+                    {t('join.seedOptional')}
                   </p>
                 </div>
               )}
@@ -373,7 +371,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
         <div className="flex items-start gap-3 bg-red-950/40 border border-red-900/50 rounded-lg px-4 py-3">
           <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-medium text-red-300">取得に失敗しました</p>
+            <p className="text-sm font-medium text-red-300">{t('join.fetchFailed')}</p>
             <p className="text-xs text-red-400/80 mt-0.5">{error}</p>
           </div>
         </div>
@@ -386,25 +384,25 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <SummaryCard
               icon={<Hash className="w-4 h-4 text-indigo-400" />}
-              label="Network"
+              label={t('join.networkName')}
               value={String(result.partial.networkType ?? '—')}
               sub={`ID: ${result.partial.networkIdentifier ?? '—'}`}
             />
             <SummaryCard
               icon={<Clock className="w-4 h-4 text-amber-400" />}
-              label="Block Target"
+              label={t('join.blockTarget')}
               value={String(result.partial.blockGenerationTargetTime ?? '—')}
               sub={`Epoch: ${result.partial.epochAdjustment ?? '—'}`}
             />
             <SummaryCard
               icon={<Coins className="w-4 h-4 text-emerald-400" />}
-              label="Currency Mosaic"
+              label={t('join.currencyMosaic')}
               value={truncateHex(String(result.partial.currencyMosaicId ?? '—'))}
               sub={`Divisibility: ${result.partial.maxMosaicDivisibility ?? '—'}`}
             />
             <SummaryCard
               icon={<Users className="w-4 h-4 text-purple-400" />}
-              label="Peers Found"
+              label={t('join.peersFound')}
               value={String(result.raw.peers.length)}
               sub={`Nodes: ${(result.partial.nodes ?? []).length} mapped`}
             />
@@ -414,7 +412,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
           <div className="bg-zinc-900/70 border border-zinc-800 rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 bg-zinc-900 border-b border-zinc-800 flex items-center gap-2">
               <Server className="w-4 h-4 text-zinc-500" />
-              <span className="text-sm font-medium text-zinc-300">取得した主要プロパティ</span>
+              <span className="text-sm font-medium text-zinc-300">{t('join.propertiesTitle')}</span>
             </div>
             <div className="divide-y divide-zinc-800/60 max-h-64 overflow-y-auto">
               {Object.entries(result.partial)
@@ -436,7 +434,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               <div className="px-4 py-2.5 bg-zinc-900 border-b border-zinc-800 flex items-center gap-2">
                 <Users className="w-4 h-4 text-zinc-500" />
                 <span className="text-sm font-medium text-zinc-300">
-                  ピアノード ({result.raw.peers.length})
+                  {t('join.peersTable')} ({result.raw.peers.length})
                 </span>
               </div>
               <div className="divide-y divide-zinc-800/60 max-h-40 overflow-y-auto">
@@ -492,18 +490,18 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               {applied ? (
                 <>
                   <CheckCircle2 className="w-4 h-4" />
-                  設定に反映済み
+                  {t('join.applied')}
                 </>
               ) : (
                 <>
                   <ArrowRight className="w-4 h-4" />
-                  Configurationに反映
+                  {t('join.applyConfig')}
                 </>
               )}
             </button>
             {applied && (
               <span className="text-xs text-zinc-500">
-                Configuration タブで取得した設定を確認・カスタマイズできます
+                {t('join.configHint')}
               </span>
             )}
           </div>

@@ -24,6 +24,7 @@ import type { PresetConfig } from '../constants';
 import { DEFAULT_PRESET } from '../constants';
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
+import { useTranslation } from '../i18n';
 
 interface ShareNetworkProps {
   onConfigImport: (config: PresetConfig) => void;
@@ -49,6 +50,8 @@ interface ImportResult {
 }
 
 export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
+  const { t } = useTranslation();
+
   // ── Export state ──
   const [status, setStatus] = useState<ShareStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -114,7 +117,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
   // ── Import handler ──
   const handleImportFile = async (file: File) => {
     if (!file.name.endsWith('.zip') && !file.name.includes('.symbol-network')) {
-      setImportError('ZIPファイル (.symbol-network.zip) を選択してください。');
+      setImportError(t('share.importInvalidFile'));
       return;
     }
     setImporting(true);
@@ -170,11 +173,10 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
         <div>
           <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
             <Share2 className="w-5 h-5 text-sky-400" />
-            ネットワーク共有パッケージ
+            {t('share.title')}
           </h2>
           <p className="text-sm text-zinc-500 mt-1">
-            構築したカスタムネットワークを他のユーザーと共有します。
-            カスタムプリセット、ネメシスSeedデータ、接続先情報を1つのZIPファイルにパッケージングします。
+            {t('share.description')}
           </p>
         </div>
 
@@ -182,7 +184,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
         {statusLoading ? (
           <div className="flex items-center gap-2 text-sm text-zinc-500">
             <Loader2 className="w-4 h-4 animate-spin" />
-            共有ステータスを確認中...
+            {t('share.statusChecking')}
           </div>
         ) : status ? (
           <div className="bg-zinc-900/70 border border-zinc-800 rounded-lg overflow-hidden">
@@ -190,7 +192,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
             <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Package className="w-4 h-4 text-sky-400" />
-                <span className="text-sm font-medium text-zinc-200">エクスポート準備状況</span>
+                <span className="text-sm font-medium text-zinc-200">{t('share.statusTitle')}</span>
               </div>
               <span
                 className={cn(
@@ -200,16 +202,16 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                     : 'bg-amber-950/60 text-amber-400 border border-amber-800'
                 )}
               >
-                {status.canExport ? '✓ エクスポート可能' : '⚠ 準備不足'}
+                {status.canExport ? t('share.ready') : t('share.notReady')}
               </span>
             </div>
 
             <div className="p-4 space-y-4">
               {/* Checklist */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <StatusItem ok={status.hasPreset} label="カスタムプリセット" />
-                <StatusItem ok={status.hasSeed} label={`ネメシスSeed (${status.seedSource === 'imported' ? 'インポート済' : status.seedSource === 'generated' ? '自動生成' : '未取得'})`} />
-                <StatusItem ok={status.hasMeta} label="UIメタデータ" />
+                <StatusItem ok={status.hasPreset} label={t('share.itemPreset')} />
+                <StatusItem ok={status.hasSeed} label={`${t('share.itemSeed')} (${status.seedSource === 'imported' ? t('share.seedImported') : status.seedSource === 'generated' ? t('share.seedGenerated') : t('share.seedMissing')})`} />
+                <StatusItem ok={status.hasMeta} label={t('share.itemMeta')} />
               </div>
 
               {/* Network info */}
@@ -217,12 +219,12 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                 <>
                   <div className="grid grid-cols-2 gap-3">
                     {status.networkName && (
-                      <InfoCard icon={<Globe className="w-3.5 h-3.5 text-sky-400" />} label="ネットワーク名" value={status.networkName} />
+                      <InfoCard icon={<Globe className="w-3.5 h-3.5 text-sky-400" />} label={t('share.networkName')} value={status.networkName} />
                     )}
                     {status.generationHashSeed && (
                       <InfoCard
                         icon={<Hash className="w-3.5 h-3.5 text-indigo-400" />}
-                        label="Generation Hash"
+                        label={t('share.genHash')}
                         value={truncateHex(status.generationHashSeed)}
                       />
                     )}
@@ -231,7 +233,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                   {/* Source node hint input */}
                   <div className="space-y-2">
                     <label className="block text-xs font-medium text-zinc-400">
-                      接続先ノードURL（参加者がピア接続に使用）
+                      {t('share.sourceNodeUrl')}
                     </label>
                     <input
                       type="text"
@@ -240,17 +242,15 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                         setSourceNodeHint(e.target.value);
                         setExportDone(false);
                       }}
-                      placeholder="http://your-server-ip:3000"
+                      placeholder={t('share.sourceUrlPlaceholder')}
                       className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-600"
                     />
                     <div className="flex items-start gap-2 text-xs text-amber-400/80 bg-amber-950/20 border border-amber-900/30 rounded-md px-3 py-2">
                       <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                       <div>
-                        <p className="font-medium">自動検出されたIPアドレスが正しいか確認してください。</p>
+                        <p className="font-medium">{t('share.ipWarning')}</p>
                         <p className="text-amber-400/60 mt-0.5">
-                          Docker環境ではホスト内部IPが検出される場合があります。
-                          外部から接続可能なグローバルIP / ドメイン名に変更してください。
-                          ポートのデフォルトは 3000（REST Gateway）です。
+                          {t('share.ipDockerWarning')}
                         </p>
                       </div>
                     </div>
@@ -268,12 +268,12 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                       ) : (
                         <Download className="w-4 h-4" />
                       )}
-                      ZIPパッケージをダウンロード
+                      {t('share.downloadZip')}
                     </button>
                     {exportDone && (
                       <span className="flex items-center gap-1.5 text-xs text-emerald-400">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        ダウンロード開始
+                        {t('share.startDownload')}
                       </span>
                     )}
                   </div>
@@ -285,8 +285,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                 <div className="flex items-start gap-2 text-xs text-zinc-400 bg-zinc-800/50 rounded-md px-3 py-2">
                   <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>
-                    ネットワークをConfigurationタブで設定し、Dashboardから起動してください。
-                    起動後にネメシスSeedが生成され、エクスポートが可能になります。
+                    {t('share.notReadyGuide')}
                   </span>
                 </div>
               )}
@@ -300,30 +299,28 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
             <div className="bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
               <div className="px-5 py-4 bg-amber-950/30 border-b border-amber-900/40 flex items-center gap-3">
                 <Shield className="w-6 h-6 text-amber-400" />
-                <h3 className="text-base font-bold text-amber-200">セキュリティに関する注意</h3>
+                <h3 className="text-base font-bold text-amber-200">{t('share.securityTitle')}</h3>
               </div>
               <div className="px-5 py-4 space-y-3 text-sm text-zinc-300">
-                <p>この共有パッケージには以下が含まれます：</p>
+                <p>{t('share.securityIntro')}</p>
                 <ul className="space-y-1.5 text-xs text-zinc-400 list-inside">
                   <li className="flex items-start gap-2">
                     <span className="text-emerald-400 mt-0.5">✓</span>
-                    カスタムプリセット（ネットワークパラメータ全体）
+                    {t('share.securityItem1')}
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-emerald-400 mt-0.5">✓</span>
-                    ネメシスSeedデータ（ジェネシスブロック）
+                    {t('share.securityItem2')}
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-emerald-400 mt-0.5">✓</span>
-                    接続先ノードURL
+                    {t('share.securityItem3')}
                   </li>
                 </ul>
                 <div className="bg-amber-950/30 border border-amber-900/30 rounded-md px-3 py-2 text-xs text-amber-300/80">
-                  <p className="font-medium text-amber-300">⚠ 秘密鍵は含まれません</p>
+                  <p className="font-medium text-amber-300">{t('share.securityNoPrivateKey')}</p>
                   <p className="mt-1">
-                    ノードの秘密鍵やaddresses.ymlは含まれません。
-                    ただし、ネットワーク設定はネットワークの構造を知る手がかりになるため、
-                    信頼できる相手にのみ共有してください。
+                    {t('share.securityNoPrivateKeyDesc')}
                   </p>
                 </div>
               </div>
@@ -332,14 +329,14 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                   onClick={() => setShowSecurityWarning(false)}
                   className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
                 >
-                  キャンセル
+                  {t('share.cancel')}
                 </button>
                 <button
                   onClick={handleConfirmExport}
                   className="flex items-center gap-2 px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold rounded-lg transition-colors"
                 >
                   <Download className="w-4 h-4" />
-                  エクスポートする
+                  {t('share.doExport')}
                 </button>
               </div>
             </div>
@@ -357,11 +354,10 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
         <div>
           <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
             <Upload className="w-5 h-5 text-emerald-400" />
-            共有パッケージをインポート
+            {t('share.importTitle')}
           </h2>
           <p className="text-sm text-zinc-500 mt-1">
-            ネットワーク管理者から受け取った <code className="text-zinc-400">.symbol-network.zip</code> ファイルをインポートして、
-            同じカスタムネットワークに参加するための設定を一括で取り込みます。
+            {t('share.importDescription')}
           </p>
         </div>
 
@@ -371,14 +367,14 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
             <div className="px-4 py-3 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span className="text-sm font-medium text-emerald-300">インポート成功</span>
+                <span className="text-sm font-medium text-emerald-300">{t('share.importSuccessTitle')}</span>
               </div>
               <button
                 onClick={handleClearImport}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded transition-colors"
               >
                 <Trash2 className="w-3 h-3" />
-                クリア
+                {t('share.importClear')}
               </button>
             </div>
 
@@ -386,19 +382,19 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
               {/* Metadata summary */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <MiniCard
-                  label="ネットワーク"
+                  label={t('share.importNetwork')}
                   value={String(importResult.metadata.networkName || '—')}
                 />
                 <MiniCard
-                  label="Catapult"
+                  label={t('share.importCatapult')}
                   value={String(importResult.metadata.catapultVersion || '—')}
                 />
                 <MiniCard
-                  label="エクスポート日時"
+                  label={t('share.importDate')}
                   value={formatExportDate(String(importResult.metadata.exportedAt || ''))}
                 />
                 <MiniCard
-                  label="Seedファイル数"
+                  label={t('share.importSeedCount')}
                   value={String(importResult.seedFiles.length)}
                 />
               </div>
@@ -407,7 +403,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
               {String(importResult.metadata.generationHashSeed || '') !== '' && (
                 <div className="flex items-center gap-2 text-xs">
                   <Hash className="w-3.5 h-3.5 text-indigo-400" />
-                  <span className="text-zinc-500">Generation Hash:</span>
+                  <span className="text-zinc-500">{t('share.importGenHash')}</span>
                   <span className="text-zinc-300 font-mono">
                     {truncateHex(String(importResult.metadata.generationHashSeed))}
                   </span>
@@ -418,7 +414,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
               {String(importResult.metadata.sourceNodeHint || '') !== '' && (
                 <div className="flex items-center gap-2 text-xs">
                   <Server className="w-3.5 h-3.5 text-sky-400" />
-                  <span className="text-zinc-500">接続先ノード:</span>
+                  <span className="text-zinc-500">{t('share.importSourceNode')}</span>
                   <span className="text-zinc-300 font-mono">
                     {String(importResult.metadata.sourceNodeHint)}
                   </span>
@@ -431,7 +427,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                 className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
               >
                 {showImportDetails ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                インポートされたファイル詳細
+                {t('share.importFilesDetail')}
               </button>
               {showImportDetails && (
                 <div className="bg-zinc-800/50 rounded-md px-3 py-2 text-xs font-mono text-zinc-400 space-y-0.5 max-h-40 overflow-y-auto">
@@ -467,18 +463,18 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
                   {applied ? (
                     <>
                       <CheckCircle2 className="w-4 h-4" />
-                      Configurationに反映済み
+                      {t('share.importApplied')}
                     </>
                   ) : (
                     <>
                       <ArrowRight className="w-4 h-4" />
-                      Configurationに反映
+                      {t('share.importApply')}
                     </>
                   )}
                 </button>
                 {applied && (
                   <span className="text-xs text-zinc-500">
-                    Configurationタブで設定を確認し、DashboardでStartしてください
+                    {t('share.importHint')}
                   </span>
                 )}
               </div>
@@ -506,17 +502,17 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
             {importing ? (
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" />
-                <p className="text-sm text-zinc-400">パッケージを展開中...</p>
+                <p className="text-sm text-zinc-400">{t('share.importExtracting')}</p>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3">
                 <FileArchive className="w-10 h-10 text-zinc-500" />
                 <div>
                   <p className="text-sm text-zinc-300">
-                    .symbol-network.zip ファイルをドラッグ＆ドロップ、またはクリックして選択
+                    {t('share.importDropzone')}
                   </p>
                   <p className="text-xs text-zinc-600 mt-1">
-                    プリセット設定・ネメシスSeed・接続先情報が一括でインポートされます
+                    {t('share.importDropzoneHint')}
                   </p>
                 </div>
               </div>
@@ -529,7 +525,7 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
           <div className="flex items-start gap-3 bg-red-950/40 border border-red-900/50 rounded-lg px-4 py-3">
             <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-medium text-red-300">インポートに失敗しました</p>
+              <p className="text-sm font-medium text-red-300">{t('share.importFailed')}</p>
               <p className="text-xs text-red-400/80 mt-0.5">{importError}</p>
             </div>
           </div>
@@ -538,22 +534,22 @@ export function ShareNetwork({ onConfigImport }: ShareNetworkProps) {
         {/* How-to section */}
         <details className="text-xs text-zinc-600">
           <summary className="cursor-pointer hover:text-zinc-400 transition-colors">
-            共有パッケージの使い方
+            {t('share.howToTitle')}
           </summary>
           <div className="mt-2 pl-3 border-l-2 border-zinc-800 space-y-2 text-zinc-500">
-            <p className="font-medium text-zinc-400">📤 ネットワーク管理者（エクスポートする側）：</p>
+            <p className="font-medium text-zinc-400">{t('share.howToExportTitle')}</p>
             <ol className="list-decimal list-inside space-y-1 pl-2">
-              <li>Configurationタブでカスタムネットワークを設定</li>
-              <li>DashboardからStartしてネットワークを起動</li>
-              <li>このタブでエクスポートして .symbol-network.zip をダウンロード</li>
-              <li>参加者にZIPファイルを配布</li>
+              <li>{t('share.howToExport1')}</li>
+              <li>{t('share.howToExport2')}</li>
+              <li>{t('share.howToExport3')}</li>
+              <li>{t('share.howToExport4')}</li>
             </ol>
-            <p className="font-medium text-zinc-400 mt-2">📥 参加者（インポートする側）：</p>
+            <p className="font-medium text-zinc-400 mt-2">{t('share.howToImportTitle')}</p>
             <ol className="list-decimal list-inside space-y-1 pl-2">
-              <li>受け取った .symbol-network.zip をこのタブにドロップ</li>
-              <li>「Configurationに反映」をクリック</li>
-              <li>Configurationタブで設定を確認（必要に応じて調整）</li>
-              <li>DashboardからStartで参加完了</li>
+              <li>{t('share.howToImport1')}</li>
+              <li>{t('share.howToImport2')}</li>
+              <li>{t('share.howToImport3')}</li>
+              <li>{t('share.howToImport4')}</li>
             </ol>
           </div>
         </details>

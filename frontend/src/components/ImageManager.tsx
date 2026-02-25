@@ -15,6 +15,7 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useTranslation } from '../i18n';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,19 +40,20 @@ function imageIcon(repo: string) {
   return <Package className="w-4 h-4 text-zinc-400" />;
 }
 
-function imageCategory(repo: string): string {
-  if (repo.includes('symbol-server') || repo.includes('catapult')) return 'Catapult Server';
-  if (repo.includes('symbol-rest')) return 'REST Gateway';
-  if (repo.includes('mongo')) return 'MongoDB';
-  if (repo.includes('explorer')) return 'Explorer';
-  if (repo.includes('faucet')) return 'Faucet';
-  if (repo.includes('agent')) return 'Agent';
-  return 'Other';
+function imageCategory(repo: string, t: (key: string, params?: Record<string, string | number> | string) => string): string {
+  if (repo.includes('symbol-server') || repo.includes('catapult')) return t('images.catServer');
+  if (repo.includes('symbol-rest')) return t('images.catRest');
+  if (repo.includes('mongo')) return t('images.catMongo');
+  if (repo.includes('explorer')) return t('images.catExplorer');
+  if (repo.includes('faucet')) return t('images.catFaucet');
+  if (repo.includes('agent')) return t('images.catAgent');
+  return t('images.catOther');
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function ImageManager() {
+  const { t } = useTranslation();
   const [images, setImages] = useState<DockerImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -105,14 +107,14 @@ export function ImageManager() {
       const result = await api.importImage(file, (pct) => setImportProgress(pct));
       setMessage({
         type: 'success',
-        text: result.output || 'イメージをロードしました',
+        text: result.output || t('images.importSuccess'),
       });
       // Refresh the list
       await fetchImages();
     } catch (err) {
       setMessage({
         type: 'error',
-        text: err instanceof Error ? err.message : 'インポートに失敗しました',
+        text: err instanceof Error ? err.message : t('images.importFailed'),
       });
     } finally {
       setImporting(false);
@@ -132,9 +134,9 @@ export function ImageManager() {
       >
         <h2 className="text-lg font-bold flex items-center gap-2 text-zinc-100">
           <Package className="w-5 h-5 text-purple-400" />
-          Docker Images
+          {t('images.title')}
           <span className="text-sm font-normal text-zinc-500 ml-1">
-            ({totalSize} images)
+            ({t('images.imagesFound', { count: totalSize })})
           </span>
         </h2>
         <div className="flex items-center gap-3">
@@ -159,7 +161,7 @@ export function ImageManager() {
           <div className="flex items-center gap-3 pt-4">
             <label className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer">
               <Upload className="w-4 h-4" />
-              Import .tar
+              {t('images.importTar')}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -175,11 +177,11 @@ export function ImageManager() {
               className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-700"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              更新
+              {t('images.refresh')}
             </button>
 
             <p className="text-xs text-zinc-600 ml-auto hidden sm:block">
-              DockerHubからの消失に備えて、イメージをtarファイルにバックアップできます
+              {t('images.backupDesc')}
             </p>
           </div>
 
@@ -189,7 +191,7 @@ export function ImageManager() {
               <div className="flex items-center gap-2 text-sm text-purple-300">
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>
-                  イメージをインポート中... {importProgress > 0 ? `${importProgress}%` : ''}
+                  {t('images.loading')} {importProgress > 0 ? `${importProgress}%` : ''}
                 </span>
               </div>
               <div className="w-full h-2 bg-purple-950/50 rounded-full overflow-hidden">
@@ -236,23 +238,23 @@ export function ImageManager() {
           ) : images.length === 0 ? (
             <div className="text-center py-6 text-zinc-500 text-sm">
               <HardDrive className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              Symbol関連のDockerイメージが見つかりません
+              {t('images.noImages')}
             </div>
           ) : (
             <div className="border border-zinc-800 rounded-xl overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="bg-zinc-950/60 text-zinc-500 text-xs">
                   <tr>
-                    <th className="text-left px-4 py-2.5 font-medium">イメージ</th>
-                    <th className="text-left px-4 py-2.5 font-medium">タグ</th>
+                    <th className="text-left px-4 py-2.5 font-medium">{t('images.colImage')}</th>
+                    <th className="text-left px-4 py-2.5 font-medium">{t('images.colTag')}</th>
                     <th className="text-left px-4 py-2.5 font-medium hidden sm:table-cell">
-                      カテゴリ
+                      {t('images.colCategory')}
                     </th>
-                    <th className="text-right px-4 py-2.5 font-medium">サイズ</th>
+                    <th className="text-right px-4 py-2.5 font-medium">{t('images.colSize')}</th>
                     <th className="text-left px-4 py-2.5 font-medium hidden md:table-cell">
-                      作成
+                      {t('images.colCreated')}
                     </th>
-                    <th className="text-right px-4 py-2.5 font-medium">操作</th>
+                    <th className="text-right px-4 py-2.5 font-medium">{t('images.colActions')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/50">
@@ -270,7 +272,7 @@ export function ImageManager() {
                         {img.tag}
                       </td>
                       <td className="px-4 py-2.5 text-zinc-500 text-xs hidden sm:table-cell">
-                        {imageCategory(img.repository)}
+                        {imageCategory(img.repository, t)}
                       </td>
                       <td className="px-4 py-2.5 text-right text-zinc-300 text-xs font-mono">
                         {img.size}
@@ -282,10 +284,10 @@ export function ImageManager() {
                         <button
                           onClick={() => handleExport(img.fullName)}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-300 hover:text-indigo-200 hover:bg-indigo-900/30 rounded-md transition-colors border border-indigo-500/30"
-                          title={`${img.fullName} を .tar にエクスポート`}
+                          title={t('images.exportTooltip', { name: img.fullName })}
                         >
                           <Download className="w-3.5 h-3.5" />
-                          Export
+                          {t('images.export')}
                         </button>
                       </td>
                     </tr>
@@ -297,18 +299,9 @@ export function ImageManager() {
 
           {/* Help text */}
           <div className="text-xs text-zinc-600 space-y-1 pt-1">
-            <p>
-              <strong className="text-zinc-500">Export:</strong>{' '}
-              イメージを <code className="text-zinc-500">.tar</code> ファイルとしてダウンロード（1-2 GB/イメージ）
-            </p>
-            <p>
-              <strong className="text-zinc-500">Import:</strong>{' '}
-              バックアップした <code className="text-zinc-500">.tar</code> ファイルをアップロードしてDockerにロード
-            </p>
-            <p>
-              <strong className="text-zinc-500">復元手順:</strong>{' '}
-              .tar をインポート → Configuration の Images カテゴリでイメージ名を設定 → Start
-            </p>
+            <p>{t('images.helpExport')}</p>
+            <p>{t('images.helpImport')}</p>
+            <p>{t('images.helpRestore')}</p>
           </div>
         </div>
       )}

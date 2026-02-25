@@ -76,6 +76,7 @@ export interface FieldMeta {
   min?: number;
   max?: number;
   placeholder?: string;
+  autoGenOnBootstrap?: boolean;
 }
 
 export interface CategoryMeta {
@@ -286,8 +287,8 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'nemesisSignerPublicKey', label: 'Nemesis Signer Public Key', type: 'text', description: 'ジェネシスブロック署名者の公開鍵' },
       { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法', options: [{ value: 'host', label: 'host' }, { value: 'public-key', label: 'public-key' }] },
       { key: 'epochAdjustment', label: 'Epoch Adjustment', type: 'text', description: 'Unix epochからの秒数', placeholder: '1573430400s' },
-      { key: 'currencyMosaicId', label: 'Currency Mosaic ID', type: 'text', description: '基軸通貨のモザイクID', placeholder: "0x6BED'913F'A202'23F8" },
-      { key: 'harvestingMosaicId', label: 'Harvesting Mosaic ID', type: 'text', description: 'ハーベスト用モザイクID', placeholder: "0x6BED'913F'A202'23F8" },
+      { key: 'currencyMosaicId', label: 'Currency Mosaic ID', type: 'text', description: '基軸通貨のモザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
+      { key: 'harvestingMosaicId', label: 'Harvesting Mosaic ID', type: 'text', description: 'ハーベスト用モザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
       { key: 'privateKeySecurityMode', label: 'Private Key Security', type: 'select', description: '秘密鍵保管モード', options: [{ value: 'PROMPT_MAIN', label: 'PROMPT_MAIN' }, { value: 'PROMPT_MAIN_TRANSPORT', label: 'PROMPT_MAIN_TRANSPORT' }, { value: 'ENCRYPT', label: 'ENCRYPT' }] },
       { key: 'caCertificateExpirationInDays', label: 'CA Certificate Expiration (days)', type: 'number', description: 'CA証明書の有効期間(日) — デフォルト7300日(約20年)', min: 1 },
       { key: 'nodeCertificateExpirationInDays', label: 'Node Certificate Expiration (days)', type: 'number', description: 'ノード証明書の有効期間(日) — デフォルト375日(約1年)', min: 1 },
@@ -622,7 +623,7 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
     networkType: 'privateTest', networkIdentifier: 168,
     networkName: 'custom-symbol-network', friendlyName: 'custom-network',
     nemesisGenerationHashSeed: '', epochAdjustment: '1573430400s',
-    currencyMosaicId: "0x6BED'913F'A202'23F8", harvestingMosaicId: "0x6BED'913F'A202'23F8",
+    currencyMosaicId: '', harvestingMosaicId: '',
     totalChainImportance: "7'842'928'625'000'000", initialCurrencyAtomicUnits: "7'842'928'625'000'000",
     minHarvesterBalance: "10'000'000'000", maxHarvesterBalance: "50'000'000'000'000",
     minVoterBalance: "50'000'000'000",
@@ -648,7 +649,7 @@ export const DEFAULT_PRESET: PresetConfig = {
   sourceNodeUrl: '', nemesisGenerationHashSeed: '', nemesisSignerPublicKey: '',
   nodeEqualityStrategy: 'host',
   epochAdjustment: '1573430400s',
-  currencyMosaicId: "0x6BED'913F'A202'23F8", harvestingMosaicId: "0x6BED'913F'A202'23F8",
+  currencyMosaicId: '', harvestingMosaicId: '',
   privateKeySecurityMode: 'ENCRYPT',
 
   caCertificateExpirationInDays: 7300,

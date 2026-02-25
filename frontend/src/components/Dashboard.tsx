@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { useTranslation } from '../i18n';
 import {
   Play,
   Square,
@@ -29,6 +30,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ config, onConfigImport }: DashboardProps) {
+  const { t } = useTranslation();
   const [addresses, setAddresses] = useState<unknown>(null);
   const [password, setPassword] = useState('');
   const [cmdStatus, setCmdStatus] = useState<Record<string, CommandStatus>>({});
@@ -65,7 +67,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
 
   const handleStart = async () => {
     if (!password) {
-      alert('ネットワーク暗号化パスワードを入力してください。');
+      alert(t('dashboard.alertNoPassword'));
       return;
     }
     await api.savePreset(config);
@@ -76,13 +78,13 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
   const handleHealthCheck = () => runCommand('healthCheck');
 
   const handleReset = () => {
-    if (confirm('全てのネットワークデータをリセットしますか？')) {
+    if (confirm(t('dashboard.confirmReset'))) {
       runCommand('resetData');
     }
   };
 
   const handleFullReset = () => {
-    if (confirm('⚠️ 完全初期化：全ての設定・データ・証明書を削除して初期状態に戻します。\n\nこの操作は取り消せません。続行しますか？')) {
+    if (confirm(t('dashboard.confirmFullReset'))) {
       runCommand('fullReset');
     }
   };
@@ -128,9 +130,9 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
         }
 
         onConfigImport(parsed);
-        alert('プリセットを正常にインポートしました。');
+        alert(t('dashboard.importSuccess'));
       } catch (err) {
-        alert('ファイルの解析に失敗しました: ' + (err as Error).message);
+        alert(t('dashboard.importParseError') + (err as Error).message);
       }
     };
     reader.readAsText(file);
@@ -145,7 +147,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
       const data = await api.getAddresses();
       setAddresses(data);
     } catch {
-      alert('addresses.yml がまだ生成されていないか、取得に失敗しました。');
+      alert(t('dashboard.addressesNotFound'));
     }
   };
 
@@ -192,17 +194,17 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-5 text-zinc-100">
         <h2 className="text-xl font-bold flex items-center gap-2">
           <Activity className="w-5 h-5 text-indigo-400" />
-          Network Controls
+          {t('dashboard.title')}
         </h2>
 
         {/* Password */}
         <div>
           <label className="block text-sm font-medium text-zinc-400 mb-2">
-            Network Encryption Password
+            {t('dashboard.passwordLabel')}
           </label>
           <input
             type="password"
-            placeholder="Enter secure password..."
+            placeholder={t('dashboard.passwordPlaceholder')}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="w-full md:w-96 bg-zinc-950 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -217,7 +219,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
           >
             <Save className="w-4 h-4" />
-            Save
+            {t('dashboard.save')}
             <StatusIcon cmd="save" />
           </button>
 
@@ -227,7 +229,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
           >
             <Play className="w-4 h-4" />
-            Start
+            {t('dashboard.start')}
             <StatusIcon cmd="start" />
           </button>
 
@@ -237,7 +239,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
           >
             <Square className="w-4 h-4 fill-current" />
-            Stop
+            {t('dashboard.stop')}
             <StatusIcon cmd="stop" />
           </button>
 
@@ -247,7 +249,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
           >
             <Activity className="w-4 h-4" />
-            Health Check
+            {t('dashboard.healthCheck')}
             <StatusIcon cmd="healthCheck" />
           </button>
 
@@ -257,7 +259,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-5 py-2.5 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-zinc-200 rounded-lg font-medium transition-colors ml-auto border border-zinc-600"
           >
             <Trash2 className="w-4 h-4" />
-            Reset
+            {t('dashboard.reset')}
             <StatusIcon cmd="resetData" />
           </button>
 
@@ -267,7 +269,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-5 py-2.5 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-red-200 rounded-lg font-medium transition-colors border border-red-700"
           >
             <Trash2 className="w-4 h-4" />
-            完全初期化
+            {t('dashboard.fullReset')}
             <StatusIcon cmd="fullReset" />
           </button>
         </div>
@@ -279,7 +281,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-4 py-2 hover:bg-zinc-800 text-zinc-300 rounded-lg text-sm transition-colors border border-zinc-700"
           >
             <Download className="w-4 h-4" />
-            Export YAML
+            {t('dashboard.exportYaml')}
           </button>
 
           <button
@@ -287,7 +289,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-4 py-2 hover:bg-zinc-800 text-zinc-300 rounded-lg text-sm transition-colors border border-zinc-700"
           >
             <FileDown className="w-4 h-4" />
-            Export JSON
+            {t('dashboard.exportJson')}
           </button>
 
           <button
@@ -295,7 +297,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-4 py-2 hover:bg-zinc-800 text-zinc-300 rounded-lg text-sm transition-colors border border-zinc-700"
           >
             <Upload className="w-4 h-4" />
-            Import (JSON / YAML)
+            {t('dashboard.import')}
           </button>
 
           <button
@@ -303,7 +305,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             className="flex items-center gap-2 px-4 py-2 hover:bg-indigo-900/50 text-indigo-300 rounded-lg text-sm transition-colors border border-indigo-500/30 ml-auto"
           >
             <FileText className="w-4 h-4" />
-            View Addresses
+            {t('dashboard.viewAddresses')}
           </button>
         </div>
       </div>
@@ -318,13 +320,13 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
                 onClick={downloadAddresses}
                 className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
               >
-                <Download className="w-3 h-3" /> Download
+                <Download className="w-3 h-3" /> {t('dashboard.download')}
               </button>
               <button
                 onClick={() => setAddresses(null)}
                 className="text-xs text-zinc-500 hover:text-zinc-300"
               >
-                Close
+                {t('dashboard.close')}
               </button>
             </div>
           </div>

@@ -43,6 +43,7 @@ import {
   TrendingDown,
 } from 'lucide-react';
 import { configToYaml } from '../lib/utils';
+import { useTranslation } from '../i18n';
 
 // Icon mapping per category
 const ICON_MAP: Record<string, React.ElementType> = {
@@ -73,13 +74,19 @@ function FieldRenderer({
   field,
   value,
   onChange,
+  preset,
 }: {
   field: FieldMeta;
   value: unknown;
   onChange: (key: string, value: unknown) => void;
+  preset?: string;
 }) {
+  const { t } = useTranslation();
   const base =
     'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
+
+  // Show auto-generation note for mosaic ID fields in bootstrap preset
+  const showAutoGenNote = field.autoGenOnBootstrap && preset === 'bootstrap';
 
   switch (field.type) {
     case 'boolean':
@@ -173,10 +180,15 @@ function FieldRenderer({
           <input
             type="text"
             value={String(value ?? '')}
-            placeholder={field.placeholder}
+            placeholder={showAutoGenNote ? t('field.mosaicId.autoGenNote') : field.placeholder}
             onChange={(e) => onChange(field.key, e.target.value)}
             className={base}
           />
+          {showAutoGenNote && (
+            <p className="mt-1 text-xs text-amber-400/80">
+              {t('field.mosaicId.autoGenNote')}
+            </p>
+          )}
         </div>
       );
   }
@@ -248,6 +260,7 @@ interface ConfigFormProps {
 }
 
 export function ConfigForm({ config, onChange }: ConfigFormProps) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState('general');
   const [showYaml, setShowYaml] = useState(false);
 
@@ -338,14 +351,14 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-xl font-semibold text-indigo-300">{category.label}</h3>
-              <p className="text-xs text-zinc-500 mt-1">{category.description}</p>
+              <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
+              <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
             </div>
             <button
               onClick={addNode}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors"
             >
-              <Plus className="w-4 h-4" /> Add Node
+              <Plus className="w-4 h-4" /> {t('config.addNode')}
             </button>
           </div>
           <div className="space-y-3">
@@ -360,7 +373,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               />
             ))}
             {config.nodes.length === 0 && (
-              <p className="text-zinc-600 text-sm italic text-center py-8">No nodes configured. Click "Add Node" to begin.</p>
+              <p className="text-zinc-600 text-sm italic text-center py-8">{t('config.noNodes')}</p>
             )}
           </div>
         </div>
@@ -372,14 +385,14 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-xl font-semibold text-indigo-300">{category.label}</h3>
-              <p className="text-xs text-zinc-500 mt-1">{category.description}</p>
+              <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
+              <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
             </div>
             <button
               onClick={addGateway}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors"
             >
-              <Plus className="w-4 h-4" /> Add Gateway
+              <Plus className="w-4 h-4" /> {t('config.addGateway')}
             </button>
           </div>
           <div className="space-y-3">
@@ -394,7 +407,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               />
             ))}
             {config.gateways.length === 0 && (
-              <p className="text-zinc-600 text-sm italic text-center py-8">No gateways configured. Click "Add Gateway" to begin.</p>
+              <p className="text-zinc-600 text-sm italic text-center py-8">{t('config.noGateways')}</p>
             )}
           </div>
         </div>
@@ -410,32 +423,32 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
         <div className="space-y-5">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-xl font-semibold text-indigo-300">{category.label}</h3>
-              <p className="text-xs text-zinc-500 mt-1">{category.description}</p>
+              <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
+              <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
             </div>
             {!isPublic && (
               <button
                 onClick={addInflation}
                 className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors"
               >
-                <Plus className="w-4 h-4" /> エントリ追加
+                <Plus className="w-4 h-4" /> {t('config.addEntry')}
               </button>
             )}
           </div>
 
           {isPublic ? (
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-5 text-sm text-blue-300 space-y-2">
-              <p className="font-medium">ℹ️ 公開ネットワーク (testnet / mainnet)</p>
+              <p className="font-medium">{t('config.publicNetworkNotice')}</p>
               <p className="text-blue-400/80">
-                インフレスケジュールはネットワーク標準値が自動適用されるため、カスタム設定は無効です。
+                {t('config.publicNetworkInflation')}
               </p>
             </div>
           ) : (
             <>
               {/* Column headers */}
               <div className="grid grid-cols-[1fr_1.5fr_auto] gap-3 px-1">
-                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Starting Height</span>
-                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Amount (per block, atomic)</span>
+                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{t('config.startingHeight')}</span>
+                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{t('config.amount')}</span>
                 <span className="w-9" />
               </div>
 
@@ -462,7 +475,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
                       type="button"
                       onClick={() => removeInflation(i)}
                       className="p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-colors"
-                      title="削除"
+                      title={t('config.delete')}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -472,23 +485,21 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
 
               {config.inflation.length === 0 && (
                 <p className="text-zinc-600 text-sm italic text-center py-8">
-                  インフレエントリがありません。「エントリ追加」をクリックして設定を開始してください。
+                  {t('config.noInflation')}
                 </p>
               )}
 
               {/* Help text */}
               <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4 space-y-2 text-xs text-zinc-500">
                 <p>
-                  <span className="text-zinc-400 font-medium">💡 使い方:</span>{' '}
-                  各エントリは指定ブロック高からの「1ブロックあたり報酬額」を定義します（atomic単位）。
+                  <span className="text-zinc-400 font-medium">{t('config.inflationHelp')}</span>{' '}
+                  {t('config.inflationDesc')}
                 </p>
                 <p>
-                  <span className="text-zinc-400">例:</span> height=2, amount=95000000 →
-                  ブロック2から1ブロックあたり 95,000,000 micro XYM を報酬として新規発行
+                  <span className="text-zinc-400">{t('config.inflationExample')}</span> {t('config.inflationExLine1')}
                 </p>
                 <p>
-                  <span className="text-zinc-400">ゼロインフレ:</span> amount=0 で報酬なし（デフォルト）。
-                  報酬を段階的に減少させるには、異なるブロック高で複数エントリを追加してください。
+                  <span className="text-zinc-400">{t('config.inflationZero')}</span> {t('config.inflationZeroDesc')}
                 </p>
               </div>
             </>
@@ -505,18 +516,18 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     return (
       <div className="space-y-5">
         <div>
-          <h3 className="text-xl font-semibold text-indigo-300">{category.label}</h3>
-          <p className="text-xs text-zinc-500 mt-1">{category.description}</p>
+          <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
+          <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {otherFields.map((f) => (
-            <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} />
+            <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
           ))}
         </div>
         {boolFields.length > 0 && (
           <div className="border-t border-zinc-800 pt-4 space-y-3">
             {boolFields.map((f) => (
-              <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} />
+              <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
             ))}
           </div>
         )}
@@ -543,7 +554,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
                 }`}
               >
                 <Icon className={`w-5 h-5 ${isActive ? 'text-indigo-400' : 'text-zinc-500'}`} />
-                {cat.label}
+                {t(`cat.${cat.id}.label`, cat.label)}
                 {cat.id === 'nodes' && (
                   <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.nodes.length}</span>
                 )}
@@ -568,7 +579,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               }`}
             >
               <Code2 className={`w-5 h-5 ${showYaml ? 'text-emerald-400' : 'text-zinc-500'}`} />
-              YAML Preview
+              {t('config.yamlPreview')}
             </button>
           </div>
         </div>
@@ -594,7 +605,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               }}
               className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
             >
-              Copy
+              {t('config.copy')}
             </button>
           </div>
           <pre className="p-4 text-xs text-emerald-400 font-mono overflow-x-auto max-h-96 overflow-y-auto whitespace-pre">

@@ -18,6 +18,7 @@ import {
   FolderOpen,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useTranslation } from '../i18n';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,14 +90,14 @@ function formatVersion(v: string | null | undefined): string {
   return `${major}.${minor}.${patch}.${build}`;
 }
 
-function roleLabel(roles: number | null | undefined): string {
+function roleLabel(roles: number | null | undefined, t: (key: string) => string): string {
   if (roles == null) return '—';
   const labels: string[] = [];
-  if (roles & 1) labels.push('Peer');
-  if (roles & 2) labels.push('API');
-  if (roles & 4) labels.push('Voting');
-  if (roles & 64) labels.push('IPv4');
-  if (roles & 128) labels.push('IPv6');
+  if (roles & 1) labels.push(t('stats.rolePeer'));
+  if (roles & 2) labels.push(t('stats.roleApi'));
+  if (roles & 4) labels.push(t('stats.roleVoting'));
+  if (roles & 64) labels.push(t('stats.roleIpv4'));
+  if (roles & 128) labels.push(t('stats.roleIpv6'));
   return labels.length > 0 ? labels.join(', ') : `Role ${roles}`;
 }
 
@@ -106,13 +107,13 @@ function shortKey(key: string | null | undefined): string {
   return `${key.slice(0, 8)}…${key.slice(-8)}`;
 }
 
-function timeAgo(ts: string): string {
+function timeAgo(ts: string, t: (key: string, params?: Record<string, string | number> | string) => string): string {
   const diff = Date.now() - new Date(ts).getTime();
   const sec = Math.floor(diff / 1000);
-  if (sec < 5) return 'たった今';
-  if (sec < 60) return `${sec}秒前`;
+  if (sec < 5) return t('stats.justNow');
+  if (sec < 60) return t('stats.secondsAgo', { n: sec });
   const min = Math.floor(sec / 60);
-  return `${min}分前`;
+  return t('stats.minutesAgo', { n: min });
 }
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -189,6 +190,7 @@ const BREAKDOWN_ICONS: Record<string, React.ReactNode> = {
 };
 
 function StorageIndicator({ data }: { data: StorageData }) {
+  const { t } = useTranslation();
   const { filesystem, target } = data;
   const fsPercent = filesystem.totalBytes > 0
     ? Math.round((filesystem.usedBytes / filesystem.totalBytes) * 100)
@@ -206,7 +208,7 @@ function StorageIndicator({ data }: { data: StorageData }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs text-zinc-500">
           <HardDrive className={`w-4 h-4 ${usageColor(fsPercent)}`} />
-          ストレージ使用状況
+          {t('stats.storage')}
         </div>
         <span className="text-xs text-zinc-600 font-mono">{data.targetDir}</span>
       </div>
@@ -234,7 +236,7 @@ function StorageIndicator({ data }: { data: StorageData }) {
       <div className="flex items-center justify-between text-xs pt-1">
         <div className="flex items-center gap-1.5 text-zinc-400">
           <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
-          ブロックチェーンデータ
+          {t('stats.blockchainData')}
         </div>
         <span className="text-zinc-300 font-semibold">
           {formatBytes(target.usedBytes)}
@@ -269,8 +271,7 @@ function StorageIndicator({ data }: { data: StorageData }) {
             ? 'bg-red-950/40 border-red-900/50 text-red-400'
             : 'bg-amber-950/40 border-amber-900/50 text-amber-400'
         }`}>
-          ⚠️ ストレージの残り容量が{fsPercent >= 90 ? '非常に' : ''}少なくなっています。
-          ブロックチェーンの同期を続けるには、ディスク容量の拡張を検討してください。
+          {fsPercent >= 90 ? t('stats.storageWarningCritical') : t('stats.storageWarning')}
         </div>
       )}
     </div>
@@ -285,6 +286,7 @@ export function NodeStats() {
   const [loading, setLoading] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const { t } = useTranslation();
 
   const fetchStats = useCallback(async () => {
     setLoading(true);
@@ -320,13 +322,13 @@ export function NodeStats() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold flex items-center gap-2">
           <BarChart3 className="w-5 h-5 text-indigo-400" />
-          Node Statistics
+          {t('stats.title')}
         </h2>
         <div className="flex items-center gap-3">
           {stats?.timestamp && (
             <span className="text-xs text-zinc-500 flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {timeAgo(stats.timestamp)}
+              {timeAgo(stats.timestamp, t)}
             </span>
           )}
           <button
@@ -337,7 +339,7 @@ export function NodeStats() {
                 : 'border-zinc-700 text-zinc-500'
             }`}
           >
-            {autoRefresh ? '自動更新 ON' : '自動更新 OFF'}
+            {autoRefresh ? t('stats.autoOn') : t('stats.autoOff')}
           </button>
           <button
             onClick={fetchStats}
@@ -352,7 +354,7 @@ export function NodeStats() {
       {notAvailable ? (
         <div className="flex items-center gap-3 py-8 justify-center text-zinc-500">
           <WifiOff className="w-5 h-5" />
-          <span>ノードが起動していないか、REST Gateway に接続できません</span>
+          <span>{t('stats.noConnection')}</span>
         </div>
       ) : (
         <>
@@ -361,7 +363,7 @@ export function NodeStats() {
             {/* Block Height */}
             <StatCard
               icon={<Layers className="w-4 h-4" />}
-              label="ブロック高"
+              label={t('stats.blockHeight')}
               value={formatHeight(stats.chain?.height)}
               color="text-emerald-400"
             />
@@ -369,7 +371,7 @@ export function NodeStats() {
             {/* Finalization */}
             <StatCard
               icon={<Shield className="w-4 h-4" />}
-              label="ファイナライズ高"
+              label={t('stats.finalizedHeight')}
               value={formatHeight(stats.chain?.latestFinalizedBlock?.height)}
               sub={
                 stats.chain?.latestFinalizedBlock
@@ -382,7 +384,7 @@ export function NodeStats() {
             {/* Peer count */}
             <StatCard
               icon={<Users className="w-4 h-4" />}
-              label="ピア数"
+              label={t('stats.peerCount')}
               value={stats.peers ? String(stats.peers.count) : '—'}
               color="text-sky-400"
             />
@@ -390,7 +392,7 @@ export function NodeStats() {
             {/* Node version */}
             <StatCard
               icon={<Server className="w-4 h-4" />}
-              label="ノードバージョン"
+              label={t('stats.nodeVersion')}
               value={formatVersion(stats.node?.version)}
               sub={stats.node?.friendlyName || undefined}
               color="text-amber-400"
@@ -415,15 +417,15 @@ export function NodeStats() {
             {/* Roles */}
             <StatCard
               icon={<Wifi className="w-4 h-4" />}
-              label="ノードロール"
-              value={roleLabel(stats.node?.roles)}
+              label={t('stats.nodeRole')}
+              value={roleLabel(stats.node?.roles, t)}
               color="text-teal-400"
             />
 
             {/* Chain Score */}
             <StatCard
               icon={<BarChart3 className="w-4 h-4" />}
-              label="チェーンスコア"
+              label={t('stats.chainScore')}
               value={
                 stats.chain?.scoreHigh && stats.chain?.scoreLow
                   ? `${stats.chain.scoreHigh.slice(0, 8)}…`
@@ -440,10 +442,10 @@ export function NodeStats() {
           {/* ── Node Identity ── */}
           {stats.node && (
             <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 text-xs space-y-1.5">
-              <div className="text-zinc-500 font-medium mb-2">ノード情報</div>
+              <div className="text-zinc-500 font-medium mb-2">{t('stats.nodeInfo')}</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
                 <div>
-                  <span className="text-zinc-500">Public Key: </span>
+                  <span className="text-zinc-500">{t('stats.publicKey')} </span>
                   <span className="text-zinc-300 font-mono">{shortKey(stats.node.publicKey)}</span>
                 </div>
                 <div>
@@ -451,15 +453,15 @@ export function NodeStats() {
                   <span className="text-zinc-300 font-mono">{shortKey(stats.node.nodePublicKey)}</span>
                 </div>
                 <div>
-                  <span className="text-zinc-500">Host: </span>
+                  <span className="text-zinc-500">{t('stats.host')} </span>
                   <span className="text-zinc-300">{stats.node.host || '—'}</span>
                 </div>
                 <div>
-                  <span className="text-zinc-500">Port: </span>
+                  <span className="text-zinc-500">{t('stats.port')} </span>
                   <span className="text-zinc-300">{stats.node.port ?? '—'}</span>
                 </div>
                 <div className="md:col-span-2">
-                  <span className="text-zinc-500">Generation Hash: </span>
+                  <span className="text-zinc-500">{t('stats.genHash')} </span>
                   <span className="text-zinc-300 font-mono break-all">
                     {stats.node.networkGenerationHashSeed || '—'}
                   </span>
@@ -477,7 +479,7 @@ export function NodeStats() {
               >
                 <span className="flex items-center gap-2">
                   <Users className="w-4 h-4 text-sky-400" />
-                  接続ピア一覧 ({stats.peers.count})
+                  {t('stats.peers')} ({stats.peers.count})
                 </span>
                 {peersOpen ? (
                   <ChevronUp className="w-4 h-4" />
@@ -490,11 +492,11 @@ export function NodeStats() {
                   <table className="w-full text-xs">
                     <thead className="text-zinc-500 bg-zinc-900/50 sticky top-0">
                       <tr>
-                        <th className="text-left px-4 py-2 font-medium">Host</th>
-                        <th className="text-left px-4 py-2 font-medium">Name</th>
-                        <th className="text-left px-4 py-2 font-medium">Version</th>
-                        <th className="text-left px-4 py-2 font-medium">Roles</th>
-                        <th className="text-left px-4 py-2 font-medium">Health</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerHost')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerName')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerVersion')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerRoles')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerHealth')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-800/50">
@@ -505,7 +507,7 @@ export function NodeStats() {
                           </td>
                           <td className="px-4 py-2 text-zinc-400">{peer.friendlyName || '—'}</td>
                           <td className="px-4 py-2 text-zinc-400">{formatVersion(peer.version)}</td>
-                          <td className="px-4 py-2 text-zinc-400">{roleLabel(peer.roles)}</td>
+                          <td className="px-4 py-2 text-zinc-400">{roleLabel(peer.roles, t)}</td>
                           <td className="px-4 py-2">
                             <HealthDot status="up" />
                           </td>
