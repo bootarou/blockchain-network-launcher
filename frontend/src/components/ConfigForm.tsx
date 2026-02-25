@@ -6,11 +6,13 @@ import {
   GATEWAY_FIELDS,
   DEFAULT_NODE,
   DEFAULT_GATEWAY,
+  DEFAULT_INFLATION_ENTRY,
   PRESET_OVERRIDES,
   type PresetConfig,
   type FieldMeta,
   type NodeConfig,
   type GatewayConfig,
+  type InflationEntry,
 } from '../constants';
 import {
   Network,
@@ -38,6 +40,7 @@ import {
   Users,
   ShieldCheck,
   Send,
+  TrendingDown,
 } from 'lucide-react';
 import { configToYaml } from '../lib/utils';
 
@@ -58,6 +61,7 @@ const ICON_MAP: Record<string, React.ElementType> = {
   multisig: Users,
   restriction: ShieldCheck,
   transfer: Send,
+  inflation: TrendingDown,
   nodes: Server,
   gateways: Router,
   explorer: Globe,
@@ -305,6 +309,25 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     onChange({ ...config, gateways: config.gateways.filter((_, i) => i !== index) });
   };
 
+  // Inflation helpers
+  const handleInflationChange = (index: number, key: string, value: unknown) => {
+    const updated = config.inflation.map((e, i) =>
+      i === index ? { ...e, [key]: key === 'startHeight' ? Number(value) : value } : e,
+    );
+    onChange({ ...config, inflation: updated });
+  };
+  const addInflation = () => {
+    const last = config.inflation[config.inflation.length - 1];
+    const nextHeight = last ? last.startHeight + 5760 : 2;
+    onChange({
+      ...config,
+      inflation: [...config.inflation, { ...DEFAULT_INFLATION_ENTRY, startHeight: nextHeight }],
+    });
+  };
+  const removeInflation = (index: number) => {
+    onChange({ ...config, inflation: config.inflation.filter((_, i) => i !== index) });
+  };
+
   // Current category
   const category = CATEGORIES.find((c) => c.id === activeTab)!;
 
@@ -378,6 +401,102 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
       );
     }
 
+    if (activeTab === 'inflation') {
+      const isPublic = config.preset === 'testnet' || config.preset === 'mainnet';
+      const inputBase =
+        'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
+
+      return (
+        <div className="space-y-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xl font-semibold text-indigo-300">{category.label}</h3>
+              <p className="text-xs text-zinc-500 mt-1">{category.description}</p>
+            </div>
+            {!isPublic && (
+              <button
+                onClick={addInflation}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                <Plus className="w-4 h-4" /> エントリ追加
+              </button>
+            )}
+          </div>
+
+          {isPublic ? (
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-5 text-sm text-blue-300 space-y-2">
+              <p className="font-medium">ℹ️ 公開ネットワーク (testnet / mainnet)</p>
+              <p className="text-blue-400/80">
+                インフレスケジュールはネットワーク標準値が自動適用されるため、カスタム設定は無効です。
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Column headers */}
+              <div className="grid grid-cols-[1fr_1.5fr_auto] gap-3 px-1">
+                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Starting Height</span>
+                <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Amount (per block, atomic)</span>
+                <span className="w-9" />
+              </div>
+
+              {/* Entries */}
+              <div className="space-y-2">
+                {config.inflation.map((entry, i) => (
+                  <div key={i} className="grid grid-cols-[1fr_1.5fr_auto] gap-3 items-center">
+                    <input
+                      type="number"
+                      value={entry.startHeight}
+                      min={2}
+                      onChange={(e) => handleInflationChange(i, 'startHeight', e.target.value)}
+                      className={inputBase}
+                      placeholder="2"
+                    />
+                    <input
+                      type="text"
+                      value={entry.amount}
+                      onChange={(e) => handleInflationChange(i, 'amount', e.target.value)}
+                      className={inputBase}
+                      placeholder="0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeInflation(i)}
+                      className="p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-colors"
+                      title="削除"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {config.inflation.length === 0 && (
+                <p className="text-zinc-600 text-sm italic text-center py-8">
+                  インフレエントリがありません。「エントリ追加」をクリックして設定を開始してください。
+                </p>
+              )}
+
+              {/* Help text */}
+              <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4 space-y-2 text-xs text-zinc-500">
+                <p>
+                  <span className="text-zinc-400 font-medium">💡 使い方:</span>{' '}
+                  各エントリは指定ブロック高からの「1ブロックあたり報酬額」を定義します（atomic単位）。
+                </p>
+                <p>
+                  <span className="text-zinc-400">例:</span> height=2, amount=95000000 →
+                  ブロック2から1ブロックあたり 95,000,000 micro XYM を報酬として新規発行
+                </p>
+                <p>
+                  <span className="text-zinc-400">ゼロインフレ:</span> amount=0 で報酬なし（デフォルト）。
+                  報酬を段階的に減少させるには、異なるブロック高で複数エントリを追加してください。
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
     // Generic category (general, images, network, explorer)
     // Split boolean fields from the rest for cleaner layout
     const boolFields = category.fields.filter((f) => f.type === 'boolean');
@@ -430,6 +549,9 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
                 )}
                 {cat.id === 'gateways' && (
                   <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.gateways.length}</span>
+                )}
+                {cat.id === 'inflation' && (
+                  <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.inflation.length}</span>
                 )}
               </button>
             );

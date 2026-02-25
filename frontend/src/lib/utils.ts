@@ -205,6 +205,15 @@ export function configToYaml(config: PresetConfig): string {
     doc.faucet = { port: config.faucetPort, amount: config.faucetAmount };
   }
 
+  // Inflation schedule (for custom/private networks)
+  if (config.inflation && config.inflation.length > 0) {
+    const inflObj: Record<string, unknown> = {};
+    for (const entry of config.inflation) {
+      inflObj[`starting-at-height-${entry.startHeight}`] = entry.amount;
+    }
+    doc.inflation = inflObj;
+  }
+
   return objectToYaml(doc, 0);
 }
 
@@ -241,6 +250,7 @@ function mergeWithDefaults(partial: Record<string, unknown>): PresetConfig {
   // Ensure arrays are proper
   if (!Array.isArray(merged.nodes)) merged.nodes = DEFAULT_PRESET.nodes;
   if (!Array.isArray(merged.gateways)) merged.gateways = DEFAULT_PRESET.gateways;
+  if (!Array.isArray(merged.inflation)) merged.inflation = DEFAULT_PRESET.inflation;
 
   return merged as PresetConfig;
 }
@@ -285,6 +295,20 @@ function flattenParsed(obj: Record<string, unknown>): Record<string, unknown> {
     if (fau.port) flat.faucetPort = fau.port;
     if (fau.amount) flat.faucetAmount = fau.amount;
     delete flat.faucet;
+  }
+
+  // Flatten inflation
+  const infl = obj.inflation as Record<string, unknown> | undefined;
+  if (infl && typeof infl === 'object' && !Array.isArray(infl)) {
+    // Convert { 'starting-at-height-2': '95000000', ... } → InflationEntry[]
+    const entries = Object.entries(infl)
+      .map(([k, v]) => {
+        const m = k.match(/starting-at-height-(\d+)/);
+        return m ? { startHeight: Number(m[1]), amount: String(v) } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a!.startHeight - b!.startHeight);
+    flat.inflation = entries;
   }
 
   return flat;

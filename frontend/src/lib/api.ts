@@ -162,4 +162,39 @@ export const api = {
     const res = await fetch(`${API_BASE}/seed`, { method: 'DELETE' });
     return res.json();
   },
+
+  // ── Network Share ──────────────────────────────────────────────────────
+
+  getShareStatus: async () => {
+    const res = await fetch(`${API_BASE}/share/status`);
+    return res.json();
+  },
+
+  getShareExportUrl: (sourceNodeHint?: string) => {
+    const params = sourceNodeHint
+      ? `?sourceNodeHint=${encodeURIComponent(sourceNodeHint)}`
+      : '';
+    return `${API_BASE}/share/export${params}`;
+  },
+
+  importSharePackage: async (
+    file: File,
+  ): Promise<{
+    success: boolean;
+    metadata: Record<string, unknown>;
+    config: Record<string, unknown>;
+    seedFiles: string[];
+    error?: string;
+  }> => {
+    const res = await fetch(`${API_BASE}/share/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Import failed' }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
 };

@@ -16,6 +16,13 @@ import {
   Play,
   Square,
   Activity,
+  Hammer,
+  Share2,
+  Package,
+  Download,
+  Upload,
+  Shield,
+  ArrowRight,
 } from 'lucide-react';
 
 // ── Collapsible Section ──────────────────────────────────────────────────────
@@ -129,9 +136,11 @@ export function HelpPage() {
       {/* Quick TOC */}
       <nav className="bg-zinc-900/50 border border-zinc-800 rounded-xl px-5 py-4">
         <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">目次</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
           {[
             { label: 'クイックスタート', href: '#quickstart', icon: Rocket },
+            { label: 'カスタムNW構築', href: '#create-network', icon: Hammer },
+            { label: '共有パッケージ', href: '#share-network', icon: Share2 },
             { label: '画面の説明', href: '#screens', icon: Monitor },
             { label: 'ネットワーク参加', href: '#join', icon: Globe },
             { label: 'ボタンの説明', href: '#buttons', icon: LayoutDashboard },
@@ -199,6 +208,222 @@ export function HelpPage() {
         </div>
       </Section>
 
+      <Section id="create-network" title="カスタムネットワークの構築" icon={Hammer}>
+        <p>
+          独自のプライベート Symbol ネットワークを一から構築する手順です。
+          ネットワーク管理者として新しいカスタムネットワークを立ち上げ、他のメンバーに共有するまでの流れを説明します。
+        </p>
+
+        <div className="space-y-4 mt-3">
+          <Step n={1}>
+            <strong>Docker Compose でツールを起動</strong>
+            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
+              docker compose up -d --build
+            </div>
+            <p className="mt-1 text-zinc-500">
+              ブラウザで <code className="text-indigo-400">http://localhost:5173</code> にアクセスします。
+            </p>
+          </Step>
+
+          <Step n={2}>
+            <strong>Configuration タブでネットワーク設定</strong>
+            <p className="text-zinc-500 mt-1">以下の重要項目を設定します：</p>
+            <ul className="list-disc list-inside mt-1 space-y-1 text-zinc-400 text-xs">
+              <li><strong>Preset</strong> — <Badge color="indigo">bootstrap</Badge> を選択（新規ネットワーク作成）</li>
+              <li><strong>Assembly</strong> — <Badge color="indigo">dual</Badge>（API＋Peer 両方対応）を推奨</li>
+              <li><strong>Catapult Version</strong> — V3（1.0.3.9）が最新。参加者にも同じバージョンを使ってもらう</li>
+              <li><strong>Network Name</strong> — 任意のネットワーク名</li>
+              <li><strong>Block Generation Target Time</strong> — ブロック生成間隔（デフォルト 30s）</li>
+              <li><strong>Initial Currency</strong> — 初期通貨の発行量</li>
+              <li><strong>Harvesting / Voting</strong> — 必要に応じてパラメータを調整</li>
+            </ul>
+          </Step>
+
+          <Step n={3}>
+            <strong>Dashboard タブで Start</strong>
+            <p className="text-zinc-500 mt-1">
+              パスワードを入力して <Badge color="green">Start</Badge> をクリック。
+              symbol-bootstrap が以下を自動実行します：
+            </p>
+            <ul className="list-disc list-inside mt-1 space-y-1 text-zinc-400 text-xs">
+              <li>鍵ペア・証明書の生成</li>
+              <li>Nemesis ブロック（ジェネシスブロック）の生成</li>
+              <li>Docker コンテナの起動（api-node, rest-gateway, MongoDB）</li>
+            </ul>
+          </Step>
+
+          <Step n={4}>
+            <strong>ヘルスチェック確認</strong>
+            <p className="text-zinc-500 mt-1">
+              ヘッダー右上のインジケーターが{' '}
+              <Badge color="green">apiNode: up</Badge>{' '}
+              <Badge color="green">db: up</Badge>{' '}
+              になればネットワーク構築完了です。
+            </p>
+          </Step>
+
+          <Step n={5}>
+            <strong>Share タブでネットワークを共有</strong>
+            <p className="text-zinc-500 mt-1">
+              「ZIPパッケージをダウンロード」ボタンで共有パッケージを作成し、参加メンバーに配布します。
+              詳細は次の「共有パッケージ」セクションをご覧ください。
+            </p>
+          </Step>
+        </div>
+
+        <div className="mt-4 bg-amber-950/20 border border-amber-900/30 rounded-lg px-4 py-3">
+          <h4 className="font-semibold text-amber-300 flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="w-4 h-4" />
+            注意事項
+          </h4>
+          <ul className="list-disc list-inside space-y-1 text-zinc-400 text-xs">
+            <li>一度生成した Nemesis ブロックは<strong>変更不可</strong>です。パラメータは慎重に設定してください。</li>
+            <li>パスワードは忘れないよう安全に管理してください（証明書・鍵の暗号化に使用されます）。</li>
+            <li>参加者にも同じ <strong>Catapult バージョン</strong> を使用するよう案内してください。</li>
+          </ul>
+        </div>
+      </Section>
+
+      <Section id="share-network" title="ネットワーク共有パッケージ" icon={Share2}>
+        <p>
+          Share タブでは、カスタムネットワークの設定一式を <code className="text-sky-400">.symbol-network.zip</code> ファイルにまとめて
+          エクスポート／インポートできます。手動で Seed ファイルやプリセットを個別にやり取りする必要がなくなります。
+        </p>
+
+        <h4 className="font-semibold text-zinc-100 mt-4 mb-2 flex items-center gap-2">
+          <Package className="w-4 h-4 text-sky-400" />
+          ZIPパッケージの中身
+        </h4>
+        <Table
+          headers={['ファイル', '内容']}
+          rows={[
+            ['metadata.json', 'ネットワーク名、Generation Hash、Catapult バージョン、エクスポート日時'],
+            ['custom-preset.yml', 'ネットワークパラメータ全体（symbol-bootstrap 用カスタムプリセット）'],
+            ['ui-meta.json', 'UI メタデータ（preset, assembly, catapultVersion, sourceNodeUrl 等）'],
+            ['seed/00000/00001.dat', <><Badge color="red">必須</Badge> Nemesis ブロックデータ</>],
+            ['seed/00000/00001.stmt', <><Badge color="yellow">推奨</Badge> Nemesis ステートメント</>],
+            ['seed/00000/hashes.dat', <><Badge color="yellow">推奨</Badge> ブロックハッシュデータ</>],
+            ['seed/00000/00001.proof', <><Badge color="zinc">任意</Badge> ファイナライゼーション証明</>],
+          ]}
+        />
+
+        <h4 className="font-semibold text-zinc-100 mt-5 mb-2 flex items-center gap-2">
+          <Download className="w-4 h-4 text-sky-400" />
+          エクスポート手順（ネットワーク管理者）
+        </h4>
+        <div className="space-y-3">
+          <Step n={1}>
+            <strong>ネットワークを構築＆起動済みであることを確認</strong>
+            <p className="text-zinc-500">
+              Configuration で設定し、Dashboard から Start して、ヘルスチェックが通っている状態が必要です。
+            </p>
+          </Step>
+          <Step n={2}>
+            <strong>Share タブを開く</strong>
+            <p className="text-zinc-500">
+              「エクスポート準備状況」に 3 つ全てチェックが付いていることを確認します。
+            </p>
+          </Step>
+          <Step n={3}>
+            <strong>接続先 URL を確認・修正</strong>
+            <p className="text-zinc-500">
+              自動検出された IP アドレスが表示されます。Docker 環境では内部 IP になる場合があるため、
+              <strong className="text-amber-300">外部からアクセス可能なグローバル IP またはドメイン名</strong>に修正してください。
+              ポートはデフォルトで 3000（REST Gateway）です。
+            </p>
+          </Step>
+          <Step n={4}>
+            <strong>「ZIPパッケージをダウンロード」をクリック</strong>
+            <p className="text-zinc-500">
+              セキュリティ確認ダイアログが表示されます。内容を確認して「エクスポートする」をクリックするとZIPファイルがダウンロードされます。
+            </p>
+          </Step>
+          <Step n={5}>
+            <strong>参加者に ZIP ファイルを配布</strong>
+            <p className="text-zinc-500">
+              メール、チャット、ファイル共有サービスなどでメンバーに配布してください。
+            </p>
+          </Step>
+        </div>
+
+        <h4 className="font-semibold text-zinc-100 mt-5 mb-2 flex items-center gap-2">
+          <Upload className="w-4 h-4 text-emerald-400" />
+          インポート手順（参加者）
+        </h4>
+        <div className="space-y-3">
+          <Step n={1}>
+            <strong>Docker Compose でツールを起動</strong>
+            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
+              docker compose up -d --build
+            </div>
+          </Step>
+          <Step n={2}>
+            <strong>Share タブを開く</strong>
+            <p className="text-zinc-500">
+              下部の「共有パッケージをインポート」セクションに ZIP ファイルをドラッグ＆ドロップします。
+            </p>
+          </Step>
+          <Step n={3}>
+            <strong>インポート内容を確認</strong>
+            <p className="text-zinc-500">
+              ネットワーク名、Catapult バージョン、Generation Hash、Seed ファイル数が表示されます。
+              内容が正しいことを確認してください。
+            </p>
+          </Step>
+          <Step n={4}>
+            <strong>「Configuration に反映」をクリック</strong>
+            <p className="text-zinc-500">
+              自動で Configuration タブに切り替わり、全設定が反映されます。
+              必要に応じて Configuration タブでノード名等を調整してください。
+            </p>
+          </Step>
+          <Step n={5}>
+            <strong>Dashboard タブで Start</strong>
+            <p className="text-zinc-500">
+              パスワードを入力して Start をクリックすれば、カスタムネットワークへの参加が完了します。
+              ヘルスチェックが緑になり、ブロック同期が始まるのを待ちます。
+            </p>
+          </Step>
+        </div>
+
+        <div className="mt-4 bg-indigo-950/20 border border-indigo-900/30 rounded-lg px-4 py-3">
+          <h4 className="font-semibold text-indigo-300 flex items-center gap-1.5 mb-1">
+            <Shield className="w-4 h-4" />
+            セキュリティについて
+          </h4>
+          <ul className="list-disc list-inside space-y-1 text-zinc-400 text-xs">
+            <li>共有パッケージに<strong>秘密鍵は含まれません</strong>。各参加者のノード鍵は Start 時に自動生成されます。</li>
+            <li>addresses.yml も含まれません。安心して配布できます。</li>
+            <li>ネットワーク設定全体が含まれるため、信頼できる相手にのみ共有してください。</li>
+          </ul>
+        </div>
+
+        <h4 className="font-semibold text-zinc-100 mt-5 mb-2">共有方法の比較</h4>
+        <Table
+          headers={['方法', '含まれるもの', '手順', '推奨場面']}
+          rows={[
+            [
+              <strong className="text-sky-300">Share タブ（ZIP）</strong>,
+              'プリセット + Seed + メタデータ',
+              '1ファイルをドロップするだけ',
+              '一番簡単。初めての共有に推奨',
+            ],
+            [
+              <strong className="text-emerald-300">Join Network タブ</strong>,
+              'REST API からの設定取得 + 手動 Seed',
+              'URL 入力 → Seed 個別アップロード',
+              '既に稼働中ノードがある場合',
+            ],
+            [
+              <strong className="text-zinc-300">手動</strong>,
+              'YAML ダウンロード + Seed を個別送付',
+              'ファイルを複数やり取り',
+              '上級者向け / カスタマイズが必要な場合',
+            ],
+          ]}
+        />
+      </Section>
+
       <Section id="screens" title="画面の説明" icon={Monitor}>
         <div className="space-y-4">
           <div>
@@ -232,6 +457,17 @@ export function HelpPage() {
             <p>
               ノードの操作・監視を行うメイン画面です。Start/Stop/Reset 等の操作ボタンと、
               リアルタイムのターミナルログを表示します。設定の YAML/JSON エクスポート・インポートも可能です。
+            </p>
+          </div>
+
+          <div>
+            <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
+              <Share2 className="w-4 h-4 text-sky-400" />
+              Share
+            </h4>
+            <p>
+              構築したカスタムネットワークを共有パッケージ（.symbol-network.zip）としてエクスポートしたり、
+              受け取ったパッケージをインポートする画面です。Seed・プリセット・接続先情報が1ファイルにまとまります。
             </p>
           </div>
 

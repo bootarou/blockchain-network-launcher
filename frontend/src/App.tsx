@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Server, RotateCcw, Globe, HelpCircle } from 'lucide-react';
+import { Server, RotateCcw, Globe, HelpCircle, Share2 } from 'lucide-react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { JoinNetwork } from './components/JoinNetwork';
+import { ShareNetwork } from './components/ShareNetwork';
 import { HelpPage } from './components/HelpPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
 import { DEFAULT_PRESET, type PresetConfig } from './constants';
@@ -10,7 +11,7 @@ import { api } from './lib/api';
 
 function App() {
   const [config, setConfig] = useState<PresetConfig>(DEFAULT_PRESET);
-  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'help'>('config');
+  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'share' | 'help'>('config');
 
   // Load saved preset from backend on mount
   useEffect(() => {
@@ -34,6 +35,12 @@ function App() {
 
   /** Import from Join Network — apply and switch to Configuration tab */
   const handleJoinImport = (imported: PresetConfig) => {
+    setConfig({ ...DEFAULT_PRESET, ...imported });
+    setActivePanel('config');
+  };
+
+  /** Import from Share Network — apply and switch to Configuration tab */
+  const handleShareImport = (imported: PresetConfig) => {
     setConfig({ ...DEFAULT_PRESET, ...imported });
     setActivePanel('config');
   };
@@ -87,6 +94,17 @@ function App() {
                 Join Network
               </button>
               <button
+                onClick={() => setActivePanel('share')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  activePanel === 'share'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                Share
+              </button>
+              <button
                 onClick={() => setActivePanel('dashboard')}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
                   activePanel === 'dashboard'
@@ -128,6 +146,15 @@ function App() {
           <div className="hidden xl:block">
             <HelpPage />
           </div>
+        ) : activePanel === 'share' ? (
+          <div className="hidden xl:grid xl:grid-cols-2 xl:gap-8">
+            <div>
+              <ShareNetwork onConfigImport={handleShareImport} />
+            </div>
+            <div className="sticky top-24 self-start">
+              <Dashboard config={config} onConfigImport={handleConfigImport} />
+            </div>
+          </div>
         ) : (
         <div className="hidden xl:grid xl:grid-cols-2 xl:gap-8">
           <div>
@@ -149,6 +176,8 @@ function App() {
             <ConfigForm config={config} onChange={handleConfigChange} />
           ) : activePanel === 'join' ? (
             <JoinNetwork onConfigImport={handleJoinImport} />
+          ) : activePanel === 'share' ? (
+            <ShareNetwork onConfigImport={handleShareImport} />
           ) : activePanel === 'help' ? (
             <HelpPage />
           ) : (

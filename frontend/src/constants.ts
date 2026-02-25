@@ -117,6 +117,15 @@ export interface GatewayConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Inflation entry type
+// ---------------------------------------------------------------------------
+
+export interface InflationEntry {
+  startHeight: number;
+  amount: string;
+}
+
+// ---------------------------------------------------------------------------
 // Complete preset config type
 // ---------------------------------------------------------------------------
 
@@ -244,6 +253,9 @@ export interface PresetConfig {
   // Nodes & Gateways
   nodes: NodeConfig[];
   gateways: GatewayConfig[];
+
+  // Inflation
+  inflation: InflationEntry[];
 
   // Explorer / Faucet
   explorerEnabled: boolean;
@@ -464,6 +476,13 @@ export const CATEGORIES: CategoryMeta[] = [
     ],
   },
   {
+    id: 'inflation',
+    label: 'インフレーション',
+    icon: 'inflation',
+    description: 'ブロック報酬(インフレーション)スケジュール',
+    fields: [],
+  },
+  {
     id: 'nodes',
     label: 'Nodes',
     icon: 'nodes',
@@ -519,6 +538,16 @@ export const GATEWAY_FIELDS: FieldMeta[] = [
   { key: 'throttlingBurst', label: 'Throttle Burst', type: 'number', description: 'バースト上限', min: 1 },
   { key: 'throttlingRate', label: 'Throttle Rate', type: 'number', description: 'レート上限', min: 1 },
 ];
+
+export const INFLATION_FIELDS: FieldMeta[] = [
+  { key: 'startHeight', label: 'Starting Height', type: 'number', description: '適用開始ブロック高', min: 2 },
+  { key: 'amount', label: 'Amount (per block)', type: 'text', description: 'ブロックあたりの報酬額 (atomic単位)' },
+];
+
+export const DEFAULT_INFLATION_ENTRY: InflationEntry = {
+  startHeight: 2,
+  amount: '0',
+};
 
 // ---------------------------------------------------------------------------
 // Default templates
@@ -686,6 +715,8 @@ export const DEFAULT_PRESET: PresetConfig = {
     apiNodeName: 'api-node-0', host: 'localhost', port: 3000, databaseHost: 'db',
     throttlingBurst: 80, throttlingRate: 60,
   }],
+
+  inflation: [{ startHeight: 2, amount: '0' }],
 
   explorerEnabled: false, explorerPort: 8090,
   faucetEnabled: false, faucetPort: 4000, faucetAmount: 500000000,

@@ -6,6 +6,8 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
+import archiver from 'archiver';
+import AdmZip from 'adm-zip';
 
 // =============================================================================
 // Setup
@@ -338,6 +340,15 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     doc.faucet = { port: flat.faucetPort ?? 4000, amount: flat.faucetAmount ?? 500000000 };
   }
 
+  // ── Inflation schedule (custom/private networks) ──
+  if (Array.isArray(flat.inflation) && flat.inflation.length > 0) {
+    const inflObj: Record<string, unknown> = {};
+    for (const entry of flat.inflation as { startHeight: number; amount: string }[]) {
+      inflObj[`starting-at-height-${entry.startHeight}`] = entry.amount;
+    }
+    doc.inflation = inflObj;
+  }
+
   return doc;
 }
 
@@ -389,6 +400,19 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
     if (fau.amount) flat.faucetAmount = fau.amount;
   }
 
+  // Flatten inflation
+  const infl = doc.inflation as Record<string, unknown> | undefined;
+  if (infl && typeof infl === 'object' && !Array.isArray(infl)) {
+    const entries = Object.entries(infl)
+      .map(([k, v]) => {
+        const m = k.match(/starting-at-height-(\d+)/);
+        return m ? { startHeight: Number(m[1]), amount: String(v) } : null;
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.startHeight - b.startHeight);
+    flat.inflation = entries;
+  }
+
   return flat;
 }
 
@@ -412,6 +436,10 @@ app.post('/api/preset', (req, res) => {
     // Persist source node URL for peer discovery on start
     if (configData.sourceNodeUrl) {
       uiMeta.sourceNodeUrl = String(configData.sourceNodeUrl);
+    }
+    // Persist inflation entries for config-inflation.properties patching
+    if (Array.isArray(configData.inflation)) {
+      uiMeta.inflation = configData.inflation;
     }
     fs.writeFileSync(UI_META_PATH, JSON.stringify(uiMeta, null, 2), 'utf8');
 
@@ -1538,11 +1566,12 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
   //     that define harvesting rewards.  Without these, importance calculation
   //     at the first importanceGrouping boundary block (e.g. block 5760)
   //     will produce a hash mismatch (Failure_Core_Importance_Block_Mismatch).
-  //   - For custom/private networks: replace with zero-inflation because the
-  //     public preset's inflation schedule may be incompatible with the
-  //     custom network's initialCurrencyAtomicUnits / maxMosaicAtomicUnits.
+  //   - For custom/private networks: use the user-defined inflation schedule
+  //     from the UI (stored in .ui-meta.json). Falls back to zero-inflation
+  //     if no custom entries are configured.
   // -----------------------------------------------------------------------
   let isPublicNetwork = false;
+  let customInflationEntries: { startHeight: number; amount: string }[] = [];
   try {
     if (fs.existsSync(UI_META_PATH)) {
       const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
@@ -1550,27 +1579,42 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
       if (preset === 'testnet' || preset === 'mainnet') {
         isPublicNetwork = true;
       }
+      if (Array.isArray(meta.inflation)) {
+        customInflationEntries = meta.inflation;
+      }
     }
   } catch { /* ignore */ }
 
   if (isPublicNetwork) {
     broadcastLog(`[Network] ℹ️  Public network detected – keeping original config-inflation.properties\n`);
   } else {
-    const zeroInflation = '[inflation]\n\nstarting-at-height-2 = 0\n';
+    // Build config-inflation.properties from custom entries (or default zero-inflation)
+    let inflationContent = '[inflation]\n\n';
+    if (customInflationEntries.length > 0) {
+      // Sort by height and format each entry
+      const sorted = [...customInflationEntries].sort((a, b) => a.startHeight - b.startHeight);
+      for (const entry of sorted) {
+        inflationContent += `starting-at-height-${entry.startHeight} = ${entry.amount}\n`;
+      }
+    } else {
+      inflationContent += 'starting-at-height-2 = 0\n';
+    }
+
     let inflationPatched = 0;
 
     for (const nodeName of fs.readdirSync(nodesDir)) {
       for (const configDir of ['server-config', 'broker-config']) {
         const inflPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-inflation.properties');
         if (fs.existsSync(inflPath)) {
-          fs.writeFileSync(inflPath, zeroInflation, 'utf-8');
+          fs.writeFileSync(inflPath, inflationContent, 'utf-8');
           inflationPatched++;
         }
       }
     }
 
     if (inflationPatched > 0) {
-      broadcastLog(`[Network] ✅ Reset config-inflation.properties to zero-inflation (${inflationPatched} files)\n`);
+      const entryCount = customInflationEntries.length || 1;
+      broadcastLog(`[Network] ✅ config-inflation.properties を更新 (${entryCount} entries, ${inflationPatched} files)\n`);
     }
   }
 }
@@ -2422,6 +2466,286 @@ app.delete('/api/seed', (_req, res) => {
       fs.rmSync(SEED_DIR, { recursive: true, force: true });
     }
     res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Network Share endpoints — export / import as ZIP
+// =============================================================================
+
+/**
+ * Detect the host IP address for the sourceNodeHint.
+ * Tries multiple strategies:
+ *  1) Docker host gateway (inside container)
+ *  2) hostname -I (Linux)
+ *  3) Node.js os.networkInterfaces() fallback
+ */
+function detectHostIp(): string {
+  try {
+    const { execSync } = require('child_process');
+    // Strategy 1: Docker host gateway
+    try {
+      const gw = execSync("ip route | awk '/default/ {print $3}'", { encoding: 'utf-8', timeout: 3000 }).trim();
+      if (gw && gw !== '127.0.0.1') return gw;
+    } catch { /* ignore */ }
+    // Strategy 2: hostname -I
+    try {
+      const ips = execSync('hostname -I 2>/dev/null', { encoding: 'utf-8', timeout: 3000 }).trim().split(/\s+/);
+      const ext = ips.find((ip: string) => ip && !ip.startsWith('127.') && !ip.startsWith('172.'));
+      if (ext) return ext;
+      if (ips[0]) return ips[0];
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+
+  // Strategy 3: Node.js network interfaces
+  const os = require('os');
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const iface of nets[name] ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'YOUR_HOST_IP';
+}
+
+/** GET /api/share/status — check whether a shareable network exists */
+app.get('/api/share/status', (_req, res) => {
+  try {
+    const hasPreset = fs.existsSync(PRESET_PATH);
+    const hasMeta = fs.existsSync(UI_META_PATH);
+
+    // Seed can come from imported (shared/seed/) or generated (target/nemesis/seed/)
+    const importedSeed = path.join(SEED_DIR, '00000', '00001.dat');
+    const generatedSeed = path.join(TARGET_DIR, 'nemesis', 'seed', '00000', '00001.dat');
+    const hasSeed = fs.existsSync(importedSeed) || fs.existsSync(generatedSeed);
+    const seedSource: 'imported' | 'generated' | 'none' =
+      fs.existsSync(importedSeed) ? 'imported' :
+      fs.existsSync(generatedSeed) ? 'generated' : 'none';
+
+    // Read network name & generation hash for display
+    let networkName = '';
+    let generationHashSeed = '';
+    if (hasMeta) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+        networkName = meta.networkName || meta.friendlyName || '';
+      } catch { /* ignore */ }
+    }
+    if (hasPreset) {
+      try {
+        const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+        const np = doc?.networkProperties as Record<string, unknown> | undefined;
+        generationHashSeed = String(np?.nemesisGenerationHashSeed || '');
+      } catch { /* ignore */ }
+    }
+
+    const detectedIp = detectHostIp();
+
+    res.json({
+      canExport: hasPreset && hasSeed,
+      hasPreset,
+      hasMeta,
+      hasSeed,
+      seedSource,
+      networkName,
+      generationHashSeed,
+      detectedIp,
+      nodeRestPort: NODE_REST_PORT,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/share/export — download a .symbol-network.zip package */
+app.get('/api/share/export', (req, res) => {
+  try {
+    if (!fs.existsSync(PRESET_PATH)) {
+      return res.status(400).json({ error: 'No preset file found. Configure and start the network first.' });
+    }
+
+    const sourceNodeHint = String(req.query.sourceNodeHint || '') || undefined;
+
+    // Determine seed source directory
+    const importedSeedDir = path.join(SEED_DIR, '00000');
+    const generatedSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+    const seedSrcDir = fs.existsSync(path.join(importedSeedDir, '00001.dat'))
+      ? importedSeedDir
+      : fs.existsSync(path.join(generatedSeedDir, '00001.dat'))
+        ? generatedSeedDir
+        : null;
+
+    if (!seedSrcDir) {
+      return res.status(400).json({ error: 'No nemesis seed data found. Start the network at least once first.' });
+    }
+
+    // Read metadata
+    let uiMeta: Record<string, unknown> = {};
+    if (fs.existsSync(UI_META_PATH)) {
+      try { uiMeta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8')); } catch { /* */ }
+    }
+    // Override sourceNodeUrl in the export if user provided a hint
+    if (sourceNodeHint) {
+      uiMeta.sourceNodeUrl = sourceNodeHint;
+    }
+
+    // Build metadata.json
+    const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const np = presetDoc?.networkProperties as Record<string, unknown> | undefined;
+    const metadata = {
+      formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      networkName: uiMeta.networkName || uiMeta.friendlyName || '',
+      generationHashSeed: np?.nemesisGenerationHashSeed || '',
+      catapultVersion: uiMeta.catapultVersion || 'v3',
+      sourceNodeHint: sourceNodeHint || uiMeta.sourceNodeUrl || '',
+    };
+
+    // Determine safe filename
+    const safeName = String(metadata.networkName || 'symbol-network').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.symbol-network.zip"`);
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err: Error) => {
+      broadcastLog(`[Share] ❌ Export error: ${err.message}\n`);
+      if (!res.headersSent) res.status(500).end();
+    });
+    archive.pipe(res);
+
+    // 1) metadata.json
+    archive.append(JSON.stringify(metadata, null, 2), { name: 'metadata.json' });
+
+    // 2) custom-preset.yml
+    archive.file(PRESET_PATH, { name: 'custom-preset.yml' });
+
+    // 3) ui-meta.json
+    archive.append(JSON.stringify(uiMeta, null, 2), { name: 'ui-meta.json' });
+
+    // 4) seed files
+    const seedFiles = ['00001.dat', '00001.stmt', 'hashes.dat', '00001.proof', 'proof.heights.dat'];
+    for (const f of seedFiles) {
+      const fp = path.join(seedSrcDir, f);
+      if (fs.existsSync(fp)) {
+        archive.file(fp, { name: `seed/00000/${f}` });
+      }
+    }
+    // Root-level seed index files
+    const seedParent = path.dirname(seedSrcDir);
+    for (const f of ['index.dat', 'proof.index.dat']) {
+      const fp = path.join(seedParent, f);
+      if (fs.existsSync(fp)) {
+        archive.file(fp, { name: `seed/${f}` });
+      }
+    }
+
+    archive.finalize();
+    broadcastLog(`[Share] ✅ Exporting network package: ${safeName}.symbol-network.zip\n`);
+  } catch (err: any) {
+    broadcastLog(`[Share] ❌ Export failed: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/share/import — upload a .symbol-network.zip and unpack it */
+app.post('/api/share/import', (req, res) => {
+  try {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const zipBuf = Buffer.concat(chunks);
+        if (zipBuf.length < 4) {
+          return res.status(400).json({ error: 'Empty or invalid ZIP file.' });
+        }
+
+        const zip = new AdmZip(zipBuf);
+        const entries = zip.getEntries();
+
+        // Validate required files exist in ZIP
+        const entryNames = entries.map((e: any) => e.entryName);
+        if (!entryNames.includes('custom-preset.yml')) {
+          return res.status(400).json({ error: 'Invalid package: custom-preset.yml not found.' });
+        }
+        if (!entryNames.some((n: string) => n === 'seed/00000/00001.dat')) {
+          return res.status(400).json({ error: 'Invalid package: seed/00000/00001.dat not found.' });
+        }
+
+        // Read metadata
+        let metadata: Record<string, unknown> = {};
+        const metaEntry = zip.getEntry('metadata.json');
+        if (metaEntry) {
+          try { metadata = JSON.parse(metaEntry.getData().toString('utf-8')); } catch { /* */ }
+        }
+
+        // 1) Extract custom-preset.yml
+        const presetEntry = zip.getEntry('custom-preset.yml');
+        if (presetEntry) {
+          fs.writeFileSync(PRESET_PATH, presetEntry.getData());
+          broadcastLog(`[Share] 📄 Imported custom-preset.yml (${presetEntry.getData().length}B)\n`);
+        }
+
+        // 2) Extract ui-meta.json
+        const uiMetaEntry = zip.getEntry('ui-meta.json');
+        if (uiMetaEntry) {
+          fs.writeFileSync(UI_META_PATH, uiMetaEntry.getData());
+          broadcastLog(`[Share] 📄 Imported ui-meta.json (${uiMetaEntry.getData().length}B)\n`);
+        }
+
+        // 3) Extract seed files
+        const seedDir00 = path.join(SEED_DIR, '00000');
+        fs.mkdirSync(seedDir00, { recursive: true });
+        const seedEntries = entries.filter((e: any) => e.entryName.startsWith('seed/') && !e.isDirectory);
+        for (const entry of seedEntries) {
+          const relativePath = entry.entryName.replace(/^seed\//, '');
+          // Root-level files (index.dat, proof.index.dat) go to SEED_DIR
+          // Sub-files (00000/*) go to SEED_DIR/00000/
+          const destPath = relativePath.includes('/')
+            ? path.join(SEED_DIR, relativePath)
+            : path.join(SEED_DIR, relativePath);
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          fs.writeFileSync(destPath, entry.getData());
+          broadcastLog(`[Share] 🌱 Imported seed: ${relativePath} (${entry.getData().length}B)\n`);
+        }
+
+        // 4) Build response with imported config for UI
+        let importedConfig: Record<string, unknown> = {};
+        try {
+          const presetData = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          // Flatten if nested
+          if (presetData && presetData.networkProperties) {
+            importedConfig = bootstrapPresetToFlat(presetData);
+          } else {
+            importedConfig = presetData ?? {};
+          }
+          // Merge UI metadata
+          if (fs.existsSync(UI_META_PATH)) {
+            const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+            importedConfig = { ...meta, ...importedConfig };
+          }
+        } catch { /* ignore parse errors */ }
+
+        broadcastLog(`[Share] ✅ Network package imported successfully\n`);
+        res.json({
+          success: true,
+          metadata,
+          config: importedConfig,
+          seedFiles: seedEntries.map((e: any) => e.entryName),
+        });
+      } catch (err: any) {
+        broadcastLog(`[Share] ❌ Import failed: ${err.message}\n`);
+        res.status(400).json({ error: `Failed to process ZIP: ${err.message}` });
+      }
+    });
+    req.on('error', (err) => {
+      res.status(500).json({ error: err.message });
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
