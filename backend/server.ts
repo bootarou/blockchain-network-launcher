@@ -860,6 +860,52 @@ app.post('/api/images/import', (req, res) => {
 // Patch: add missing properties that symbol-bootstrap 1.1.10 omits
 // =============================================================================
 
+/**
+ * Pre-patch symbol-bootstrap mustache templates so that nemgen (which runs
+ * inside `symbol-bootstrap config`) sees all required properties.
+ * This must be called BEFORE `symbol-bootstrap config`.
+ */
+function patchMustacheTemplates(version: CatapultVersionDef) {
+  for (const patch of version.configPatches) {
+    const templatePath = path.join(
+      '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources',
+      patch.file + '.mustache',
+    );
+    if (!fs.existsSync(templatePath)) continue;
+
+    let content = fs.readFileSync(templatePath, 'utf-8');
+    let patched = false;
+
+    for (const [key, defaultValue] of Object.entries(patch.props)) {
+      // Check if key already exists in template (as literal or mustache var)
+      const keyRegex = new RegExp(`^\\s*${key}\\s*=`, 'm');
+      if (keyRegex.test(content)) continue;
+
+      // Find the section and insert at the end of it
+      const sectionIdx = content.indexOf(patch.section);
+      if (sectionIdx === -1) continue;
+
+      const afterSection = content.slice(sectionIdx);
+      const nextSection = afterSection.search(/\n\[(?!\s*$)/);
+      const insertPos = nextSection !== -1
+        ? sectionIdx + nextSection
+        : content.length;
+
+      content =
+        content.slice(0, insertPos).trimEnd() +
+        `\n${key} = ${defaultValue}\n` +
+        (nextSection !== -1 ? '\n' : '') +
+        content.slice(insertPos).trimStart();
+      patched = true;
+    }
+
+    if (patched) {
+      fs.writeFileSync(templatePath, content, 'utf-8');
+      broadcastLog(`[Pre-Patch] Patched mustache template: ${patch.file}.mustache (${patch.section})\n`);
+    }
+  }
+}
+
 /** Describes a set of missing properties to inject into a specific section of a .properties file. */
 interface PropertiesPatch {
   file: string;            // e.g. 'config-node.properties'
@@ -2810,6 +2856,10 @@ app.post('/api/commands/start', async (req, res) => {
       //   patched image and update the preset YAML *before* config runs.
       broadcastLog('[System] Step 0/6 – Ensuring patched server image...\n');
       const patchedTag = await ensurePatchedImage(version);
+
+      // Step 0c: Pre-patch mustache templates so nemgen sees all required props
+      broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
+      patchMustacheTemplates(version);
 
       // Step 1: symbol-bootstrap config  (--upgrade to force regeneration)
       //   Reads custom-preset.yml which now has the patched image name.
