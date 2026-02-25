@@ -866,35 +866,50 @@ app.post('/api/images/import', (req, res) => {
  * This must be called BEFORE `symbol-bootstrap config`.
  */
 function patchMustacheTemplates(version: CatapultVersionDef) {
+  const templateDir = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources';
+
   for (const patch of version.configPatches) {
-    const templatePath = path.join(
-      '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources',
-      patch.file + '.mustache',
-    );
+    const templatePath = path.join(templateDir, patch.file + '.mustache');
     if (!fs.existsSync(templatePath)) continue;
 
     let content = fs.readFileSync(templatePath, 'utf-8');
     let patched = false;
 
     for (const [key, defaultValue] of Object.entries(patch.props)) {
-      // Check if key already exists in template (as literal or mustache var)
+      // Check if key already exists OUTSIDE of mustache conditional blocks.
+      // Keys inside {{#...}}...{{/...}} blocks may not be rendered, so we
+      // must not treat them as "already present".
+      const unconditional = content.replace(/\{\{#[^}]+\}\}[\s\S]*?\{\{\/[^}]+\}\}/g, '');
       const keyRegex = new RegExp(`^\\s*${key}\\s*=`, 'm');
-      if (keyRegex.test(content)) continue;
+      if (keyRegex.test(unconditional)) continue;
 
-      // Find the section and insert at the end of it
+      // Find the section and insert at the end of it (before next section)
       const sectionIdx = content.indexOf(patch.section);
       if (sectionIdx === -1) continue;
 
+      // Find the next real section header or mustache conditional block start
+      // after the target section — insert before whichever comes first.
       const afterSection = content.slice(sectionIdx);
-      const nextSection = afterSection.search(/\n\[(?!\s*$)/);
-      const insertPos = nextSection !== -1
-        ? sectionIdx + nextSection
+      const nextRealSection = afterSection.search(/\n\[(?![{#/])/);
+      const nextMustacheBlock = afterSection.search(/\n\{\{#/);
+      let nextBoundary: number;
+      if (nextRealSection === -1 && nextMustacheBlock === -1) {
+        nextBoundary = -1;
+      } else if (nextRealSection === -1) {
+        nextBoundary = nextMustacheBlock;
+      } else if (nextMustacheBlock === -1) {
+        nextBoundary = nextRealSection;
+      } else {
+        nextBoundary = Math.min(nextRealSection, nextMustacheBlock);
+      }
+      const insertPos = nextBoundary !== -1
+        ? sectionIdx + nextBoundary
         : content.length;
 
       content =
         content.slice(0, insertPos).trimEnd() +
         `\n${key} = ${defaultValue}\n` +
-        (nextSection !== -1 ? '\n' : '') +
+        (nextBoundary !== -1 ? '\n' : '') +
         content.slice(insertPos).trimStart();
       patched = true;
     }
