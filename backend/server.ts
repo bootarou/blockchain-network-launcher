@@ -377,8 +377,15 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
   // Flatten networkProperties
   const np = doc.networkProperties as Record<string, unknown> | undefined;
   if (np) {
-    if (np.nemesisGenerationHashSeed) flat.nemesisGenerationHashSeed = np.nemesisGenerationHashSeed;
-    if (np.epochAdjustment) flat.epochAdjustment = np.epochAdjustment;
+    // Top-level network identity keys
+    const npTopKeys = [
+      'nemesisGenerationHashSeed', 'nemesisSignerPublicKey',
+      'nodeEqualityStrategy', 'epochAdjustment',
+      'networkIdentifier', 'networkType',
+    ];
+    for (const k of npTopKeys) {
+      if (np[k] !== undefined && np[k] !== null && np[k] !== '') flat[k] = np[k];
+    }
 
     const chain = np.chain as Record<string, unknown> | undefined;
     if (chain) Object.assign(flat, chain);
@@ -1042,6 +1049,20 @@ async function ensurePatchedImage(version: CatapultVersionDef): Promise<string> 
       if (doc.symbolServerImage) baseImage = String(doc.symbolServerImage);
     }
   } catch { /* use version default */ }
+
+  // If the preset already has a patched tag (e.g. from a shared package export),
+  // recover the original image name so we can pull it from Docker Hub.
+  if (baseImage.startsWith('symbol-server-patched:')) {
+    const origTag = baseImage.split(':')[1] ?? 'latest';
+    baseImage = `symbolplatform/symbol-server:${origTag}`;
+    broadcastLog(`[Setup] Recovered original image from patched tag: ${baseImage}\n`);
+    // Also fix the preset YAML so it doesn't keep the patched name
+    try {
+      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+      doc.symbolServerImage = baseImage;
+      fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+    } catch { /* best effort */ }
+  }
 
   // Derive patched tag: "symbolplatform/symbol-server:gcc-1.0.3.9" → "symbol-server-patched:gcc-1.0.3.9"
   const tag = baseImage.split(':')[1] ?? 'latest';
@@ -2683,8 +2704,55 @@ app.get('/api/share/export', (req, res) => {
     // 1) metadata.json
     archive.append(JSON.stringify(metadata, null, 2), { name: 'metadata.json' });
 
-    // 2) custom-preset.yml
-    archive.file(PRESET_PATH, { name: 'custom-preset.yml' });
+    // 2) custom-preset.yml — sanitize patched image names back to originals
+    //    so the package works on other machines that don't have local patched images.
+    let presetContent = fs.readFileSync(PRESET_PATH, 'utf-8');
+    presetContent = presetContent.replace(
+      /symbol-server-patched:(\S+)/g,
+      'symbolplatform/symbol-server:$1',
+    );
+
+    // Backfill auto-generated values from TARGET_DIR/preset.yml
+    // (symbol-bootstrap generates nemesisGenerationHashSeed, nemesisSignerPublicKey,
+    //  currencyMosaicId, harvestingMosaicId, etc. which may not be in custom-preset.yml)
+    const generatedPresetPath = path.join(TARGET_DIR, 'preset.yml');
+    if (fs.existsSync(generatedPresetPath)) {
+      try {
+        const genDoc = yaml.load(fs.readFileSync(generatedPresetPath, 'utf-8')) as Record<string, unknown>;
+        const custDoc = yaml.load(presetContent) as Record<string, unknown>;
+        if (custDoc && genDoc) {
+          // Ensure networkProperties exists
+          if (!custDoc.networkProperties) custDoc.networkProperties = {};
+          const np = custDoc.networkProperties as Record<string, unknown>;
+
+          // Backfill top-level networkProperties keys
+          const npBackfillKeys = ['nemesisGenerationHashSeed', 'nemesisSignerPublicKey', 'epochAdjustment'];
+          for (const k of npBackfillKeys) {
+            if (!np[k] && genDoc[k]) {
+              np[k] = genDoc[k];
+              broadcastLog(`[Share] Backfilled ${k} from generated preset\n`);
+            }
+          }
+
+          // Backfill chain keys
+          if (!np.chain) np.chain = {};
+          const chain = np.chain as Record<string, unknown>;
+          const chainBackfillKeys = ['currencyMosaicId', 'harvestingMosaicId'];
+          for (const k of chainBackfillKeys) {
+            if (!chain[k] && genDoc[k]) {
+              chain[k] = genDoc[k];
+              broadcastLog(`[Share] Backfilled chain.${k} from generated preset\n`);
+            }
+          }
+
+          presetContent = yaml.dump(custDoc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false });
+        }
+      } catch (e: any) {
+        broadcastLog(`[Share] ⚠️  Could not backfill generated values: ${e.message}\n`);
+      }
+    }
+
+    archive.append(presetContent, { name: 'custom-preset.yml' });
 
     // 3) ui-meta.json
     archive.append(JSON.stringify(uiMeta, null, 2), { name: 'ui-meta.json' });
