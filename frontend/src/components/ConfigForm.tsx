@@ -7,12 +7,15 @@ import {
   DEFAULT_NODE,
   DEFAULT_GATEWAY,
   DEFAULT_INFLATION_ENTRY,
+  DEFAULT_HARVEST_MOSAIC,
+  NEMESIS_MOSAIC_FIELDS,
   PRESET_OVERRIDES,
   type PresetConfig,
   type FieldMeta,
   type NodeConfig,
   type GatewayConfig,
   type InflationEntry,
+  type NemesisMosaic,
 } from '../constants';
 import {
   Network,
@@ -41,6 +44,7 @@ import {
   ShieldCheck,
   Send,
   TrendingDown,
+  Gem,
 } from 'lucide-react';
 import { configToYaml } from '../lib/utils';
 import { useTranslation } from '../i18n';
@@ -48,6 +52,7 @@ import { useTranslation } from '../i18n';
 // Icon mapping per category
 const ICON_MAP: Record<string, React.ElementType> = {
   general: Settings,
+  nemesisMosaics: Gem,
   images: ImageIcon,
   chain: Blocks,
   fees: Coins,
@@ -341,11 +346,143 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     onChange({ ...config, inflation: config.inflation.filter((_, i) => i !== index) });
   };
 
+  // Nemesis mosaic helpers
+  const handleNemesisMosaicChange = (index: number, key: string, value: unknown) => {
+    const updated = config.nemesisMosaics.map((m, i) =>
+      i === index ? { ...m, [key]: key === 'divisibility' || key === 'duration' ? Number(value) : value } : m,
+    );
+    onChange({ ...config, nemesisMosaics: updated });
+  };
+  const harvestMosaicEnabled = config.nemesisMosaics.length >= 2;
+  const toggleHarvestMosaic = () => {
+    if (harvestMosaicEnabled) {
+      onChange({ ...config, nemesisMosaics: config.nemesisMosaics.slice(0, 1) });
+    } else {
+      onChange({ ...config, nemesisMosaics: [...config.nemesisMosaics, { ...DEFAULT_HARVEST_MOSAIC }] });
+    }
+  };
+
   // Current category
   const category = CATEGORIES.find((c) => c.id === activeTab)!;
 
   // Render content per category
   const renderContent = () => {
+    // ── Nemesis Mosaics ──
+    if (activeTab === 'nemesisMosaics') {
+      const isBootstrap = config.preset === 'bootstrap';
+      const inputBase =
+        'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
+
+      if (!isBootstrap) {
+        return (
+          <div className="space-y-5">
+            <div>
+              <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
+              <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
+            </div>
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-5 text-sm text-blue-300 space-y-2">
+              <p className="font-medium">{t('config.nemesisPublicNotice')}</p>
+              <p className="text-blue-400/80">{t('config.nemesisPublicDesc')}</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-5">
+          <div>
+            <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
+            <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
+          </div>
+
+          {/* Base Namespace */}
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-1">
+              {t('config.nemesisBaseNamespace')}
+              <span className="ml-2 text-xs text-zinc-600" title={t('field.baseNamespace.desc')}>
+                <Info className="inline w-3 h-3" />
+              </span>
+            </label>
+            <input
+              type="text"
+              value={config.baseNamespace ?? 'cat'}
+              onChange={(e) => handleFieldChange('baseNamespace', e.target.value)}
+              placeholder="cat"
+              className={inputBase}
+            />
+            <p className="mt-1 text-xs text-zinc-500">{t('config.nemesisBaseNamespaceHelp')}</p>
+          </div>
+
+          {/* Currency Mosaic (required) */}
+          <div className="border border-indigo-500/30 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 bg-indigo-500/10 border-b border-indigo-500/20">
+              <span className="text-sm font-semibold text-indigo-300">
+                💰 {t('config.nemesisCurrencyTitle')}
+              </span>
+              <span className="ml-2 text-xs text-indigo-400/70">{t('config.nemesisCurrencyRequired')}</span>
+            </div>
+            <div className="p-4 space-y-3 bg-zinc-900/50">
+              {NEMESIS_MOSAIC_FIELDS.map((f) => (
+                <FieldRenderer
+                  key={f.key}
+                  field={f}
+                  value={config.nemesisMosaics[0]?.[f.key as keyof NemesisMosaic]}
+                  onChange={(_key, val) => handleNemesisMosaicChange(0, f.key, val)}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Harvest Mosaic (optional) */}
+          <div className="border border-zinc-700 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 bg-zinc-800/60 border-b border-zinc-700 flex items-center justify-between">
+              <span className="text-sm font-semibold text-zinc-200">
+                🌾 {t('config.nemesisHarvestTitle')}
+              </span>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <span className="text-xs text-zinc-400">{t('config.nemesisHarvestToggle')}</span>
+                <input
+                  type="checkbox"
+                  checked={harvestMosaicEnabled}
+                  onChange={toggleHarvestMosaic}
+                  className="w-5 h-5 rounded border-zinc-600 bg-zinc-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+                />
+              </label>
+            </div>
+            {harvestMosaicEnabled && (
+              <div className="p-4 space-y-3 bg-zinc-900/50">
+                {NEMESIS_MOSAIC_FIELDS.map((f) => (
+                  <FieldRenderer
+                    key={f.key}
+                    field={f}
+                    value={config.nemesisMosaics[1]?.[f.key as keyof NemesisMosaic]}
+                    onChange={(_key, val) => handleNemesisMosaicChange(1, f.key, val)}
+                  />
+                ))}
+              </div>
+            )}
+            {!harvestMosaicEnabled && (
+              <div className="p-4 text-sm text-zinc-500 italic">
+                {t('config.nemesisHarvestDisabledNote')}
+              </div>
+            )}
+          </div>
+
+          {/* Help text */}
+          <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4 space-y-2 text-xs text-zinc-500">
+            <p>
+              <span className="text-zinc-400 font-medium">{t('config.nemesisHelp')}</span>{' '}
+              {t('config.nemesisHelpDesc')}
+            </p>
+            <p>
+              <span className="text-zinc-400">{t('config.nemesisHelpMosaicId')}</span>{' '}
+              {t('config.nemesisHelpMosaicIdDesc')}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     if (activeTab === 'nodes') {
       return (
         <div className="space-y-4">
@@ -555,6 +692,9 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               >
                 <Icon className={`w-5 h-5 ${isActive ? 'text-indigo-400' : 'text-zinc-500'}`} />
                 {t(`cat.${cat.id}.label`, cat.label)}
+                {cat.id === 'nemesisMosaics' && config.preset === 'bootstrap' && (
+                  <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.nemesisMosaics.length}</span>
+                )}
                 {cat.id === 'nodes' && (
                   <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.nodes.length}</span>
                 )}

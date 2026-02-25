@@ -73,6 +73,21 @@ export const ja: TranslationDict = {
   'config.startingHeight': 'Starting Height',
   'config.amount': 'Amount (per block, atomic)',
 
+  // Nemesis Mosaics
+  'config.nemesisPublicNotice': 'ℹ️ 公開ネットワーク (testnet / mainnet)',
+  'config.nemesisPublicDesc': 'ネメシスモザイクはネットワーク標準値が自動適用されるため、カスタム設定は不要です。',
+  'config.nemesisBaseNamespace': 'Base Namespace',
+  'config.nemesisBaseNamespaceHelp': 'モザイク名のプレフィックス (例: cat.currency の "cat")',
+  'config.nemesisCurrencyTitle': 'Currency Mosaic',
+  'config.nemesisCurrencyRequired': '(必須)',
+  'config.nemesisHarvestTitle': 'Harvest Mosaic',
+  'config.nemesisHarvestToggle': '有効化',
+  'config.nemesisHarvestDisabledNote': 'Harvestモザイクは無効です。有効にするとCurrencyとは別のハーベスト用モザイクが生成されます。',
+  'config.nemesisHelp': '💡 使い方:',
+  'config.nemesisHelpDesc': 'Currencyモザイクはネットワークの基軸通貨です。Harvestモザイクを有効にすると、ハーベスト報酬に別のトークンを使用できます。',
+  'config.nemesisHelpMosaicId': 'MosaicID:',
+  'config.nemesisHelpMosaicIdDesc': 'MosaicIDはネットワーク起動時にsymbol-bootstrapが自動生成し、プリセットに書き戻されます。',
+
   // ===========================================================================
   // Node Health Indicator
   // ===========================================================================
@@ -504,6 +519,8 @@ export const ja: TranslationDict = {
   // ===========================================================================
   'cat.general.label': 'General',
   'cat.general.desc': 'ネットワーク基本設定・ジェネシス情報',
+  'cat.nemesisMosaics.label': 'ネメシスモザイク',
+  'cat.nemesisMosaics.desc': 'ネットワーク通貨 (Currency / Harvest) モザイク定義',
   'cat.images.label': 'Images',
   'cat.images.desc': 'Catapultバージョン & Dockerイメージ',
   'cat.chain.label': 'ブロック生成・チェーン',
@@ -635,6 +652,16 @@ export const ja: TranslationDict = {
   'field.faucetEnabled.desc': 'Faucetをデプロイ',
   'field.faucetPort.desc': 'Faucetポート',
   'field.faucetAmount.desc': '1回あたり配布額(atomic)',
+
+  // Nemesis mosaic fields
+  'field.baseNamespace.desc': 'モザイクの基本ネームスペース (例: cat)',
+  'field.nemesisMosaic.name.desc': 'モザイク名 (namespace.name の name 部分)',
+  'field.nemesisMosaic.divisibility.desc': '小数桁数 (0-6)',
+  'field.nemesisMosaic.duration.desc': '有効期間 (ブロック数, 0 = 永続)',
+  'field.nemesisMosaic.supply.desc': '総供給量 (atomic単位)',
+  'field.nemesisMosaic.isTransferable.desc': '転送可能',
+  'field.nemesisMosaic.isSupplyMutable.desc': '供給量変更可能',
+  'field.nemesisMosaic.isRestrictable.desc': '制限設定可能',
 
   // Node fields
   'field.node.name.desc': 'ノード識別子',

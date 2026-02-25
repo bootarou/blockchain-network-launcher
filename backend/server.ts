@@ -349,6 +349,12 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     doc.inflation = inflObj;
   }
 
+  // ── Nemesis mosaics (bootstrap only) ──
+  if (flat.baseNamespace) doc.baseNamespace = flat.baseNamespace;
+  if (Array.isArray(flat.nemesisMosaics) && flat.nemesisMosaics.length > 0) {
+    doc.nemesis = { mosaics: flat.nemesisMosaics };
+  }
+
   return doc;
 }
 
@@ -418,6 +424,13 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
       .filter(Boolean)
       .sort((a: any, b: any) => a.startHeight - b.startHeight);
     flat.inflation = entries;
+  }
+
+  // Flatten nemesis mosaics
+  if (doc.baseNamespace) flat.baseNamespace = doc.baseNamespace;
+  const nemesis = doc.nemesis as Record<string, unknown> | undefined;
+  if (nemesis?.mosaics && Array.isArray(nemesis.mosaics)) {
+    flat.nemesisMosaics = nemesis.mosaics;
   }
 
   return flat;
@@ -1302,6 +1315,60 @@ function forceCorrectDockerComposeImages(targetDir: string) {
     }
   } catch (e: any) {
     broadcastLog(`[Patch] Warning: could not patch docker-compose.yml: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read generated MosaicIDs from config-network.properties after
+// symbol-bootstrap config and write them back to custom-preset.yml.
+// This is needed because bootstrap preset auto-generates the IDs from the
+// nemesis signer + nonce, and we need them in custom-preset.yml for export
+// and display in the UI.
+// ---------------------------------------------------------------------------
+function backfillMosaicIds(targetDir: string): void {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) {
+    broadcastLog('[MosaicID] No nodes directory found — skipping MosaicID backfill\n');
+    return;
+  }
+
+  let currencyId = '';
+  let harvestId = '';
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-network.properties');
+    if (!fs.existsSync(configPath)) continue;
+
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const cm = content.match(/currencyMosaicId\s*=\s*(\S+)/);
+    const hm = content.match(/harvestingMosaicId\s*=\s*(\S+)/);
+    if (cm) currencyId = cm[1];
+    if (hm) harvestId = hm[1];
+    break; // Only need one node
+  }
+
+  if (!currencyId && !harvestId) {
+    broadcastLog('[MosaicID] No MosaicIDs found in generated config\n');
+    return;
+  }
+
+  broadcastLog(`[MosaicID] Generated: currencyMosaicId=${currencyId}, harvestingMosaicId=${harvestId}\n`);
+
+  // Write to custom-preset.yml
+  try {
+    const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    if (!doc.networkProperties) doc.networkProperties = {};
+    const np = doc.networkProperties as Record<string, unknown>;
+    if (!np.chain) np.chain = {};
+    const chain = np.chain as Record<string, unknown>;
+
+    if (currencyId) chain.currencyMosaicId = currencyId;
+    if (harvestId) chain.harvestingMosaicId = harvestId;
+
+    fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
+    broadcastLog('[MosaicID] ✅ Backfilled MosaicIDs to custom-preset.yml\n');
+  } catch (e: any) {
+    broadcastLog(`[MosaicID] ⚠️ Failed to backfill: ${e.message}\n`);
   }
 }
 
@@ -2961,6 +3028,11 @@ app.post('/api/commands/start', async (req, res) => {
         stateWhileRunning: 'starting',
         stateOnSuccess: 'starting',
       });
+
+      // Step 1b: Read generated MosaicIDs from config-network.properties
+      //   and backfill them into custom-preset.yml for export/UI display.
+      broadcastLog('[System] Step 1b – Reading generated MosaicIDs...\n');
+      backfillMosaicIds(TARGET_DIR);
 
       // Step 2: Rewrite generated preset + configs with patched image
       //   Must happen AFTER config so the generated preset.yml exists,

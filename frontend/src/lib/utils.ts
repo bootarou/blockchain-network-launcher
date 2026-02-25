@@ -197,6 +197,14 @@ export function configToYaml(config: PresetConfig): string {
 
   doc.networkProperties = networkProps;
 
+  // Nemesis mosaics (bootstrap only)
+  if (config.baseNamespace) {
+    doc.baseNamespace = config.baseNamespace;
+  }
+  if (config.nemesisMosaics && config.nemesisMosaics.length > 0) {
+    doc.nemesis = { mosaics: config.nemesisMosaics };
+  }
+
   // Explorer / Faucet
   if (config.explorerEnabled) {
     doc.explorer = { port: config.explorerPort };
@@ -251,6 +259,7 @@ function mergeWithDefaults(partial: Record<string, unknown>): PresetConfig {
   if (!Array.isArray(merged.nodes)) merged.nodes = DEFAULT_PRESET.nodes;
   if (!Array.isArray(merged.gateways)) merged.gateways = DEFAULT_PRESET.gateways;
   if (!Array.isArray(merged.inflation)) merged.inflation = DEFAULT_PRESET.inflation;
+  if (!Array.isArray(merged.nemesisMosaics)) merged.nemesisMosaics = DEFAULT_PRESET.nemesisMosaics;
 
   return merged as PresetConfig;
 }
@@ -309,6 +318,13 @@ function flattenParsed(obj: Record<string, unknown>): Record<string, unknown> {
       .filter(Boolean)
       .sort((a, b) => a!.startHeight - b!.startHeight);
     flat.inflation = entries;
+  }
+
+  // Flatten nemesis
+  const nemesis = obj.nemesis as Record<string, unknown> | undefined;
+  if (nemesis?.mosaics && Array.isArray(nemesis.mosaics)) {
+    flat.nemesisMosaics = nemesis.mosaics;
+    delete flat.nemesis;
   }
 
   return flat;

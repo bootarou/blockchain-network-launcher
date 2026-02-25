@@ -126,6 +126,16 @@ export interface InflationEntry {
   amount: string;
 }
 
+export interface NemesisMosaic {
+  name: string;
+  divisibility: number;
+  duration: number;
+  supply: string;
+  isTransferable: boolean;
+  isSupplyMutable: boolean;
+  isRestrictable: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Complete preset config type
 // ---------------------------------------------------------------------------
@@ -251,6 +261,10 @@ export interface PresetConfig {
   // Transfer
   maxMessageSize: number;
 
+  // Nemesis Mosaics (bootstrap only)
+  baseNamespace: string;
+  nemesisMosaics: NemesisMosaic[];
+
   // Nodes & Gateways
   nodes: NodeConfig[];
   gateways: GatewayConfig[];
@@ -293,6 +307,15 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'caCertificateExpirationInDays', label: 'CA Certificate Expiration (days)', type: 'number', description: 'CA証明書の有効期間(日) — デフォルト7300日(約20年)', min: 1 },
       { key: 'nodeCertificateExpirationInDays', label: 'Node Certificate Expiration (days)', type: 'number', description: 'ノード証明書の有効期間(日) — デフォルト375日(約1年)', min: 1 },
       { key: 'certificateExpirationWarningInDays', label: 'Certificate Warning (days)', type: 'number', description: '期限切れ警告を出す日数', min: 1 },
+    ],
+  },
+  {
+    id: 'nemesisMosaics',
+    label: 'ネメシスモザイク',
+    icon: 'nemesisMosaics',
+    description: 'ネットワーク通貨(Currency / Harvest)モザイク定義',
+    fields: [
+      { key: 'baseNamespace', label: 'Base Namespace', type: 'text', description: 'モザイクの基本ネームスペース', placeholder: 'cat' },
     ],
   },
   {
@@ -550,6 +573,36 @@ export const DEFAULT_INFLATION_ENTRY: InflationEntry = {
   amount: '0',
 };
 
+export const NEMESIS_MOSAIC_FIELDS: FieldMeta[] = [
+  { key: 'name', label: 'Mosaic Name', type: 'text', description: 'モザイク名 (namespace.name の name 部分)', placeholder: 'currency' },
+  { key: 'divisibility', label: 'Divisibility', type: 'number', description: '小数桁数', min: 0, max: 6 },
+  { key: 'duration', label: 'Duration', type: 'number', description: '有効期間 (ブロック数, 0 = 永続)', min: 0 },
+  { key: 'supply', label: 'Supply', type: 'text', description: '総供給量 (atomic単位)' },
+  { key: 'isTransferable', label: 'Transferable', type: 'boolean', description: '転送可能' },
+  { key: 'isSupplyMutable', label: 'Supply Mutable', type: 'boolean', description: '供給量変更可能' },
+  { key: 'isRestrictable', label: 'Restrictable', type: 'boolean', description: '制限設定可能' },
+];
+
+export const DEFAULT_CURRENCY_MOSAIC: NemesisMosaic = {
+  name: 'currency',
+  divisibility: 6,
+  duration: 0,
+  supply: '9000000000000000',
+  isTransferable: true,
+  isSupplyMutable: false,
+  isRestrictable: false,
+};
+
+export const DEFAULT_HARVEST_MOSAIC: NemesisMosaic = {
+  name: 'harvest',
+  divisibility: 3,
+  duration: 0,
+  supply: '9000000000000000',
+  isTransferable: true,
+  isSupplyMutable: false,
+  isRestrictable: false,
+};
+
 // ---------------------------------------------------------------------------
 // Default templates
 // ---------------------------------------------------------------------------
@@ -624,6 +677,8 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
     networkName: 'custom-symbol-network', friendlyName: 'custom-network',
     nemesisGenerationHashSeed: '', epochAdjustment: '1573430400s',
     currencyMosaicId: '', harvestingMosaicId: '',
+    baseNamespace: 'cat',
+    nemesisMosaics: [{ name: 'currency', divisibility: 6, duration: 0, supply: '9000000000000000', isTransferable: true, isSupplyMutable: false, isRestrictable: false }],
     totalChainImportance: "7'842'928'625'000'000", initialCurrencyAtomicUnits: "7'842'928'625'000'000",
     minHarvesterBalance: "10'000'000'000", maxHarvesterBalance: "50'000'000'000'000",
     minVoterBalance: "50'000'000'000",
@@ -706,6 +761,12 @@ export const DEFAULT_PRESET: PresetConfig = {
   maxAccountRestrictionValues: 512, maxMosaicRestrictionValues: 20,
 
   maxMessageSize: 1024,
+
+  baseNamespace: 'cat',
+  nemesisMosaics: [{
+    name: 'currency', divisibility: 6, duration: 0, supply: '9000000000000000',
+    isTransferable: true, isSupplyMutable: false, isRestrictable: false,
+  }],
 
   nodes: [{
     name: 'api-node-0', host: 'localhost', friendlyName: 'My API Node', roles: 'Peer,Api',
