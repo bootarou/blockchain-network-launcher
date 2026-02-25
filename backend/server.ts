@@ -352,7 +352,72 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
   // ── Nemesis mosaics (bootstrap only) ──
   if (flat.baseNamespace) doc.baseNamespace = flat.baseNamespace;
   if (Array.isArray(flat.nemesisMosaics) && flat.nemesisMosaics.length > 0) {
-    doc.nemesis = { mosaics: flat.nemesisMosaics };
+    // Ensure supply values are plain numbers (strip apostrophe formatting)
+    const sanitizedMosaics = flat.nemesisMosaics.map((m: any) => {
+      const copy = { ...m };
+      if (typeof copy.supply === 'string') {
+        const stripped = copy.supply.replace(/'/g, '');
+        if (/^\d+$/.test(stripped)) {
+          copy.supply = parseInt(stripped, 10);
+        }
+      }
+      return copy;
+    });
+    doc.nemesis = { mosaics: sanitizedMosaics };
+  }
+
+  // ── Top-level field overrides ──
+  // symbol-bootstrap's mustache templates read fields from the top level of the
+  // merged preset (e.g. {{{toAmount initialCurrencyAtomicUnits}}}). Setting them
+  // only under networkProperties.chain does NOT override the base preset's
+  // top-level values.  We therefore duplicate every chain / plugin field that
+  // could be overridden by the user at the document root so that the mustache
+  // templates pick them up.
+  const topLevelOverrideKeys = [
+    // chain section
+    'enableVerifiableState', 'enableVerifiableReceipts',
+    'blockGenerationTargetTime', 'blockTimeSmoothingFactor',
+    'maxBlockFutureTime',
+    'importanceGrouping', 'importanceActivityPercentage',
+    'maxRollbackBlocks', 'maxDifficultyBlocks',
+    'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
+    'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'maxMosaicAtomicUnits', 'totalChainImportance',
+    'initialCurrencyAtomicUnits',
+    'minHarvesterBalance', 'maxHarvesterBalance',
+    'minVoterBalance', 'votingSetGrouping',
+    'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',
+    'harvestBeneficiaryPercentage', 'harvestNetworkPercentage',
+    // plugin section
+    'maxTransactionsPerAggregate', 'maxCosignaturesPerAggregate',
+    'enableStrictCosignatureCheck', 'enableBondedAggregateSupport',
+    'maxBondedTransactionLifetime',
+    'lockedFundsPerAggregate', 'maxHashLockDuration',
+    'maxSecretLockDuration', 'minProofSize', 'maxProofSize',
+    'maxValueSize',
+    'maxMosaicsPerAccount', 'maxMosaicDuration', 'maxMosaicDivisibility',
+    'mosaicRentalFee',
+    'maxNamespacesPerAccount', 'maxNameSize', 'maxNamespaceDepth',
+    'maxChildNamespaces', 'minNamespaceDuration', 'maxNamespaceDuration',
+    'namespaceGracePeriodDuration', 'reservedRootNamespaceNames',
+    'rootNamespaceRentalFeePerBlock', 'childNamespaceRentalFee',
+    'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
+    'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
+    'maxMessageSize',
+  ];
+  for (const k of topLevelOverrideKeys) {
+    if (flat[k] !== undefined && flat[k] !== null && flat[k] !== '') {
+      // symbol-bootstrap reads top-level fields as-is (no apostrophe stripping).
+      // Values like "50'000'000'000'000" must be converted to plain numbers so
+      // that internal arithmetic (Math.min, Math.floor etc.) works correctly.
+      const raw = flat[k];
+      if (typeof raw === 'string' && /^\d[\d']*$/.test(raw)) {
+        const num = Number(raw.replace(/'/g, ''));
+        doc[k] = isNaN(num) ? raw : num;
+      } else {
+        doc[k] = raw;
+      }
+    }
   }
 
   return doc;

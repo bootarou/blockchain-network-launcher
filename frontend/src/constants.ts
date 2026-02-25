@@ -587,7 +587,7 @@ export const DEFAULT_CURRENCY_MOSAIC: NemesisMosaic = {
   name: 'currency',
   divisibility: 6,
   duration: 0,
-  supply: '9000000000000000',
+  supply: '8998999998000000',
   isTransferable: true,
   isSupplyMutable: false,
   isRestrictable: false,
@@ -597,9 +597,9 @@ export const DEFAULT_HARVEST_MOSAIC: NemesisMosaic = {
   name: 'harvest',
   divisibility: 3,
   duration: 0,
-  supply: '9000000000000000',
+  supply: '15000000',
   isTransferable: true,
-  isSupplyMutable: false,
+  isSupplyMutable: true,
   isRestrictable: false,
 };
 
@@ -678,10 +678,14 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
     nemesisGenerationHashSeed: '', epochAdjustment: '1573430400s',
     currencyMosaicId: '', harvestingMosaicId: '',
     baseNamespace: 'cat',
-    nemesisMosaics: [{ name: 'currency', divisibility: 6, duration: 0, supply: '9000000000000000', isTransferable: true, isSupplyMutable: false, isRestrictable: false }],
-    totalChainImportance: "7'842'928'625'000'000", initialCurrencyAtomicUnits: "7'842'928'625'000'000",
-    minHarvesterBalance: "10'000'000'000", maxHarvesterBalance: "50'000'000'000'000",
-    minVoterBalance: "50'000'000'000",
+    nemesisMosaics: [
+      { name: 'currency', divisibility: 6, duration: 0, supply: '8998999998000000', isTransferable: true, isSupplyMutable: false, isRestrictable: false },
+      { name: 'harvest', divisibility: 3, duration: 0, supply: '15000000', isTransferable: true, isSupplyMutable: true, isRestrictable: false },
+    ],
+    totalChainImportance: "15'000'000", initialCurrencyAtomicUnits: "8'998'999'998'000'000",
+    maxMosaicAtomicUnits: "9'000'000'000'000'000",
+    minHarvesterBalance: "500", maxHarvesterBalance: "50'000'000'000'000",
+    minVoterBalance: "50'000", votingSetGrouping: 720,
     harvestBeneficiaryPercentage: 25, harvestNetworkPercentage: 5, harvestNetworkFeeSinkAddress: '',
     maxTransactionsPerAggregate: 100, maxCosignaturesPerAggregate: 25,
     maxTransactionsPerBlock: 6000, blockGenerationTargetTime: '30s',
@@ -724,17 +728,17 @@ export const DEFAULT_PRESET: PresetConfig = {
   importanceGrouping: 720, importanceActivityPercentage: 5,
   maxRollbackBlocks: 0, maxDifficultyBlocks: 60,
   maxTransactionsPerBlock: 6000, maxBlockCacheSize: '10MB',
-  totalChainImportance: "7'842'928'625'000'000",
-  initialCurrencyAtomicUnits: "7'842'928'625'000'000",
-  maxMosaicAtomicUnits: "8'999'999'999'000'000",
+  totalChainImportance: "15'000'000",
+  initialCurrencyAtomicUnits: "8'998'999'998'000'000",
+  maxMosaicAtomicUnits: "9'000'000'000'000'000",
 
   defaultDynamicFeeMultiplier: 100, maxTransactionLifetime: '6h',
 
-  minHarvesterBalance: "10'000'000'000", maxHarvesterBalance: "50'000'000'000'000",
+  minHarvesterBalance: "500", maxHarvesterBalance: "50'000'000'000'000",
   harvestBeneficiaryPercentage: 25, harvestNetworkPercentage: 5,
   harvestNetworkFeeSinkAddress: '', harvestNetworkFeeSinkAddressV1: '',
 
-  minVoterBalance: "50'000'000'000", votingSetGrouping: 720,
+  minVoterBalance: "50'000", votingSetGrouping: 720,
   maxVotingKeysPerAccount: 3, minVotingKeyLifetime: 28, maxVotingKeyLifetime: 720,
 
   maxTransactionsPerAggregate: 100, maxCosignaturesPerAggregate: 25,
@@ -763,10 +767,10 @@ export const DEFAULT_PRESET: PresetConfig = {
   maxMessageSize: 1024,
 
   baseNamespace: 'cat',
-  nemesisMosaics: [{
-    name: 'currency', divisibility: 6, duration: 0, supply: '9000000000000000',
-    isTransferable: true, isSupplyMutable: false, isRestrictable: false,
-  }],
+  nemesisMosaics: [
+    { name: 'currency', divisibility: 6, duration: 0, supply: '8998999998000000', isTransferable: true, isSupplyMutable: false, isRestrictable: false },
+    { name: 'harvest', divisibility: 3, duration: 0, supply: '15000000', isTransferable: true, isSupplyMutable: true, isRestrictable: false },
+  ],
 
   nodes: [{
     name: 'api-node-0', host: 'localhost', friendlyName: 'My API Node', roles: 'Peer,Api',

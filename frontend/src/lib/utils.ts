@@ -202,7 +202,18 @@ export function configToYaml(config: PresetConfig): string {
     doc.baseNamespace = config.baseNamespace;
   }
   if (config.nemesisMosaics && config.nemesisMosaics.length > 0) {
-    doc.nemesis = { mosaics: config.nemesisMosaics };
+    // Ensure supply values are plain numbers (strip apostrophe formatting)
+    const sanitizedMosaics = config.nemesisMosaics.map((m: any) => {
+      const copy = { ...m };
+      if (typeof copy.supply === 'string') {
+        const stripped = copy.supply.replace(/'/g, '');
+        if (/^\d+$/.test(stripped)) {
+          copy.supply = parseInt(stripped, 10);
+        }
+      }
+      return copy;
+    });
+    doc.nemesis = { mosaics: sanitizedMosaics };
   }
 
   // Explorer / Faucet
@@ -220,6 +231,54 @@ export function configToYaml(config: PresetConfig): string {
       inflObj[`starting-at-height-${entry.startHeight}`] = entry.amount;
     }
     doc.inflation = inflObj;
+  }
+
+  // ── Top-level field overrides ──
+  // symbol-bootstrap's mustache templates read fields from the top level of the
+  // merged preset. Setting them only under networkProperties.chain does NOT
+  // override the base preset values. Duplicate critical fields at the root.
+  const topLevelKeys: (keyof typeof config)[] = [
+    'enableVerifiableState', 'enableVerifiableReceipts',
+    'blockGenerationTargetTime', 'blockTimeSmoothingFactor',
+    'maxBlockFutureTime',
+    'importanceGrouping', 'importanceActivityPercentage',
+    'maxRollbackBlocks', 'maxDifficultyBlocks',
+    'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
+    'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'maxMosaicAtomicUnits', 'totalChainImportance',
+    'initialCurrencyAtomicUnits',
+    'minHarvesterBalance', 'maxHarvesterBalance',
+    'minVoterBalance', 'votingSetGrouping',
+    'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',
+    'harvestBeneficiaryPercentage', 'harvestNetworkPercentage',
+    'maxTransactionsPerAggregate', 'maxCosignaturesPerAggregate',
+    'enableStrictCosignatureCheck', 'enableBondedAggregateSupport',
+    'maxBondedTransactionLifetime',
+    'lockedFundsPerAggregate', 'maxHashLockDuration',
+    'maxSecretLockDuration', 'minProofSize', 'maxProofSize',
+    'maxValueSize',
+    'maxMosaicsPerAccount', 'maxMosaicDuration', 'maxMosaicDivisibility',
+    'mosaicRentalFee',
+    'maxNamespacesPerAccount', 'maxNameSize', 'maxNamespaceDepth',
+    'maxChildNamespaces', 'minNamespaceDuration', 'maxNamespaceDuration',
+    'namespaceGracePeriodDuration', 'reservedRootNamespaceNames',
+    'rootNamespaceRentalFeePerBlock', 'childNamespaceRentalFee',
+    'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
+    'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
+    'maxMessageSize',
+  ];
+  for (const k of topLevelKeys) {
+    const v = config[k];
+    if (v !== undefined && v !== null && v !== '') {
+      // Strip apostrophe formatting from numeric strings so symbol-bootstrap
+      // can use them directly in arithmetic (Math.min etc.).
+      if (typeof v === 'string' && /^\d[\d']*$/.test(v)) {
+        const num = Number(v.replace(/'/g, ''));
+        doc[k] = isNaN(num) ? v : num;
+      } else {
+        doc[k] = v;
+      }
+    }
   }
 
   return objectToYaml(doc, 0);
