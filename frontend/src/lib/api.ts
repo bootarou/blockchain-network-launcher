@@ -207,4 +207,28 @@ export const api = {
     }
     return res.json();
   },
+
+  // ── Address Viewer ─────────────────────────────────────────────────────
+
+  decryptAddresses: async (password: string) => {
+    const res = await fetch(`${API_BASE}/addresses/decrypt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  getAddressBalances: async () => {
+    const res = await fetch(`${API_BASE}/addresses/balances`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
 };

@@ -49,6 +49,32 @@ export const ja: TranslationDict = {
   'dashboard.addressesNotFound': 'addresses.yml がまだ生成されていないか、取得に失敗しました。',
 
   // ===========================================================================
+  // Address Viewer
+  // ===========================================================================
+  'addressViewer.title': 'アドレス情報',
+  'addressViewer.description': 'ネットワーク上の全アカウントのアドレス、公開鍵、残高を確認できます。秘密鍵の表示にはネットワーク暗号化パスワードが必要です。',
+  'addressViewer.loadAddresses': 'アドレスを読み込む',
+  'addressViewer.loadError': 'アドレス情報の取得に失敗しました。ネットワークを起動してください。',
+  'addressViewer.refreshBalances': '残高更新',
+  'addressViewer.showPrivateKeys': '秘密鍵を表示',
+  'addressViewer.hidePrivateKeys': '秘密鍵を隠す',
+  'addressViewer.privateKeysVisible': '⚠️ 秘密鍵が表示されています。画面の共有にご注意ください。',
+  'addressViewer.privateKeysLocked': '秘密鍵はロックされています。表示するにはダッシュボードのパスワードが使用されます。',
+  'addressViewer.privateKeyHidden': '🔒 暗号化済み（表示するには「秘密鍵を表示」をクリック）',
+  'addressViewer.passwordRequired': 'ダッシュボードの「ネットワーク暗号化パスワード」を入力してください。',
+  'addressViewer.decryptFailed': '復号に失敗しました。パスワードが正しいか確認してください。',
+  'addressViewer.address': 'アドレス',
+  'addressViewer.balance': '残高',
+  'addressViewer.publicKey': '公開鍵',
+  'addressViewer.privateKey': '秘密鍵',
+  'addressViewer.balanceUnavailable': 'REST Gateway未接続',
+  'addressViewer.copy': 'コピー',
+  'addressViewer.nemesisSigner': 'Nemesis Signer（ジェネシスアカウント）',
+  'addressViewer.nodes': 'ノード',
+  'addressViewer.mosaics': 'モザイクアカウント',
+  'addressViewer.account': 'アカウント',
+
+  // ===========================================================================
   // ConfigForm
   // ===========================================================================
   'config.addNode': 'Add Node',

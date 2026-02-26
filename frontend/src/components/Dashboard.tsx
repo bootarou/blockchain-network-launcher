@@ -21,6 +21,7 @@ import type { PresetConfig } from '../constants';
 import { TerminalLogs } from './TerminalLogs';
 import { NodeStats } from './NodeStats';
 import { ImageManager } from './ImageManager';
+import { AddressViewer } from './AddressViewer';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -310,7 +311,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
         </div>
       </div>
 
-      {/* ── Addresses viewer ── */}
+      {/* ── Addresses viewer (raw JSON) ── */}
       {addresses && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl">
           <div className="flex justify-between items-center mb-4">
@@ -335,6 +336,9 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
           </pre>
         </div>
       )}
+
+      {/* ── Address Viewer (structured with decrypt & balances) ── */}
+      <AddressViewer password={password} />
 
       {/* ── Docker Images ── */}
       <ImageManager />

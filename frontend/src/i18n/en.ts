@@ -49,6 +49,32 @@ export const en: TranslationDict = {
   'dashboard.addressesNotFound': 'addresses.yml has not been generated yet or could not be retrieved.',
 
   // ===========================================================================
+  // Address Viewer
+  // ===========================================================================
+  'addressViewer.title': 'Address Information',
+  'addressViewer.description': 'View addresses, public keys, and balances of all accounts on the network. Network encryption password is required to view private keys.',
+  'addressViewer.loadAddresses': 'Load Addresses',
+  'addressViewer.loadError': 'Failed to load address information. Please start the network first.',
+  'addressViewer.refreshBalances': 'Refresh Balances',
+  'addressViewer.showPrivateKeys': 'Show Private Keys',
+  'addressViewer.hidePrivateKeys': 'Hide Private Keys',
+  'addressViewer.privateKeysVisible': '⚠️ Private keys are visible. Be careful when sharing your screen.',
+  'addressViewer.privateKeysLocked': 'Private keys are locked. Dashboard password will be used to decrypt.',
+  'addressViewer.privateKeyHidden': '🔒 Encrypted (click "Show Private Keys" to reveal)',
+  'addressViewer.passwordRequired': 'Please enter the Network Encryption Password in the dashboard.',
+  'addressViewer.decryptFailed': 'Decryption failed. Please check that the password is correct.',
+  'addressViewer.address': 'Address',
+  'addressViewer.balance': 'Balance',
+  'addressViewer.publicKey': 'Public Key',
+  'addressViewer.privateKey': 'Private Key',
+  'addressViewer.balanceUnavailable': 'REST Gateway unreachable',
+  'addressViewer.copy': 'Copy',
+  'addressViewer.nemesisSigner': 'Nemesis Signer (Genesis Account)',
+  'addressViewer.nodes': 'Nodes',
+  'addressViewer.mosaics': 'Mosaic Accounts',
+  'addressViewer.account': 'Account',
+
+  // ===========================================================================
   // ConfigForm
   // ===========================================================================
   'config.addNode': 'Add Node',

@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import yaml from 'js-yaml';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
@@ -682,6 +683,159 @@ app.get('/api/addresses/download', (req, res) => {
     } else {
       res.status(404).json({ error: 'Addresses file not found.' });
     }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Address Viewer — Decrypt private keys & fetch balances
+// =============================================================================
+
+const ENCRYPT_PREFIX = 'ENCRYPTED:';
+
+/**
+ * Decrypt a single ENCRYPTED: value using symbol-bootstrap's CryptoUtils scheme.
+ * Algorithm: PBKDF2(SHA-256, 1024 iterations, 32-byte key) + AES-256-CBC (PKCS7).
+ * Data format: salt(32 hex) + iv(32 hex) + ciphertext(base64)
+ */
+function decryptPrivateKey(encryptedValue: string, password: string): string {
+  const data = encryptedValue.startsWith(ENCRYPT_PREFIX)
+    ? encryptedValue.slice(ENCRYPT_PREFIX.length)
+    : encryptedValue;
+
+  const saltHex = data.substr(0, 32);
+  const ivHex = data.substr(32, 32);
+  const cipherB64 = data.substring(64);
+
+  const salt = Buffer.from(saltHex, 'hex');
+  const iv = Buffer.from(ivHex, 'hex');
+  const key = crypto.pbkdf2Sync(password, salt, 1024, 32, 'sha256');
+
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  let decrypted = decipher.update(Buffer.from(cipherB64, 'base64'));
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  return decrypted.toString('utf8');
+}
+
+/**
+ * Recursively walk an addresses object and decrypt all ENCRYPTED: privateKey fields.
+ */
+function decryptAddressesObj(obj: any, password: string): any {
+  if (Array.isArray(obj)) {
+    return obj.map((item) => decryptAddressesObj(item, password));
+  }
+  if (obj && typeof obj === 'object') {
+    const result: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === 'privateKey' && typeof value === 'string' && value.startsWith(ENCRYPT_PREFIX)) {
+        result[key] = decryptPrivateKey(value, password);
+      } else {
+        result[key] = decryptAddressesObj(value, password);
+      }
+    }
+    return result;
+  }
+  return obj;
+}
+
+// Decrypt addresses with password
+app.post('/api/addresses/decrypt', (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ error: 'Password is required.' });
+  }
+
+  const addressPath = path.join(TARGET_DIR, 'addresses.yml');
+  try {
+    if (!fs.existsSync(addressPath)) {
+      return res.status(404).json({ error: 'Addresses file not found. Start the network first.' });
+    }
+    const file = fs.readFileSync(addressPath, 'utf8');
+    const data = yaml.load(file) as any;
+    const decrypted = decryptAddressesObj(data, password);
+    res.json(decrypted);
+  } catch (err: any) {
+    // Decryption failure typically means wrong password
+    if (err.code === 'ERR_OSSL_BAD_DECRYPT' || err.message?.includes('bad decrypt') || err.message?.includes('wrong final block')) {
+      return res.status(401).json({ error: 'Incorrect password.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch balances for all addresses from REST Gateway
+app.get('/api/addresses/balances', async (_req, res) => {
+  const addressPath = path.join(TARGET_DIR, 'addresses.yml');
+  try {
+    if (!fs.existsSync(addressPath)) {
+      return res.status(404).json({ error: 'Addresses file not found.' });
+    }
+    const file = fs.readFileSync(addressPath, 'utf8');
+    const data = yaml.load(file) as any;
+
+    // Collect all addresses from the structure
+    const addressList: { label: string; address: string }[] = [];
+
+    // nemesisSigner
+    if (data.nemesisSigner?.address) {
+      addressList.push({ label: 'nemesisSigner', address: data.nemesisSigner.address });
+    }
+
+    // nodes
+    if (Array.isArray(data.nodes)) {
+      data.nodes.forEach((node: any, ni: number) => {
+        const nodeName = node.name || `node${ni}`;
+        for (const keyType of ['main', 'transport', 'remote', 'vrf']) {
+          if (node[keyType]?.address) {
+            addressList.push({ label: `${nodeName}.${keyType}`, address: node[keyType].address });
+          }
+        }
+      });
+    }
+
+    // mosaics
+    if (Array.isArray(data.mosaics)) {
+      data.mosaics.forEach((mosaic: any) => {
+        const mosaicLabel = mosaic.name || mosaic.id || 'mosaic';
+        if (Array.isArray(mosaic.accounts)) {
+          mosaic.accounts.forEach((acc: any, ai: number) => {
+            if (acc.address) {
+              addressList.push({ label: `${mosaicLabel}[${ai}]`, address: acc.address });
+            }
+          });
+        }
+      });
+    }
+
+    // Fetch balances from REST gateway
+    const restUrl = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
+    const balances: Record<string, { mosaics: any[]; publicKey: string; importance: string } | { error: string }> = {};
+
+    await Promise.all(
+      addressList.map(async ({ address }) => {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const r = await fetch(`${restUrl}/accounts/${address}`, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (r.ok) {
+            const body = await r.json() as any;
+            balances[address] = {
+              mosaics: body.account?.mosaics || [],
+              publicKey: body.account?.publicKey || '',
+              importance: body.account?.importance || '0',
+            };
+          } else {
+            balances[address] = { error: `HTTP ${r.status}` };
+          }
+        } catch {
+          balances[address] = { error: 'REST gateway unreachable' };
+        }
+      }),
+    );
+
+    res.json({ addresses: addressList, balances });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
