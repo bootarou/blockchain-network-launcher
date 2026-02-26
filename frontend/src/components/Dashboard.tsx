@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from '../i18n';
 import {
   Play,
@@ -37,6 +37,24 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
   const [cmdStatus, setCmdStatus] = useState<Record<string, CommandStatus>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeModal, setActiveModal] = useState<'start' | 'stop' | null>(null);
+  const [networkState, setNetworkState] = useState<string>('stopped');
+
+  // ── Poll network status ────────────────────────────────────────────────
+  const fetchNetworkState = useCallback(async () => {
+    try {
+      const status = await api.getStatus();
+      if (status?.state) setNetworkState(status.state);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    fetchNetworkState();
+    const iv = setInterval(fetchNetworkState, 5000);
+    return () => clearInterval(iv);
+  }, [fetchNetworkState]);
+
+  const nodeStopped = networkState === 'stopped' || networkState === 'error';
+  const nodeRunning = networkState === 'running';
 
   // ── Command helpers ────────────────────────────────────────────────────
 
@@ -277,6 +295,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             <StatusIcon cmd="save" />
           </button>
 
+          {nodeStopped && (
           <button
             onClick={handleStart}
             disabled={cmdStatus.start === 'running'}
@@ -286,7 +305,9 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             {t('dashboard.start')}
             <StatusIcon cmd="start" />
           </button>
+          )}
 
+          {nodeRunning && (
           <button
             onClick={handleStop}
             disabled={cmdStatus.stop === 'running'}
@@ -296,6 +317,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             {t('dashboard.stop')}
             <StatusIcon cmd="stop" />
           </button>
+          )}
 
           <button
             onClick={handleHealthCheck}
