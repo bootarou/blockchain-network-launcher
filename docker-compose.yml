@@ -16,6 +16,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock   # Docker-in-Docker
       - ./shared:/app/shared                         # Preset & config persistence
       - ${SYMBOL_TARGET_DIR:-/opt/symbol-target}:${SYMBOL_TARGET_DIR:-/opt/symbol-target}  # DinD: same path on host VM & container
+      - ./.env:/app/host-env                          # Let backend update SYMBOL_TARGET_DIR
       - ./backend:/app/backend                       # Live reload (dev)
       - ./frontend:/app/frontend                     # Live reload (dev)
     restart: unless-stopped

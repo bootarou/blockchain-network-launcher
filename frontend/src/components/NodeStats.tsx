@@ -16,6 +16,7 @@ import {
   HardDrive,
   Database,
   FolderOpen,
+  Loader2,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useTranslation } from '../i18n';
@@ -189,6 +190,14 @@ const BREAKDOWN_ICONS: Record<string, React.ReactNode> = {
   nemesis: <Shield className="w-3 h-3 text-amber-400" />,
 };
 
+interface VolumeInfo {
+  mountPoint: string;
+  fsType: string;
+  totalGB: number;
+  availGB: number;
+  usedPercent: number;
+}
+
 function StorageIndicator({ data }: { data: StorageData }) {
   const { t } = useTranslation();
   const { filesystem, target } = data;
@@ -203,6 +212,53 @@ function StorageIndicator({ data }: { data: StorageData }) {
   const breakdownEntries = Object.entries(target.breakdown)
     .sort(([, a], [, b]) => b - a);
 
+  // ── Path change state ──
+  const [showPathPanel, setShowPathPanel] = useState(false);
+  const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
+  const [loadingVolumes, setLoadingVolumes] = useState(false);
+  const [customPath, setCustomPath] = useState('');
+  const [selectedPath, setSelectedPath] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
+
+  const openPathPanel = async () => {
+    setShowPathPanel(true);
+    setSuccessMsg('');
+    setLoadingVolumes(true);
+    try {
+      const res = await api.getVolumes();
+      if (res.volumes) setVolumes(res.volumes);
+    } catch { /* ignore */ }
+    setLoadingVolumes(false);
+  };
+
+  const closePathPanel = () => {
+    setShowPathPanel(false);
+    setCustomPath('');
+    setSelectedPath('');
+  };
+
+  const applyPath = async () => {
+    const newPath = customPath.trim() || selectedPath;
+    if (!newPath) return;
+    setSaving(true);
+    try {
+      const res = await api.setTargetDir(newPath);
+      if (res.success) {
+        setSuccessMsg(newPath);
+        setCustomPath('');
+        setSelectedPath('');
+      } else {
+        alert(res.error || 'Failed');
+      }
+    } catch {
+      alert('Error updating path');
+    }
+    setSaving(false);
+  };
+
+  const effectivePath = customPath.trim() || selectedPath;
+
   return (
     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -210,8 +266,129 @@ function StorageIndicator({ data }: { data: StorageData }) {
           <HardDrive className={`w-4 h-4 ${usageColor(fsPercent)}`} />
           {t('stats.storage')}
         </div>
-        <span className="text-xs text-zinc-600 font-mono">{data.targetDir}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-zinc-600 font-mono">{data.targetDir}</span>
+          <button
+            onClick={showPathPanel ? closePathPanel : openPathPanel}
+            className="text-[10px] px-2 py-0.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+          >
+            {t('stats.changePath')}
+          </button>
+        </div>
       </div>
+
+      {/* ── Path change panel ── */}
+      {showPathPanel && (
+        <div className="bg-zinc-900/80 border border-zinc-700/60 rounded-lg p-3 space-y-3">
+          <div>
+            <div className="text-xs font-semibold text-zinc-300 mb-1">{t('stats.storagePathTitle')}</div>
+            <div className="text-[10px] text-zinc-500">{t('stats.storagePathDesc')}</div>
+          </div>
+
+          {/* Success message */}
+          {successMsg && (
+            <div className="bg-emerald-950/40 border border-emerald-800/50 rounded-lg p-3 space-y-2">
+              <div className="text-xs text-emerald-400">
+                {t('stats.restartRequired').replace('{path}', successMsg)}
+              </div>
+              <code className="block text-[10px] bg-zinc-950 text-zinc-300 rounded px-2 py-1.5 font-mono select-all">
+                {t('stats.restartCommand')}
+              </code>
+            </div>
+          )}
+
+          {/* Volume list */}
+          <div>
+            <div className="text-[10px] text-zinc-500 mb-1.5">{t('stats.volumeList')}</div>
+            {loadingVolumes ? (
+              <div className="flex items-center gap-2 text-xs text-zinc-500 py-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              </div>
+            ) : volumes.length === 0 ? (
+              <div className="text-xs text-zinc-600 py-1">—</div>
+            ) : (
+              <div className="space-y-1.5">
+                {volumes.map((v) => {
+                  const isCurrent = v.mountPoint === data.targetDir;
+                  const isSelected = selectedPath === v.mountPoint && !customPath.trim();
+                  return (
+                    <button
+                      key={v.mountPoint}
+                      onClick={() => { setSelectedPath(v.mountPoint); setCustomPath(''); }}
+                      className={`w-full text-left flex items-center justify-between px-3 py-2 rounded-lg border transition-colors ${
+                        isSelected
+                          ? 'border-indigo-500/60 bg-indigo-500/10'
+                          : isCurrent
+                            ? 'border-zinc-600 bg-zinc-800/40'
+                            : 'border-zinc-800 bg-zinc-950/60 hover:border-zinc-600'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <HardDrive className={`w-3.5 h-3.5 flex-shrink-0 ${
+                          isSelected ? 'text-indigo-400' : 'text-zinc-500'
+                        }`} />
+                        <span className="text-xs font-mono text-zinc-300 truncate">{v.mountPoint}</span>
+                        {isCurrent && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-400 flex-shrink-0">
+                            {t('stats.currentLabel')}
+                          </span>
+                        )}
+                        {isSelected && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 flex-shrink-0">
+                            {t('stats.selected')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0 ml-2">
+                        {/* Mini usage bar */}
+                        <div className="w-16 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${barColor(v.usedPercent)}`}
+                            style={{ width: `${v.usedPercent}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-zinc-400 whitespace-nowrap">
+                          {t('stats.volumeAvail').replace('{avail}', String(v.availGB)).replace('{total}', String(v.totalGB))}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Custom path input */}
+          <div>
+            <div className="text-[10px] text-zinc-500 mb-1">{t('stats.customPath')}</div>
+            <input
+              type="text"
+              value={customPath}
+              onChange={(e) => setCustomPath(e.target.value)}
+              placeholder={t('stats.customPathPlaceholder')}
+              className="w-full text-xs bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={applyPath}
+              disabled={!effectivePath || saving}
+              className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+            >
+              {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+              {t('stats.applyPath')}
+            </button>
+            <button
+              onClick={closePathPanel}
+              className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              {t('stats.cancelPath')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main progress bar */}
       <div className="space-y-1.5">

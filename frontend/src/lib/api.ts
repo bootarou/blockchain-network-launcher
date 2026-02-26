@@ -80,6 +80,20 @@ export const api = {
     return res.json();
   },
 
+  getVolumes: async () => {
+    const res = await fetch(`${API_BASE}/storage/volumes`);
+    return res.json();
+  },
+
+  setTargetDir: async (targetDir: string) => {
+    const res = await fetch(`${API_BASE}/storage/target`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetDir }),
+    });
+    return res.json();
+  },
+
   // ── Docker Image Management ────────────────────────────────────────────
 
   getImages: async () => {
