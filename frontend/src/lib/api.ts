@@ -1,5 +1,7 @@
+// In production the backend serves the frontend, so same-origin works.
+// In dev mode Vite proxies /api → http://localhost:4000 (see vite.config.ts).
 const API_BASE =
-  import.meta.env.VITE_API_URL ?? `http://${window.location.hostname}:4000/api`;
+  import.meta.env.VITE_API_URL ?? '/api';
 
 export { API_BASE };
 

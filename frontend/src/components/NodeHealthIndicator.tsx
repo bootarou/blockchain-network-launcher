@@ -4,9 +4,11 @@ import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import { useTranslation } from '../i18n';
 
+// In production the backend serves the frontend on the same port → same host.
+// In dev mode Vite proxies /ws → ws://localhost:4000 (see vite.config.ts).
 const WS_URL =
   import.meta.env.VITE_WS_URL ??
-  `ws://${window.location.hostname}:4000`;
+  `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
 export interface NodeHealth {
   status: 'unknown' | 'up' | 'down';
@@ -50,7 +52,10 @@ export function NodeHealthIndicator() {
 
     const connect = () => {
       if (disposed) return;
-      ws = new WebSocket(WS_URL);
+      // In dev mode, Vite proxies /ws → ws://localhost:4000
+      // In production, the backend handles the upgrade on the same port
+      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws` : WS_URL;
+      ws = new WebSocket(wsTarget);
 
       ws.onopen = () => {
         retryDelay = 3000; // reset on successful connection
