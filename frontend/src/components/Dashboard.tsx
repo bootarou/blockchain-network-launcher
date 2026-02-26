@@ -36,10 +36,13 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
   const [password, setPassword] = useState('');
   const [cmdStatus, setCmdStatus] = useState<Record<string, CommandStatus>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [activeModal, setActiveModal] = useState<'start' | 'stop' | null>(null);
 
   // ── Command helpers ────────────────────────────────────────────────────
 
   const runCommand = async (cmd: string, payload?: Record<string, unknown>) => {
+    const isModal = cmd === 'start' || cmd === 'stop';
+    if (isModal) setActiveModal(cmd as 'start' | 'stop');
     setCmdStatus((s) => ({ ...s, [cmd]: 'running' }));
     try {
       const res = await api.sendCommand(cmd, payload);
@@ -52,6 +55,8 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
       }
     } catch {
       setCmdStatus((s) => ({ ...s, [cmd]: 'error' }));
+    } finally {
+      if (isModal) setActiveModal(null);
     }
   };
 
@@ -187,6 +192,27 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
   return (
     <div className="space-y-6">
       {hiddenInput}
+
+      {/* ── Loading Modal for Start / Stop ── */}
+      {activeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-8 shadow-2xl flex flex-col items-center gap-4 min-w-[320px] max-w-md mx-4">
+            {activeModal === 'start' ? (
+              <Play className="w-10 h-10 text-emerald-400 animate-pulse" />
+            ) : (
+              <Square className="w-10 h-10 text-red-400 animate-pulse fill-current" />
+            )}
+            <h3 className="text-lg font-bold text-zinc-100">
+              {activeModal === 'start' ? t('dashboard.modalStartTitle') : t('dashboard.modalStopTitle')}
+            </h3>
+            <p className="text-sm text-zinc-400 text-center">
+              {activeModal === 'start' ? t('dashboard.modalStartDesc') : t('dashboard.modalStopDesc')}
+            </p>
+            <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+            <p className="text-xs text-zinc-500">{t('dashboard.modalHint')}</p>
+          </div>
+        </div>
+      )}
 
       {/* ── Node Statistics ── */}
       <NodeStats />

@@ -47,6 +47,11 @@ export const en: TranslationDict = {
   'dashboard.importSuccess': 'Preset imported successfully.',
   'dashboard.importParseError': 'Failed to parse file: ',
   'dashboard.addressesNotFound': 'addresses.yml has not been generated yet or could not be retrieved.',
+  'dashboard.modalStartTitle': 'Starting Network...',
+  'dashboard.modalStartDesc': 'symbol-bootstrap is starting the network. This may take a few minutes while Docker containers are being prepared.',
+  'dashboard.modalStopTitle': 'Stopping Network...',
+  'dashboard.modalStopDesc': 'symbol-bootstrap is stopping the network. Please wait until all containers are safely shut down.',
+  'dashboard.modalHint': 'Check terminal logs for progress',
 
   // ===========================================================================
   // Address Viewer

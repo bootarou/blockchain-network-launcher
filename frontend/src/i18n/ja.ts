@@ -47,6 +47,11 @@ export const ja: TranslationDict = {
   'dashboard.importSuccess': 'プリセットを正常にインポートしました。',
   'dashboard.importParseError': 'ファイルの解析に失敗しました: ',
   'dashboard.addressesNotFound': 'addresses.yml がまだ生成されていないか、取得に失敗しました。',
+  'dashboard.modalStartTitle': 'ネットワーク起動中...',
+  'dashboard.modalStartDesc': 'symbol-bootstrap がネットワークを起動しています。Dockerコンテナの準備に数分かかる場合があります。',
+  'dashboard.modalStopTitle': 'ネットワーク停止中...',
+  'dashboard.modalStopDesc': 'symbol-bootstrap がネットワークを停止しています。全てのコンテナが安全にシャットダウンされるまでお待ちください。',
+  'dashboard.modalHint': '進捗はターミナルログで確認できます',
 
   // ===========================================================================
   // Address Viewer
