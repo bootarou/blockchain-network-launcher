@@ -64,10 +64,6 @@ interface BalanceInfo {
   error?: string;
 }
 
-interface AddressViewerProps {
-  password: string;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatAmount(amount: string): string {
@@ -80,7 +76,7 @@ function formatAmount(amount: string): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function AddressViewer({ password }: AddressViewerProps) {
+export function AddressViewer() {
   const { t } = useTranslation();
 
   // addresses data (raw with ENCRYPTED: keys)
@@ -89,6 +85,8 @@ export function AddressViewer({ password }: AddressViewerProps) {
   const [decryptedAddresses, setDecryptedAddresses] = useState<AddressesData | null>(null);
   // balances per address
   const [balances, setBalances] = useState<Record<string, BalanceInfo>>({});
+  // dedicated password for private key decryption
+  const [decryptPassword, setDecryptPassword] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [decrypting, setDecrypting] = useState(false);
@@ -134,14 +132,14 @@ export function AddressViewer({ password }: AddressViewerProps) {
   // ── Decrypt private keys ───────────────────────────────────────────────
 
   const handleDecrypt = useCallback(async () => {
-    if (!password) {
+    if (!decryptPassword) {
       setDecryptError(t('addressViewer.passwordRequired'));
       return;
     }
     setDecrypting(true);
     setDecryptError('');
     try {
-      const data = await api.decryptAddresses(password);
+      const data = await api.decryptAddresses(decryptPassword);
       setDecryptedAddresses(data);
       setShowPrivateKeys(true);
     } catch (err: any) {
@@ -151,11 +149,12 @@ export function AddressViewer({ password }: AddressViewerProps) {
     } finally {
       setDecrypting(false);
     }
-  }, [password, t]);
+  }, [decryptPassword, t]);
 
   const handleHidePrivateKeys = useCallback(() => {
     setShowPrivateKeys(false);
     setDecryptedAddresses(null);
+    setDecryptPassword('');
   }, []);
 
   // ── Copy to clipboard ─────────────────────────────────────────────────
@@ -351,30 +350,6 @@ export function AddressViewer({ password }: AddressViewerProps) {
             {t('addressViewer.refreshBalances')}
           </button>
 
-          {/* Decrypt / Hide toggle */}
-          {showPrivateKeys ? (
-            <button
-              onClick={handleHidePrivateKeys}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/50 hover:bg-red-900 text-red-300 rounded-lg text-sm transition-colors border border-red-700/50"
-            >
-              <EyeOff className="w-3.5 h-3.5" />
-              {t('addressViewer.hidePrivateKeys')}
-            </button>
-          ) : (
-            <button
-              onClick={handleDecrypt}
-              disabled={decrypting}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-900/50 hover:bg-amber-900 text-amber-300 rounded-lg text-sm transition-colors border border-amber-700/50 disabled:opacity-50"
-            >
-              {decrypting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Eye className="w-3.5 h-3.5" />
-              )}
-              {t('addressViewer.showPrivateKeys')}
-            </button>
-          )}
-
           {/* Close */}
           <button
             onClick={() => { setAddresses(null); setDecryptedAddresses(null); setShowPrivateKeys(false); }}
@@ -383,6 +358,56 @@ export function AddressViewer({ password }: AddressViewerProps) {
             {t('dashboard.close')}
           </button>
         </div>
+      </div>
+
+      {/* ── Private key decrypt form ── */}
+      <div className="bg-zinc-950/50 border border-zinc-800 rounded-xl p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
+          <KeyRound className="w-4 h-4 text-amber-400" />
+          {t('addressViewer.decryptSection')}
+        </h3>
+        {!showPrivateKeys ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[200px] max-w-md">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+              <input
+                type="password"
+                placeholder={t('addressViewer.passwordPlaceholder')}
+                value={decryptPassword}
+                onChange={(e) => { setDecryptPassword(e.target.value); setDecryptError(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleDecrypt(); }}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded-lg pl-9 pr-4 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
+              />
+            </div>
+            <button
+              onClick={handleDecrypt}
+              disabled={decrypting || !decryptPassword}
+              className="flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {decrypting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Eye className="w-3.5 h-3.5" />
+              )}
+              {t('addressViewer.showPrivateKeys')}
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleHidePrivateKeys}
+              className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              <EyeOff className="w-3.5 h-3.5" />
+              {t('addressViewer.hidePrivateKeys')}
+            </button>
+          </div>
+        )}
+        {decryptError && (
+          <div className="text-xs text-red-400 bg-red-950/30 border border-red-800/30 rounded-lg px-3 py-2">
+            ⚠️ {decryptError}
+          </div>
+        )}
       </div>
 
       {/* Decrypt status */}
@@ -397,12 +422,6 @@ export function AddressViewer({ password }: AddressViewerProps) {
         <div className="flex items-center gap-2 text-xs text-zinc-500 bg-zinc-800/30 border border-zinc-700/30 rounded-lg px-3 py-2">
           <Lock className="w-3.5 h-3.5" />
           {t('addressViewer.privateKeysLocked')}
-        </div>
-      )}
-
-      {decryptError && (
-        <div className="text-xs text-red-400 bg-red-950/30 border border-red-800/30 rounded-lg px-3 py-2">
-          ⚠️ {decryptError}
         </div>
       )}
 

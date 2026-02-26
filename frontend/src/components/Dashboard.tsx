@@ -338,7 +338,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
       )}
 
       {/* ── Address Viewer (structured with decrypt & balances) ── */}
-      <AddressViewer password={password} />
+      <AddressViewer />
 
       {/* ── Docker Images ── */}
       <ImageManager />
