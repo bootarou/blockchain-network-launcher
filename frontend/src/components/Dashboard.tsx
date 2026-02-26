@@ -40,6 +40,22 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
 
   // ── Command helpers ────────────────────────────────────────────────────
 
+  /** Poll /api/status until networkStatus.state reaches a final state. */
+  const waitForState = async (
+    targetStates: string[],
+    timeoutMs = 300_000,
+    intervalMs = 2_000,
+  ): Promise<void> => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const status = await api.getStatus();
+        if (targetStates.includes(status.state)) return;
+      } catch { /* ignore transient errors */ }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  };
+
   const runCommand = async (cmd: string, payload?: Record<string, unknown>) => {
     const isModal = cmd === 'start' || cmd === 'stop';
     if (isModal) setActiveModal(cmd as 'start' | 'stop');
@@ -49,10 +65,21 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
       if (res.error) {
         setCmdStatus((s) => ({ ...s, [cmd]: 'error' }));
         alert(res.error);
-      } else {
-        setCmdStatus((s) => ({ ...s, [cmd]: 'success' }));
-        setTimeout(() => setCmdStatus((s) => ({ ...s, [cmd]: 'idle' })), 3000);
+        if (isModal) setActiveModal(null);
+        return;
       }
+
+      // For start / stop, keep modal visible until the operation truly finishes.
+      if (isModal) {
+        const finalStates =
+          cmd === 'start'
+            ? ['running', 'error']
+            : ['stopped', 'error'];
+        await waitForState(finalStates);
+      }
+
+      setCmdStatus((s) => ({ ...s, [cmd]: 'success' }));
+      setTimeout(() => setCmdStatus((s) => ({ ...s, [cmd]: 'idle' })), 3000);
     } catch {
       setCmdStatus((s) => ({ ...s, [cmd]: 'error' }));
     } finally {
