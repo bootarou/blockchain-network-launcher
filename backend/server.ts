@@ -1119,6 +1119,15 @@ app.post('/api/storage/target', async (req, res) => {
       writtenTo = 'shared';
     }
 
+    // Ensure the target directory exists so docker compose volume mount
+    // won't fail.  Works for paths on the container root filesystem
+    // (which maps to the Docker Desktop WSL2 VM / Linux host).
+    try {
+      if (!fs.existsSync(cleanPath)) {
+        fs.mkdirSync(cleanPath, { recursive: true });
+      }
+    } catch { /* may fail for unmounted paths — OK, will be created on restart */ }
+
     res.json({
       success: true,
       writtenTo,
