@@ -7,9 +7,13 @@ export const api = {
   // ── Preset CRUD ────────────────────────────────────────────────────────
 
   loadPreset: async () => {
-    const res = await fetch(`${API_BASE}/preset`);
-    if (!res.ok) return null;
-    return res.json();
+    try {
+      const res = await fetch(`${API_BASE}/preset`);
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null; // Backend not running
+    }
   },
 
   savePreset: async (preset: unknown) => {
@@ -47,8 +51,12 @@ export const api = {
   // ── Node health ────────────────────────────────────────────────────────
 
   getNodeHealth: async () => {
-    const res = await fetch(`${API_BASE}/node-health`);
-    return res.json();
+    try {
+      const res = await fetch(`${API_BASE}/node-health`);
+      return res.json();
+    } catch {
+      return { status: 'unknown', statusCode: null, apiNode: '', db: '', lastCheck: '' };
+    }
   },
 
   refreshNodeHealth: async () => {

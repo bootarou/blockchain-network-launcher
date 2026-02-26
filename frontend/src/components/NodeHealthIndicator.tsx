@@ -46,15 +46,22 @@ export function NodeHealthIndicator() {
     let ws: WebSocket;
     let retryTimer: ReturnType<typeof setTimeout>;
     let disposed = false;
+    let retryDelay = 3000; // start at 3s, exponential backoff up to 30s
 
     const connect = () => {
       if (disposed) return;
       ws = new WebSocket(WS_URL);
 
-      ws.onopen = () => {};
+      ws.onopen = () => {
+        retryDelay = 3000; // reset on successful connection
+      };
       ws.onclose = () => {
         if (disposed) return;
-        retryTimer = setTimeout(connect, 3000);
+        retryTimer = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000); // backoff: 3→6→12→24→30s
+      };
+      ws.onerror = () => {
+        // Suppress console noise — onclose will handle reconnection
       };
 
       ws.onmessage = (event) => {

@@ -26,7 +26,7 @@ function App() {
           setConfig((prev) => ({ ...prev, ...data }));
         }
       })
-      .catch(console.error);
+      .catch(() => {}); // Silently ignore when backend is not running
   }, []);
 
   const handleConfigChange = (newConfig: PresetConfig) => {
