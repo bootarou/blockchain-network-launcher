@@ -356,9 +356,25 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   const harvestMosaicEnabled = config.nemesisMosaics.length >= 2;
   const toggleHarvestMosaic = () => {
     if (harvestMosaicEnabled) {
-      onChange({ ...config, nemesisMosaics: config.nemesisMosaics.slice(0, 1) });
+      // Disabling harvest mosaic → single-currency mode
+      // harvestingMosaicId will equal currencyMosaicId, so
+      // totalChainImportance must equal the currency mosaic supply.
+      const currencySupply = config.nemesisMosaics[0]?.supply ?? '8998999998000000';
+      const supplyStr = String(currencySupply).replace(/'/g, '');
+      onChange({
+        ...config,
+        nemesisMosaics: config.nemesisMosaics.slice(0, 1),
+        totalChainImportance: supplyStr,
+      });
     } else {
-      onChange({ ...config, nemesisMosaics: [...config.nemesisMosaics, { ...DEFAULT_HARVEST_MOSAIC }] });
+      // Enabling harvest mosaic → dual-currency mode
+      // totalChainImportance should match the harvest mosaic supply.
+      const harvestSupply = String(DEFAULT_HARVEST_MOSAIC.supply).replace(/'/g, '');
+      onChange({
+        ...config,
+        nemesisMosaics: [...config.nemesisMosaics, { ...DEFAULT_HARVEST_MOSAIC }],
+        totalChainImportance: harvestSupply,
+      });
     }
   };
 

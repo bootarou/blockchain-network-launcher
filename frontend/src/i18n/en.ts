@@ -82,7 +82,7 @@ export const en: TranslationDict = {
   'config.nemesisCurrencyRequired': '(required)',
   'config.nemesisHarvestTitle': 'Harvest Mosaic',
   'config.nemesisHarvestToggle': 'Enable',
-  'config.nemesisHarvestDisabledNote': 'Harvest mosaic is disabled. Enable to create a separate harvesting token.',
+  'config.nemesisHarvestDisabledNote': 'Harvest mosaic is disabled. harvestingMosaicId will be set to the same value as currencyMosaicId (single-currency mode). Enable to create a separate harvesting token.',
   'config.nemesisHelp': '💡 How to use:',
   'config.nemesisHelpDesc': 'Currency mosaic is the base currency of the network. Enabling harvest mosaic allows using a separate token for harvesting rewards.',
   'config.nemesisHelpMosaicId': 'MosaicID:',

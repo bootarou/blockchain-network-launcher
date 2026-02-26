@@ -351,6 +351,7 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
 
   // ── Nemesis mosaics (bootstrap only) ──
   if (flat.baseNamespace) doc.baseNamespace = flat.baseNamespace;
+  let singleCurrencyMode = false;
   if (Array.isArray(flat.nemesisMosaics) && flat.nemesisMosaics.length > 0) {
     // Ensure supply values are plain numbers (strip apostrophe formatting)
     const sanitizedMosaics = flat.nemesisMosaics.map((m: any) => {
@@ -364,6 +365,15 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
       return copy;
     });
     doc.nemesis = { mosaics: sanitizedMosaics };
+
+    // Single-currency mode: when only 1 mosaic is defined, harvestingMosaicId
+    // should equal currencyMosaicId.  However, symbol-bootstrap's _.merge()
+    // merges arrays by index, so the base preset's 2nd mosaic (harvest) survives.
+    // To work around this: (1) set totalChainImportance = currency supply so
+    // nemgen balances are correct, (2) after config, patch harvestingMosaicId.
+    if (sanitizedMosaics.length === 1) {
+      singleCurrencyMode = true;
+    }
   }
 
   // ── Top-level field overrides ──
@@ -416,6 +426,41 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
         doc[k] = isNaN(num) ? raw : num;
       } else {
         doc[k] = raw;
+      }
+    }
+  }
+
+  // ── Single-currency mode: totalChainImportance must equal currency supply ──
+  // When only one nemesis mosaic is defined, we force harvestingMosaicId =
+  // currencyMosaicId after `symbol-bootstrap config`.  Catapult validates that
+  // totalChainImportance equals the total supply of the harvesting mosaic in
+  // the nemesis block.  Since the harvesting mosaic IS the currency mosaic in
+  // this mode, totalChainImportance must be the currency supply.
+  if (singleCurrencyMode) {
+    const mosaics = ((doc.nemesis as Record<string, unknown>)?.mosaics) as any[];
+    if (mosaics?.length >= 1) {
+      const rawSupply = mosaics[0].supply;
+      const numericSupply = typeof rawSupply === 'number'
+        ? rawSupply
+        : Number(String(rawSupply).replace(/'/g, ''));
+      if (!isNaN(numericSupply)) {
+        doc.totalChainImportance = numericSupply;
+        const np = doc.networkProperties as Record<string, unknown> | undefined;
+        if (np?.chain) {
+          (np.chain as Record<string, unknown>).totalChainImportance = String(numericSupply);
+        }
+
+        // Ensure maxHarvesterBalance is at least the total supply.
+        // In single-currency mode the harvesting mosaic IS the currency mosaic,
+        // so accounts may hold a large share of the total supply.  If
+        // maxHarvesterBalance is left at the default (50 000 000 000 000) these
+        // accounts would exceed the cap and fail canHarvest().
+        if (!flat.maxHarvesterBalance) {
+          doc.maxHarvesterBalance = numericSupply;
+          if (np?.chain) {
+            (np.chain as Record<string, unknown>).maxHarvesterBalance = String(numericSupply);
+          }
+        }
       }
     }
   }
@@ -1006,6 +1051,56 @@ function patchMustacheTemplates(version: CatapultVersionDef) {
   }
 }
 
+/**
+ * Single-currency mode: patch the config-network.properties.mustache template
+ * so that `harvestingMosaicId` outputs the same value as `currencyMosaicId`.
+ *
+ * symbol-bootstrap's `_.merge()` merges arrays by index, so the base preset's
+ * 2nd harvest mosaic always survives even when the user defines only 1 mosaic.
+ * `AddressesService` then generates a separate `harvestingMosaicId` (nonce=1).
+ *
+ * By patching the mustache template BEFORE `symbol-bootstrap config`, the
+ * generated config-network.properties will have `harvestingMosaicId = currencyMosaicId`.
+ * nemgen reads this config and calculates importance based on the currency mosaic,
+ * which matches `totalChainImportance` = currency supply.  This prevents
+ * `Failure_Core_Importance_Block_Mismatch` at node startup.
+ */
+function patchMustacheForSingleCurrency(): void {
+  // Determine if single-currency mode from custom-preset.yml
+  let isSingleCurrency = false;
+  try {
+    const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const nemesis = doc?.nemesis as Record<string, unknown> | undefined;
+    const mosaics = nemesis?.mosaics as any[] | undefined;
+    isSingleCurrency = Array.isArray(mosaics) && mosaics.length === 1;
+  } catch { /* ignore */ }
+
+  const templatePath = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources/config-network.properties.mustache';
+  if (!fs.existsSync(templatePath)) return;
+
+  let content = fs.readFileSync(templatePath, 'utf-8');
+
+  if (isSingleCurrency) {
+    // Replace harvestingMosaicId to use currencyMosaicId value
+    const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
+    const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
+    if (content.includes(original)) {
+      content = content.replace(original, patched);
+      fs.writeFileSync(templatePath, content, 'utf-8');
+      broadcastLog('[Pre-Patch] Single-currency: harvestingMosaicId → currencyMosaicId in mustache template\n');
+    }
+  } else {
+    // Restore the original template if it was previously patched
+    const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
+    const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
+    if (content.includes(patched)) {
+      content = content.replace(patched, original);
+      fs.writeFileSync(templatePath, content, 'utf-8');
+      broadcastLog('[Pre-Patch] Restored harvestingMosaicId in mustache template (dual-currency mode)\n');
+    }
+  }
+}
+
 /** Describes a set of missing properties to inject into a specific section of a .properties file. */
 interface PropertiesPatch {
   file: string;            // e.g. 'config-node.properties'
@@ -1400,6 +1495,17 @@ function backfillMosaicIds(targetDir: string): void {
   let currencyId = '';
   let harvestId = '';
 
+  // Determine whether user configured single-currency mode (only 1 mosaic)
+  let userMosaicCount = 2; // default: dual
+  let presetDoc: Record<string, unknown> | null = null;
+  try {
+    presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const nemesis = presetDoc?.nemesis as Record<string, unknown> | undefined;
+    if (nemesis?.mosaics && Array.isArray(nemesis.mosaics)) {
+      userMosaicCount = nemesis.mosaics.length;
+    }
+  } catch { /* ignore */ }
+
   for (const nodeName of fs.readdirSync(nodesDir)) {
     const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-network.properties');
     if (!fs.existsSync(configPath)) continue;
@@ -1417,6 +1523,83 @@ function backfillMosaicIds(targetDir: string): void {
     return;
   }
 
+  // Single-currency mode: when user defined only 1 mosaic, harvestingMosaicId
+  // should equal currencyMosaicId.  symbol-bootstrap's _.merge() merges arrays
+  // by index, so the base preset's 2nd harvest mosaic survives and generates a
+  // separate ID (nonce=1).  We override it here after config.
+  if (userMosaicCount <= 1 && currencyId) {
+    broadcastLog(`[MosaicID] Single-currency mode: forcing harvestingMosaicId = currencyMosaicId\n`);
+    harvestId = currencyId;
+
+    // Read currency supply for totalChainImportance patch
+    let currencySupply = '';
+    try {
+      const nemesis = presetDoc?.nemesis as Record<string, unknown> | undefined;
+      const mosaics = nemesis?.mosaics as any[] | undefined;
+      if (mosaics?.[0]?.supply != null) {
+        currencySupply = String(mosaics[0].supply).replace(/'/g, '');
+      }
+    } catch { /* ignore */ }
+    // Format with apostrophes for catapult config compatibility
+    const formattedSupply = currencySupply
+      ? currencySupply.replace(/\B(?=(\d{3})+(?!\d))/g, "'")
+      : '';
+
+    // Patch config-network.properties in all nodes & brokers
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties');
+        if (!fs.existsSync(configPath)) continue;
+        let content = fs.readFileSync(configPath, 'utf-8');
+        content = content.replace(
+          /harvestingMosaicId\s*=\s*\S+/,
+          `harvestingMosaicId = ${currencyId}`,
+        );
+        if (formattedSupply) {
+          content = content.replace(
+            /totalChainImportance\s*=\s*\S+/,
+            `totalChainImportance = ${formattedSupply}`,
+          );
+          // maxHarvesterBalance must be >= largest account balance.
+          // In single-currency mode accounts can hold a large share of the
+          // total supply, easily exceeding the default 50'000'000'000'000.
+          content = content.replace(
+            /maxHarvesterBalance\s*=\s*\S+/,
+            `maxHarvesterBalance = ${formattedSupply}`,
+          );
+        }
+        fs.writeFileSync(configPath, content, 'utf-8');
+        broadcastLog(`[MosaicID] Patched harvestingMosaicId${formattedSupply ? ' + totalChainImportance + maxHarvesterBalance' : ''} in ${nodeName}/${configDir}\n`);
+      }
+    }
+
+    // Also patch gateway api-node-config copies
+    const gwDir = path.join(targetDir, 'gateways');
+    if (fs.existsSync(gwDir)) {
+      for (const gwName of fs.readdirSync(gwDir)) {
+        const gwConfigPath = path.join(gwDir, gwName, 'api-node-config', 'config-network.properties');
+        if (!fs.existsSync(gwConfigPath)) continue;
+        let gwContent = fs.readFileSync(gwConfigPath, 'utf-8');
+        gwContent = gwContent.replace(
+          /harvestingMosaicId\s*=\s*\S+/,
+          `harvestingMosaicId = ${currencyId}`,
+        );
+        if (formattedSupply) {
+          gwContent = gwContent.replace(
+            /totalChainImportance\s*=\s*\S+/,
+            `totalChainImportance = ${formattedSupply}`,
+          );
+          gwContent = gwContent.replace(
+            /maxHarvesterBalance\s*=\s*\S+/,
+            `maxHarvesterBalance = ${formattedSupply}`,
+          );
+        }
+        fs.writeFileSync(gwConfigPath, gwContent, 'utf-8');
+        broadcastLog(`[MosaicID] Patched gateway ${gwName}/api-node-config\n`);
+      }
+    }
+  }
+
   broadcastLog(`[MosaicID] Generated: currencyMosaicId=${currencyId}, harvestingMosaicId=${harvestId}\n`);
 
   // Write to custom-preset.yml
@@ -1429,6 +1612,21 @@ function backfillMosaicIds(targetDir: string): void {
 
     if (currencyId) chain.currencyMosaicId = currencyId;
     if (harvestId) chain.harvestingMosaicId = harvestId;
+
+    // Single-currency: also write totalChainImportance = currency supply
+    if (userMosaicCount <= 1 && currencyId) {
+      const nemesis = doc?.nemesis as Record<string, unknown> | undefined;
+      const mosaics = nemesis?.mosaics as any[] | undefined;
+      if (mosaics?.[0]?.supply != null) {
+        const supply = String(mosaics[0].supply).replace(/'/g, '');
+        chain.totalChainImportance = supply;
+        doc.totalChainImportance = Number(supply);
+      }
+    }
+
+    // Also set top-level for mustache templates
+    if (currencyId) doc.currencyMosaicId = currencyId;
+    if (harvestId) doc.harvestingMosaicId = harvestId;
 
     fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
     broadcastLog('[MosaicID] ✅ Backfilled MosaicIDs to custom-preset.yml\n');
@@ -3075,6 +3273,13 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 0c: Pre-patch mustache templates so nemgen sees all required props
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
       patchMustacheTemplates(version);
+
+      // Step 0d: Single-currency mode — patch mustache template so that
+      // harvestingMosaicId outputs currencyMosaicId.  This ensures nemgen
+      // generates the nemesis block with harvestingMosaicId = currencyMosaicId
+      // and importance based on the currency supply, preventing
+      // Failure_Core_Importance_Block_Mismatch at node startup.
+      patchMustacheForSingleCurrency();
 
       // Step 1: symbol-bootstrap config  (--upgrade to force regeneration)
       //   Reads custom-preset.yml which now has the patched image name.

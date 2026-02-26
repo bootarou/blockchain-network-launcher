@@ -82,7 +82,7 @@ export const ja: TranslationDict = {
   'config.nemesisCurrencyRequired': '(必須)',
   'config.nemesisHarvestTitle': 'Harvest Mosaic',
   'config.nemesisHarvestToggle': '有効化',
-  'config.nemesisHarvestDisabledNote': 'Harvestモザイクは無効です。有効にするとCurrencyとは別のハーベスト用モザイクが生成されます。',
+  'config.nemesisHarvestDisabledNote': 'Harvestモザイクは無効です。harvestingMosaicIdにはcurrencyMosaicIdと同じ値が設定されます（単一通貨モード）。有効にするとCurrencyとは別のハーベスト用モザイクが生成されます。',
   'config.nemesisHelp': '💡 使い方:',
   'config.nemesisHelpDesc': 'Currencyモザイクはネットワークの基軸通貨です。Harvestモザイクを有効にすると、ハーベスト報酬に別のトークンを使用できます。',
   'config.nemesisHelpMosaicId': 'MosaicID:',
