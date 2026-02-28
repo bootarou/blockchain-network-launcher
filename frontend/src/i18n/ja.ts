@@ -188,7 +188,7 @@ export const ja: TranslationDict = {
   'stats.dataCopied': '既存データを新しいパスにコピーしました。',
   'stats.forbiddenPath': 'システムディレクトリ（/ や /etc 等）は保存先に指定できません。サブディレクトリを指定してください。',
   'stats.samePath': '現在と同じパスです。別のパスを選択してください。',
-  'stats.pathHintWindows': '💡 Windows (Docker Desktop) をお使いの場合: /opt/ から始まるパスを指定してください（例: /opt/feeNode）。ルート直下（例: /feeNode）は Docker VM の小さな rootFS（約3GB）にマウントされ、容量不足になります。/opt/ 配下は大容量ディスク（約1TB）が使えます。',
+  'stats.pathHintWindows': '💡 Windows (Docker Desktop) をお使いの場合: /var/lib/ から始まるパスを指定してください（例: /var/lib/symbol-target）。/opt/ やルート直下のパスは Docker VM の小さな rootFS（約3GB）上にあり、容量不足になります。/var/lib/ は大容量ディスク（約1TB・VHDX）が使えます。',
   'stats.smallVolume': '容量不足',
   'stats.deleteVolume': 'ディレクトリを削除',
   'stats.deleteConfirm': '⚠️ 「{path}」を完全に削除しますか？この操作は取り消せません。',

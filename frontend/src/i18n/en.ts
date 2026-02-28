@@ -188,7 +188,7 @@ export const en: TranslationDict = {
   'stats.dataCopied': 'Existing data has been copied to the new path.',
   'stats.forbiddenPath': 'System directories (/ or /etc etc.) cannot be used as storage. Please specify a subdirectory.',
   'stats.samePath': 'This is the same as the current path. Please select a different path.',
-  'stats.pathHintWindows': '💡 Windows (Docker Desktop): Use paths starting with /opt/ (e.g. /opt/feeNode). Paths under root (e.g. /feeNode) mount on Docker VM\'s small rootFS (~3GB) and will run out of space. /opt/ uses the large disk (~1TB).',
+  'stats.pathHintWindows': '💡 Windows (Docker Desktop): Use paths starting with /var/lib/ (e.g. /var/lib/symbol-target). Paths like /opt/ or root-level dirs are on Docker VM\'s tiny rootFS (~3GB) and will run out of space. /var/lib/ uses the large VHDX disk (~1TB).',
   'stats.smallVolume': 'Low space',
   'stats.deleteVolume': 'Delete directory',
   'stats.deleteConfirm': '⚠️ Permanently delete "{path}"? This action cannot be undone.',
