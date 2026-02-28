@@ -186,6 +186,8 @@ export const en: TranslationDict = {
   'stats.copying': 'Copying...',
   'stats.copyFailed': 'Failed to copy data.',
   'stats.dataCopied': 'Existing data has been copied to the new path.',
+  'stats.forbiddenPath': 'System directories (/ or /etc etc.) cannot be used as storage. Please specify a subdirectory.',
+  'stats.samePath': 'This is the same as the current path. Please select a different path.',
   'stats.rolePeer': 'Peer',
   'stats.roleApi': 'API',
   'stats.roleVoting': 'Voting',

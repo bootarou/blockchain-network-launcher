@@ -1112,6 +1112,15 @@ app.post('/api/storage/target', async (req, res) => {
       return res.status(400).json({ error: 'SAME_PATH', message: 'New path is the same as current.' });
     }
 
+    // ── Guard: reject dangerous system paths ──────────────────────────────
+    const FORBIDDEN_PATHS = ['/', '/bin', '/boot', '/dev', '/etc', '/lib', '/lib64', '/proc', '/run', '/sbin', '/sys', '/tmp', '/usr', '/var/run'];
+    if (FORBIDDEN_PATHS.includes(cleanPath)) {
+      return res.status(400).json({
+        error: 'FORBIDDEN_PATH',
+        message: `Cannot use system path "${cleanPath}" as storage directory.`,
+      });
+    }
+
     // ── Ensure destination exists ────────────────────────────────────────
     try {
       if (!fs.existsSync(cleanPath)) {

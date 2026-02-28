@@ -255,6 +255,10 @@ function StorageIndicator({ data, networkState }: { data: StorageData; networkSt
         setSelectedPath('');
       } else if (res.error === 'NODE_RUNNING') {
         setCopyError(t('stats.stopNodeFirst'));
+      } else if (res.error === 'FORBIDDEN_PATH') {
+        setCopyError(t('stats.forbiddenPath'));
+      } else if (res.error === 'SAME_PATH') {
+        setCopyError(t('stats.samePath'));
       } else if (res.error === 'COPY_FAILED') {
         setCopyError(res.message || t('stats.copyFailed'));
       } else {

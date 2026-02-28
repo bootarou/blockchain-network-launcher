@@ -186,6 +186,8 @@ export const ja: TranslationDict = {
   'stats.copying': 'コピー中...',
   'stats.copyFailed': 'データのコピーに失敗しました。',
   'stats.dataCopied': '既存データを新しいパスにコピーしました。',
+  'stats.forbiddenPath': 'システムディレクトリ（/ や /etc 等）は保存先に指定できません。サブディレクトリを指定してください。',
+  'stats.samePath': '現在と同じパスです。別のパスを選択してください。',
   'stats.rolePeer': 'Peer',
   'stats.roleApi': 'API',
   'stats.roleVoting': 'Voting',
