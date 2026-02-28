@@ -94,6 +94,15 @@ export const api = {
     return res.json();
   },
 
+  deleteDirectory: async (dirPath: string) => {
+    const res = await fetch(`${API_BASE}/storage/directory`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dirPath }),
+    });
+    return res.json();
+  },
+
   // ── Docker Image Management ────────────────────────────────────────────
 
   getImages: async () => {

@@ -1188,6 +1188,66 @@ app.post('/api/storage/target', async (req, res) => {
 // =============================================================================
 
 /**
+ * DELETE /api/storage/directory — remove an unused data directory.
+ * Body: { "dirPath": "/opt/old-data" }
+ *
+ * Safety guards:
+ * - Must be under /opt/ (not system dirs)
+ * - Cannot delete the current TARGET_DIR
+ * - Node must be stopped
+ */
+app.delete('/api/storage/directory', async (req, res) => {
+  try {
+    const { dirPath } = req.body;
+    if (!dirPath || typeof dirPath !== 'string') {
+      return res.status(400).json({ error: 'dirPath is required' });
+    }
+
+    const cleanPath = path.resolve(dirPath);
+
+    // Guard: node must be stopped
+    if (networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
+      return res.status(409).json({
+        error: 'NODE_RUNNING',
+        message: 'Node must be stopped before deleting directories.',
+      });
+    }
+
+    // Guard: must be under /opt/ to prevent system damage
+    if (!cleanPath.startsWith('/opt/') || cleanPath === '/opt') {
+      return res.status(400).json({
+        error: 'FORBIDDEN_PATH',
+        message: `Only directories under /opt/ can be deleted. Got: ${cleanPath}`,
+      });
+    }
+
+    // Guard: cannot delete current target
+    if (cleanPath === path.resolve(TARGET_DIR)) {
+      return res.status(400).json({
+        error: 'IS_CURRENT',
+        message: 'Cannot delete the currently active storage directory.',
+      });
+    }
+
+    // Guard: path must exist
+    if (!fs.existsSync(cleanPath)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: `Path does not exist: ${cleanPath}` });
+    }
+
+    // Perform recursive delete
+    const { execSync } = await import('child_process');
+    broadcast('TERMINAL', `[storage] Deleting directory: ${cleanPath} ...`);
+    execSync(`rm -rf "${cleanPath}"`, { timeout: 120_000, stdio: 'pipe' });
+    broadcast('TERMINAL', `[storage] Directory deleted: ${cleanPath}`);
+
+    res.json({ success: true, deleted: cleanPath });
+  } catch (err: any) {
+    broadcast('TERMINAL', `[storage] Delete failed: ${err.message}`);
+    res.status(500).json({ error: 'DELETE_FAILED', message: err.message });
+  }
+});
+
+/**
  * GET /api/images — list Symbol-related Docker images on the host.
  */
 app.get('/api/images', async (_req, res) => {
