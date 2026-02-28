@@ -14,6 +14,11 @@ import {
   XCircle,
   AlertTriangle,
   Save,
+  HardDrive,
+  FolderOpen,
+  Info,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { configToYaml, yamlToConfig } from '../lib/utils';
@@ -55,6 +60,72 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
 
   const nodeStopped = networkState === 'stopped' || networkState === 'error';
   const nodeRunning = networkState === 'running';
+
+  // ── Storage setup state ────────────────────────────────────────────────
+  interface VolumeInfo { mountPoint: string; fsType: string; totalGB: number; availGB: number; usedPercent: number }
+  const [storageInfo, setStorageInfo] = useState<{ targetDir: string; totalGB: number; availGB: number } | null>(null);
+  const [setupVolumes, setSetupVolumes] = useState<VolumeInfo[]>([]);
+  const [setupCustomPath, setSetupCustomPath] = useState('');
+  const [setupSelectedPath, setSetupSelectedPath] = useState('');
+  const [setupSaving, setSetupSaving] = useState(false);
+  const [setupSuccess, setSetupSuccess] = useState('');
+  const [setupError, setSetupError] = useState('');
+  const [setupExpanded, setSetupExpanded] = useState(true);
+  const [setupLoadingVols, setSetupLoadingVols] = useState(false);
+
+  // Fetch storage info on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await api.getStorage();
+        if (data && !data.error) {
+          const totalGB = Math.round(data.filesystem.totalBytes / (1024 ** 3));
+          const availGB = Math.round(data.filesystem.availBytes / (1024 ** 3));
+          setStorageInfo({ targetDir: data.targetDir, totalGB, availGB });
+        }
+      } catch { /* ignore */ }
+    })();
+  }, [setupSuccess]); // re-fetch after successful change
+
+  // Load volumes when setup panel is opened
+  useEffect(() => {
+    if (!setupExpanded || setupVolumes.length > 0) return;
+    (async () => {
+      setSetupLoadingVols(true);
+      try {
+        const res = await api.getVolumes();
+        if (res.volumes) setSetupVolumes(res.volumes);
+      } catch { /* ignore */ }
+      setSetupLoadingVols(false);
+    })();
+  }, [setupExpanded]);
+
+  const setupEffectivePath = setupCustomPath.trim() || setupSelectedPath;
+  const needsSetup = storageInfo && storageInfo.availGB < 10;
+
+  const handleSetupApply = async () => {
+    const newPath = setupEffectivePath;
+    if (!newPath) return;
+    setSetupSaving(true);
+    setSetupError('');
+    try {
+      const res = await api.setTargetDir(newPath);
+      if (res.success) {
+        setSetupSuccess(newPath);
+        setSetupCustomPath('');
+        setSetupSelectedPath('');
+      } else if (res.error === 'FORBIDDEN_PATH') {
+        setSetupError(t('stats.forbiddenPath'));
+      } else if (res.error === 'SAME_PATH') {
+        setSetupError(t('stats.samePath'));
+      } else {
+        setSetupError(res.message || res.error || 'Failed');
+      }
+    } catch {
+      setSetupError(t('stats.copyFailed'));
+    }
+    setSetupSaving(false);
+  };
 
   // ── Command helpers ────────────────────────────────────────────────────
 
@@ -256,6 +327,167 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
             <p className="text-xs text-zinc-500">{t('dashboard.modalHint')}</p>
           </div>
+        </div>
+      )}
+
+      {/* ── Storage Setup Banner ── */}
+      {nodeStopped && storageInfo && (needsSetup || setupSuccess) && (
+        <div className={`border rounded-2xl p-5 shadow-xl space-y-4 ${
+          setupSuccess
+            ? 'bg-emerald-950/30 border-emerald-800/50'
+            : 'bg-amber-950/20 border-amber-800/40'
+        }`}>
+          <button
+            onClick={() => setSetupExpanded(v => !v)}
+            className="w-full flex items-center justify-between"
+          >
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <HardDrive className={`w-5 h-5 ${
+                setupSuccess ? 'text-emerald-400' : 'text-amber-400'
+              }`} />
+              <span className={setupSuccess ? 'text-emerald-300' : 'text-amber-200'}>
+                {t('setup.title')}
+              </span>
+            </h2>
+            <div className="flex items-center gap-2">
+              {!setupSuccess && storageInfo && (
+                <span className="text-xs text-amber-400 bg-amber-500/15 px-2 py-0.5 rounded">
+                  {t('setup.currentSmall').replace('{avail}', String(storageInfo.availGB))}
+                </span>
+              )}
+              {setupExpanded
+                ? <ChevronUp className="w-4 h-4 text-zinc-500" />
+                : <ChevronDown className="w-4 h-4 text-zinc-500" />
+              }
+            </div>
+          </button>
+
+          {setupExpanded && (
+            <div className="space-y-4">
+              {/* Description */}
+              {!setupSuccess && (
+                <div className="text-sm text-zinc-400">
+                  {t('setup.desc')}
+                </div>
+              )}
+
+              {/* Hint */}
+              {!setupSuccess && (
+                <div className="bg-sky-950/30 border border-sky-800/40 rounded-lg px-3 py-2 flex items-start gap-2">
+                  <Info className="w-3.5 h-3.5 text-sky-400 flex-shrink-0 mt-0.5" />
+                  <div className="text-[10px] text-sky-300/80 leading-relaxed">
+                    {t('stats.pathHintWindows')}
+                  </div>
+                </div>
+              )}
+
+              {/* Current path info */}
+              {!setupSuccess && storageInfo && (
+                <div className="flex items-center gap-2 text-xs text-zinc-500">
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  {t('setup.currentPath')}: <code className="text-zinc-400 bg-zinc-800 px-1.5 py-0.5 rounded">{storageInfo.targetDir}</code>
+                  <span className="text-amber-400">({storageInfo.availGB} GB {t('setup.free')})</span>
+                </div>
+              )}
+
+              {/* Error */}
+              {setupError && (
+                <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">
+                  <span className="text-xs text-red-400">{setupError}</span>
+                </div>
+              )}
+
+              {/* Success */}
+              {setupSuccess && (
+                <div className="space-y-2">
+                  <div className="text-sm text-emerald-400">
+                    {t('stats.restartRequired').replace('{path}', setupSuccess)}
+                  </div>
+                  <code className="block text-xs bg-zinc-950 text-zinc-300 rounded px-3 py-2 font-mono select-all">
+                    {t('stats.restartCommand')}
+                  </code>
+                </div>
+              )}
+
+              {/* Volume list */}
+              {!setupSuccess && (
+                <div>
+                  <div className="text-xs text-zinc-500 mb-2">{t('setup.recommendedVolumes')}</div>
+                  {setupLoadingVols ? (
+                    <div className="flex items-center gap-2 text-xs text-zinc-500 py-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {setupVolumes
+                        .filter(v => v.availGB >= 10)
+                        .map(v => {
+                          const isCurrent = v.mountPoint === storageInfo?.targetDir;
+                          const isSelected = setupSelectedPath === v.mountPoint && !setupCustomPath.trim();
+                          return (
+                            <button
+                              key={v.mountPoint}
+                              onClick={() => { setSetupSelectedPath(v.mountPoint); setSetupCustomPath(''); }}
+                              className={`w-full text-left flex items-center justify-between px-3 py-2.5 rounded-lg border transition-colors ${
+                                isSelected
+                                  ? 'border-indigo-500/60 bg-indigo-500/10'
+                                  : isCurrent
+                                    ? 'border-zinc-600 bg-zinc-800/40'
+                                    : 'border-zinc-800 bg-zinc-950/60 hover:border-zinc-600'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <HardDrive className={`w-4 h-4 ${isSelected ? 'text-indigo-400' : 'text-zinc-500'}`} />
+                                <span className="text-sm font-mono text-zinc-300">{v.mountPoint}</span>
+                                {isCurrent && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-400">
+                                    {t('stats.currentLabel')}
+                                  </span>
+                                )}
+                                {isSelected && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400">
+                                    {t('stats.selected')}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-sm text-emerald-400 font-semibold">
+                                {v.availGB} GB {t('setup.free')}
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Custom path */}
+              {!setupSuccess && (
+                <div>
+                  <div className="text-xs text-zinc-500 mb-1">{t('stats.customPath')}</div>
+                  <input
+                    type="text"
+                    value={setupCustomPath}
+                    onChange={(e) => setSetupCustomPath(e.target.value)}
+                    placeholder={t('stats.customPathPlaceholder')}
+                    className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+                  />
+                </div>
+              )}
+
+              {/* Apply */}
+              {!setupSuccess && (
+                <button
+                  onClick={handleSetupApply}
+                  disabled={!setupEffectivePath || setupSaving}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                >
+                  {setupSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {t('setup.apply')}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 

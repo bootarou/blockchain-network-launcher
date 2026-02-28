@@ -188,6 +188,15 @@ export const ja: TranslationDict = {
   'stats.dataCopied': '既存データを新しいパスにコピーしました。',
   'stats.forbiddenPath': 'システムディレクトリ（/ や /etc 等）は保存先に指定できません。サブディレクトリを指定してください。',
   'stats.samePath': '現在と同じパスです。別のパスを選択してください。',
+
+  // Setup banner
+  'setup.title': '⚙️ ストレージ初期設定',
+  'setup.desc': 'ノードを起動する前に、データ保存先を設定してください。ブロックチェーンデータには数十GB以上の空き容量が必要です。',
+  'setup.currentPath': '現在のパス',
+  'setup.currentSmall': '❗ 現在の空き: {avail} GB',
+  'setup.recommendedVolumes': '推奨ボリューム（空き 10GB 以上）',
+  'setup.free': '空き',
+  'setup.apply': '保存先を設定',
   'stats.pathHintWindows': '💡 Windows (Docker Desktop) をお使いの場合: /mnt/host/c/ を使うと Windows の C: ドライブ（最大容量）を直接利用できます（例: /mnt/host/c/symbol-data）。/var/lib/ も大容量（VHDX ~1TB）です。/opt/ やルート直下のパスは VM の小さな rootFS（約3GB）のため容量不足になります。',
   'stats.smallVolume': '容量不足',
   'stats.deleteVolume': 'ディレクトリを削除',

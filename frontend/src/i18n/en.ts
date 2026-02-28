@@ -188,6 +188,15 @@ export const en: TranslationDict = {
   'stats.dataCopied': 'Existing data has been copied to the new path.',
   'stats.forbiddenPath': 'System directories (/ or /etc etc.) cannot be used as storage. Please specify a subdirectory.',
   'stats.samePath': 'This is the same as the current path. Please select a different path.',
+
+  // Setup banner
+  'setup.title': '⚙️ Storage Setup',
+  'setup.desc': 'Please configure the data storage path before starting your node. Blockchain data requires tens of GB of free space.',
+  'setup.currentPath': 'Current path',
+  'setup.currentSmall': '❗ Current free: {avail} GB',
+  'setup.recommendedVolumes': 'Recommended volumes (10 GB+ free)',
+  'setup.free': 'free',
+  'setup.apply': 'Set Storage Path',
   'stats.pathHintWindows': '💡 Windows (Docker Desktop): Use /mnt/host/c/ to access Windows C: drive directly with maximum space (e.g. /mnt/host/c/symbol-data). /var/lib/ also has large capacity (VHDX ~1TB). Paths like /opt/ or root-level dirs are on Docker VM\'s tiny rootFS (~3GB) and will run out of space.',
   'stats.smallVolume': 'Low space',
   'stats.deleteVolume': 'Delete directory',
