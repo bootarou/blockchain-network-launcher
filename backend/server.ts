@@ -1023,7 +1023,7 @@ async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
     networkGenerationHashSeed: nodeInfo.networkGenerationHashSeed ?? '',
     restVersion: nodeServer?.serverInfo?.restVersion ?? '',
     isHealthy: true,
-    isSslEnabled: false,  // must be false so Explorer uses ws:// not wss://
+    isSslEnabled: true,   // must be true so Explorer includes this node (getAPINodeList filters by isSslEnabled); endpoint starts with http:// so WS will be ws:// not wss://
     geoLocation: null,
   };
 }
