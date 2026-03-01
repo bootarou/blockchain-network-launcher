@@ -273,9 +273,9 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
   if (flat.symbolServerImage) doc.symbolServerImage = flat.symbolServerImage;
   if (flat.symbolRestImage) doc.symbolRestImage = flat.symbolRestImage;
   if (flat.symbolServerToolsImage) doc.symbolServerToolsImage = flat.symbolServerToolsImage;
-  if (flat.symbolExplorerImage) doc.symbolExplorerImage = flat.symbolExplorerImage;
-  if (flat.symbolFaucetImage) doc.symbolFaucetImage = flat.symbolFaucetImage;
-  if (flat.symbolAgentImage) doc.symbolAgentImage = flat.symbolAgentImage;
+  // Note: symbolExplorerImage, symbolFaucetImage, symbolAgentImage are intentionally
+  // NOT written to the bootstrap preset. Explorer is managed by ExplorerManager
+  // (bootarou/explorer-smd build), not via the official symbolplatform image.
 
   // ── Nodes / Gateways ──
   if (flat.nodes) doc.nodes = flat.nodes;
@@ -514,7 +514,8 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
   const topKeys = [
     'privateKeySecurityMode',
     'symbolServerImage', 'symbolRestImage', 'symbolServerToolsImage',
-    'symbolExplorerImage', 'symbolFaucetImage', 'symbolAgentImage',
+    // symbolExplorerImage/symbolFaucetImage/symbolAgentImage excluded:
+    // Explorer is managed by ExplorerManager (SMD build)
     'nodes', 'gateways',
   ];
   for (const k of topKeys) {
@@ -1623,7 +1624,8 @@ app.get('/api/images', async (_req, res) => {
         (img) =>
           img.repository.includes('symbol') ||
           img.repository.includes('catapult') ||
-          img.repository.includes('mongo'),
+          img.repository.includes('mongo') ||
+          img.repository === EXPLORER_IMAGE,
       );
 
     res.json({ images });

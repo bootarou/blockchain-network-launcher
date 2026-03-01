@@ -328,9 +328,8 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'symbolServerImage', label: 'Server Image', type: 'text', description: 'Catapultサーバーイメージ' },
       { key: 'symbolRestImage', label: 'REST Image', type: 'text', description: 'REST Gatewayイメージ' },
       { key: 'symbolServerToolsImage', label: 'Tools Image', type: 'text', description: 'サーバーツールイメージ' },
-      { key: 'symbolExplorerImage', label: 'Explorer Image', type: 'text', description: 'エクスプローラーイメージ' },
-      { key: 'symbolFaucetImage', label: 'Faucet Image', type: 'text', description: 'Faucetイメージ' },
-      { key: 'symbolAgentImage', label: 'Agent Image', type: 'text', description: 'エージェントイメージ' },
+      // Explorer is managed by ExplorerManager (SMD build), not via bootstrap preset image
+      // Faucet/Agent images are not used in the current setup
     ],
   },
   {
