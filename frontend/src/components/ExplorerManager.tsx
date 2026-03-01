@@ -34,6 +34,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
   const [nsName, setNsName] = useState(defaultNsName);
   const [nsId, setNsId] = useState('');
   const [divisibility, setDivisibility] = useState(defaultDiv);
+  const [networkName, setNetworkName] = useState(config.baseNamespace || '');
 
   // ── Poll explorer status ─────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -71,6 +72,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
     const div = String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
     setNsName(ns);
     setDivisibility(div);
+    if (config.baseNamespace) setNetworkName(config.baseNamespace);
   }, [config.baseNamespace, config.nemesisMosaics]);
 
   // ── Handlers ─────────────────────────────────────────────────────────
@@ -90,6 +92,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
         namespaceName: nsName,
         divisibility,
         port: config.explorerPort || 8090,
+        networkName,
       });
     } catch { /* ignore */ }
     setTimeout(() => setLoading(false), 2000);
@@ -160,6 +163,23 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
           <div className="text-xs text-zinc-500 font-medium">
             {t('explorer.networkConfig')}
           </div>
+
+          {/* Network display name */}
+          <div>
+            <label className="block text-xs text-zinc-500 mb-1">
+              {t('explorer.networkName')}
+              <span className="ml-1 text-indigo-400/60">{t('explorer.networkNameHint')}</span>
+            </label>
+            <input
+              type="text"
+              value={networkName}
+              onChange={(e) => setNetworkName(e.target.value)}
+              disabled={status === 'running'}
+              placeholder="My Network"
+              className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs text-zinc-500 mb-1">

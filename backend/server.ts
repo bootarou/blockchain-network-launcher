@@ -1088,6 +1088,8 @@ const EXPLORER_CONTAINER = 'symbol-explorer';
 const EXPLORER_REPO = 'https://github.com/bootarou/explorer-smd.git';
 const EXPLORER_BRANCH = 'main';
 let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
+/** Network name displayed in the Explorer header (persisted across restarts) */
+let explorerNetworkName = '';
 
 // Detect pre-existing image at startup
 (async () => {
@@ -1206,8 +1208,12 @@ async function startExplorerContainer(
   namespaceName: string,
   divisibility: string,
   port = 8090,
+  networkName = '',
 ): Promise<void> {
   const { execSync, spawnSync } = await import('child_process');
+
+  // Persist network name for proxy injection (default to baseNamespace)
+  explorerNetworkName = networkName || namespaceName.split('.')[0] || '';
 
   const namespaceId = computeNamespaceId(namespaceName);
   broadcastLog(`[Explorer] Namespace: ${namespaceName} → ID: ${namespaceId}\n`);
@@ -1280,9 +1286,10 @@ app.post('/api/explorer/start', async (req, res) => {
       namespaceName = 'symbol.xym',
       divisibility = '6',
       port = 8090,
+      networkName = '',
     } = req.body || {};
 
-    await startExplorerContainer(namespaceName, divisibility, port);
+    await startExplorerContainer(namespaceName, divisibility, port, networkName);
     res.json({ success: true, port });
   } catch (err: any) {
     broadcastLog(`[Explorer] ❌ Start failed: ${err.message}\n`);
@@ -4149,7 +4156,9 @@ app.post('/api/commands/start', async (req, res) => {
           }
           if (wasRunning) {
             const ns = readExplorerNamespaceFromPreset();
-            await startExplorerContainer(ns.namespaceName, ns.divisibility);
+            // Preserve the user's previously-set network name
+            const prevName = explorerNetworkName;
+            await startExplorerContainer(ns.namespaceName, ns.divisibility, 8090, prevName);
           }
         } catch (e: any) {
           broadcastLog(`[Explorer] ⚠️ 自動再起動に失敗: ${e.message}\n`);
@@ -4444,6 +4453,8 @@ app.get('/config', async (_req, res) => {
     const upstream = await fetch(`${EXPLORER_INTERNAL_URL}/config`);
     if (!upstream.ok) throw new Error(`Explorer config: ${upstream.status}`);
     const config = await upstream.json();
+    // Inject network name so the runtime script can display it in the header
+    if (explorerNetworkName) config.networkName = explorerNetworkName;
     res.json(config);
   } catch {
     res.status(404).json({ error: 'Explorer not running' });
@@ -4475,6 +4486,43 @@ app.use('/explorer-smd', async (req, res, next) => {
       res.setHeader('Cache-Control', 'no-cache');
     }
     const body = Buffer.from(await upstream.arrayBuffer());
+
+    // Inject network-name display script into HTML pages
+    if ((subPath === '/' || subPath === '/index.html') && explorerNetworkName) {
+      let html = body.toString('utf-8');
+      // Sanitise the name for safe embedding in a JS string literal
+      const safeName = explorerNetworkName
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/</g, '\\x3c')
+        .replace(/>/g, '\\x3e');
+      // Small runtime script:
+      //  • Updates document.title with the network name
+      //  • Appends a subtitle <div> inside the Explorer header (.header-title)
+      //  • Also patches the mobile menu title
+      const script = [
+        '<script>!function(){',
+        `var n="${safeName}";`,
+        'document.title=n+" | Explorer";',
+        'var t=setInterval(function(){',
+        'var h=document.querySelector(".header-title");',
+        'if(h&&!document.getElementById("nn-sub")){',
+        'clearInterval(t);',
+        'var d=document.createElement("div");',
+        'd.id="nn-sub";',
+        'd.style.cssText="font-size:14px;color:#6b7280;font-weight:normal;text-transform:none;letter-spacing:0;margin-top:-4px";',
+        'd.textContent=n;',
+        'h.appendChild(d)',
+        '}',
+        '},300)',
+        '}()</script>',
+      ].join('');
+      html = html.replace('</head>', script + '</head>');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+
     res.send(body);
   } catch {
     // Explorer container not running – fall through to SPA catch-all

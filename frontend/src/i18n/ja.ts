@@ -266,6 +266,8 @@ export const ja: TranslationDict = {
   'explorer.status.running': '稼働中',
   'explorer.status.error': 'エラー',
   'explorer.networkConfig': 'Explorer ネットワーク設定',
+  'explorer.networkName': 'ネットワーク名',
+  'explorer.networkNameHint': '(Explorerヘッダーに表示)',
   'explorer.namespaceName': 'ネームスペース名',
   'explorer.namespaceId': 'ネームスペースID (hex)',
   'explorer.autoComputed': '(自動算出)',

@@ -266,6 +266,8 @@ export const en: TranslationDict = {
   'explorer.status.running': 'Running',
   'explorer.status.error': 'Error',
   'explorer.networkConfig': 'Explorer Network Config',
+  'explorer.networkName': 'Network Name',
+  'explorer.networkNameHint': '(shown in Explorer header)',
   'explorer.namespaceName': 'Namespace Name',
   'explorer.namespaceId': 'Namespace ID (hex)',
   'explorer.autoComputed': '(auto)',

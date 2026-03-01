@@ -275,6 +275,7 @@ export const api = {
     namespaceName: string;
     divisibility: string;
     port: number;
+    networkName?: string;
   }) => {
     const res = await fetch(`${API_BASE}/explorer/start`, {
       method: 'POST',
