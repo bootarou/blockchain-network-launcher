@@ -135,7 +135,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
         </span>
         {status === 'running' && (
           <a
-            href={`http://localhost:${port}`}
+            href={`http://${window.location.hostname}:${port}`}
             target="_blank"
             rel="noopener noreferrer"
             className="ml-auto flex items-center gap-1.5 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"

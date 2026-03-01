@@ -992,7 +992,7 @@ app.get('/api/node-stats', async (_req, res) => {
  *   The returned `endpoint` will use this so the Explorer's browser-side
  *   REST/WS connections go back through the same host the user accessed.
  */
-async function buildNodeWatchEntry(requestHost?: string): Promise<Record<string, unknown> | null> {
+async function buildNodeWatchEntry(requestHost?: string, forwardedHost?: string): Promise<Record<string, unknown> | null> {
   const base = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
   const timeout = 5000;
   const safeFetch = async (p: string) => {
@@ -1015,9 +1015,18 @@ async function buildNodeWatchEntry(requestHost?: string): Promise<Record<string,
   const fin = chainInfo?.latestFinalizedBlock;
 
   // Determine the endpoint URL that the Explorer's browser will use for
-  // REST & WebSocket. If the request came via an external IP we must
-  // return that same host:port so the browser can reach it.
-  const effectiveHost = requestHost || `localhost:${process.env.PORT || 4000}`;
+  // REST & WebSocket.  When the request was forwarded from the Explorer
+  // container's /api/ proxy, x-forwarded-host carries the original browser
+  // host (e.g. "192.168.0.31:8090").  We extract the hostname and pair it
+  // with the manager port so REST/WS calls land on the manager.
+  const mPort = process.env.PORT || 4000;
+  let effectiveHost: string;
+  if (forwardedHost) {
+    const browserHostname = forwardedHost.replace(/:\d+$/, '');
+    effectiveHost = `${browserHostname}:${mPort}`;
+  } else {
+    effectiveHost = requestHost || `localhost:${mPort}`;
+  }
   const endpointUrl = `http://${effectiveHost}`;
   // hostname only (strip port) for the "host" field
   const hostOnly = effectiveHost.replace(/:\d+$/, '');
@@ -1044,7 +1053,7 @@ async function buildNodeWatchEntry(requestHost?: string): Promise<Record<string,
 }
 
 app.get('/api/explorer-proxy/api/symbol/nodes/api', async (req, res) => {
-  const entry = await buildNodeWatchEntry(req.headers.host);
+  const entry = await buildNodeWatchEntry(req.headers.host, req.headers['x-forwarded-host'] as string);
   res.json(entry ? [entry] : []);
 });
 
@@ -1053,7 +1062,7 @@ app.get('/api/explorer-proxy/api/symbol/nodes/peer', async (_req, res) => {
 });
 
 app.get('/api/explorer-proxy/api/symbol/nodes/mainPublicKey/:pk', async (req, res) => {
-  const entry = await buildNodeWatchEntry(req.headers.host);
+  const entry = await buildNodeWatchEntry(req.headers.host, req.headers['x-forwarded-host'] as string);
   entry ? res.json(entry) : res.status(404).json({ message: 'Node not found' });
 });
 
@@ -1160,6 +1169,8 @@ app.post('/api/explorer/build', async (_req, res) => {
     // Local dev has no TLS: force ws:// instead of wss:// in httpToWssUrl
     "RUN sed -i \"s|'3000' === url.port ? 'ws:' : 'wss:'|'ws:'|\" src/helper.js",
     'RUN npm install && npm run build && mv dist www',
+    // Proxy /api/* in Explorer server.js → symbol-manager for external access
+    "RUN sed -i 's|if(req.url === CONFIG_ROUTE)|if(req.url.startsWith(\"/api/\")){var ph=process.env.PROXY_HOST||\"symbol-manager\",pp=+(process.env.PROXY_PORT||4000);var o={hostname:ph,port:pp,path:req.url,method:req.method,headers:Object.assign({},req.headers,{\"x-forwarded-host\":req.headers.host})};var pr=http.request(o,function(pRes){res.writeHead(pRes.statusCode,pRes.headers);pRes.pipe(res)});pr.on(\"error\",function(){res.writeHead(502);res.end(\"Bad Gateway\")});req.pipe(pr)}else if(req.url === CONFIG_ROUTE)|' server.js",
     '',
     'FROM node:lts-alpine AS runner',
     'WORKDIR /app',
@@ -1236,7 +1247,7 @@ async function startExplorerContainer(
   try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }
 
   const managerPort = process.env.PORT || 4000;
-  const nodeWatchUrl = `http://localhost:${managerPort}/api/explorer-proxy`;
+  const nodeWatchUrl = '/api/explorer-proxy';
   const endpoints = JSON.stringify({ marketData: '', nodeWatch: nodeWatchUrl });
   const networkConfig = JSON.stringify({
     namespaceName,
@@ -4469,6 +4480,8 @@ app.get('/config', async (_req, res) => {
     const config = await upstream.json();
     // Inject network name so the runtime script can display it in the header
     if (explorerNetworkName) config.networkName = explorerNetworkName;
+    // Rewrite nodeWatch to relative URL so it works from any host
+    if (config.endpoints) config.endpoints.nodeWatch = '/api/explorer-proxy';
     res.json(config);
   } catch {
     res.status(404).json({ error: 'Explorer not running' });
