@@ -1140,6 +1140,8 @@ app.post('/api/explorer/build', async (_req, res) => {
     `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} .`,
     // GitHub Pages uses publicPath '/explorer-smd/' but Docker serves from '/'
     "RUN sed -i \"s|'/explorer-smd/'|'/'|\" vue.config.js",
+    // Local dev has no TLS: force ws:// instead of wss:// in httpToWssUrl
+    "RUN sed -i \"s|'3000' === url.port ? 'ws:' : 'wss:'|'ws:'|\" src/helper.js",
     'RUN npm install && npm run build && mv dist www',
     '',
     'FROM node:lts-alpine AS runner',
@@ -1191,7 +1193,8 @@ app.post('/api/explorer/start', async (req, res) => {
     // Remove stale container
     try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }
 
-    const nodeWatchUrl = 'http://localhost:4000/api/explorer-proxy';
+    const managerPort = process.env.PORT || 4000;
+    const nodeWatchUrl = `http://localhost:${managerPort}/api/explorer-proxy`;
     const endpoints = JSON.stringify({ marketData: '', nodeWatch: nodeWatchUrl });
     const networkConfig = JSON.stringify({
       namespaceName,
@@ -1199,12 +1202,15 @@ app.post('/api/explorer/start', async (req, res) => {
       divisibility: String(divisibility),
     });
 
+    // Log the config being applied
+    broadcastLog(`[Explorer] Config: nodeWatch=${nodeWatchUrl}, ns=${namespaceName} (${namespaceId}), div=${divisibility}\n`);
+
     const args = [
       'run', '-d',
       '--name', EXPLORER_CONTAINER,
       '-p', `${port}:4000`,
       '--network', 'docker_default',
-      '-e', `apiNodePort=${process.env.PORT || 4000}`,
+      '-e', `apiNodePort=${managerPort}`,
       '-e', `endpoints=${endpoints}`,
       '-e', `networkConfig=${networkConfig}`,
       EXPLORER_IMAGE,
@@ -4330,6 +4336,62 @@ app.post('/api/network/fetch', async (req, res) => {
     res.status(502).json({
       error: `Failed to fetch from node: ${err.message}`,
     });
+  }
+});
+
+// =============================================================================
+// Explorer reverse proxy — serve the Explorer SPA through symbol-manager
+// =============================================================================
+// The Explorer container runs on port 4000 internally (exposed as 8090).
+// To avoid cross-origin issues (browser at :4000 vs Explorer at :8090),
+// we also proxy /explorer-smd/* requests to the Explorer container.
+// The user can access the Explorer at http://localhost:4000/explorer-smd/
+// and everything (REST, WS, config) stays same-origin.
+
+const EXPLORER_INTERNAL_URL = `http://${EXPLORER_CONTAINER}:4000`;
+
+// Serve Explorer config at /config (Explorer's loadConfig fetches window.location.origin + '/config')
+// This route is only hit when Explorer is accessed through symbol-manager proxy.
+app.get('/config', async (_req, res) => {
+  try {
+    const upstream = await fetch(`${EXPLORER_INTERNAL_URL}/config`);
+    if (!upstream.ok) throw new Error(`Explorer config: ${upstream.status}`);
+    const config = await upstream.json();
+    res.json(config);
+  } catch {
+    res.status(404).json({ error: 'Explorer not running' });
+  }
+});
+
+// Proxy all /explorer-smd/* to the Explorer container
+app.use('/explorer-smd', async (req, res, next) => {
+  // Don't proxy if Explorer container isn't running
+  const subPath = req.url || '/';  // Express strips the mount path
+  const target = `${EXPLORER_INTERNAL_URL}${subPath}`;
+  try {
+    const opts: RequestInit = {
+      method: req.method,
+      headers: { 'Content-Type': req.headers['content-type'] || 'application/octet-stream' },
+    };
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      opts.body = JSON.stringify(req.body);
+    }
+    const upstream = await fetch(target, opts);
+    res.status(upstream.status);
+    upstream.headers.forEach((v, k) => {
+      if (!['transfer-encoding', 'content-encoding', 'connection'].includes(k.toLowerCase())) {
+        res.setHeader(k, v);
+      }
+    });
+    // Override Cache-Control to prevent stale Explorer pages
+    if (subPath === '/' || subPath === '/index.html') {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.send(body);
+  } catch {
+    // Explorer container not running – fall through to SPA catch-all
+    next();
   }
 });
 
