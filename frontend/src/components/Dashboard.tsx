@@ -27,6 +27,7 @@ import { TerminalLogs } from './TerminalLogs';
 import { NodeStats } from './NodeStats';
 import { ImageManager } from './ImageManager';
 import { AddressViewer } from './AddressViewer';
+import { ExplorerManager } from './ExplorerManager';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -646,6 +647,9 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
 
       {/* ── Address Viewer (structured with decrypt & balances) ── */}
       <AddressViewer />
+
+      {/* ── Explorer Manager ── */}
+      <ExplorerManager config={config} nodeRunning={nodeRunning} />
 
       {/* ── Docker Images ── */}
       <ImageManager />

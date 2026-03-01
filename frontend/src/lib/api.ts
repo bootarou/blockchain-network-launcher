@@ -254,4 +254,39 @@ export const api = {
     }
     return res.json();
   },
+
+  // ── Explorer Management ────────────────────────────────────────────────
+
+  getExplorerStatus: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/explorer/status`);
+      return res.json();
+    } catch {
+      return { status: 'error' };
+    }
+  },
+
+  buildExplorer: async () => {
+    const res = await fetch(`${API_BASE}/explorer/build`, { method: 'POST' });
+    return res.json();
+  },
+
+  startExplorer: async (config: {
+    namespaceName: string;
+    namespaceId: string;
+    divisibility: string;
+    port: number;
+  }) => {
+    const res = await fetch(`${API_BASE}/explorer/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  },
+
+  stopExplorer: async () => {
+    const res = await fetch(`${API_BASE}/explorer/stop`, { method: 'POST' });
+    return res.json();
+  },
 };

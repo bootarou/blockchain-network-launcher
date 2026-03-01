@@ -257,6 +257,28 @@ export const en: TranslationDict = {
   'images.helpRestore': 'Restore: Import .tar → Set image name in Configuration Images category → Start',
 
   // ===========================================================================
+  // Explorer Manager
+  // ===========================================================================
+  'explorer.title': 'Explorer',
+  'explorer.status.not-built': 'Image not built',
+  'explorer.status.building': 'Building...',
+  'explorer.status.stopped': 'Stopped',
+  'explorer.status.running': 'Running',
+  'explorer.status.error': 'Error',
+  'explorer.networkConfig': 'Explorer Network Config',
+  'explorer.namespaceName': 'Namespace Name',
+  'explorer.namespaceId': 'Namespace ID (hex)',
+  'explorer.divisibility': 'Divisibility',
+  'explorer.build': 'Build Image',
+  'explorer.rebuild': 'Rebuild',
+  'explorer.start': 'Start Explorer',
+  'explorer.stop': 'Stop Explorer',
+  'explorer.open': 'Open Explorer',
+  'explorer.buildingTitle': 'Downloading Explorer...',
+  'explorer.buildingHint': 'Check Terminal Logs for build progress',
+  'explorer.nodeRequired': 'Node must be running',
+
+  // ===========================================================================
   // Join Network
   // ===========================================================================
   'join.title': 'Join Existing Network',

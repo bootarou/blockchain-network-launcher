@@ -948,6 +948,223 @@ app.get('/api/node-stats', async (_req, res) => {
 });
 
 // =============================================================================
+// Explorer: nodeWatch-compatible proxy for private/custom networks
+// =============================================================================
+// The bootarou/explorer-smd frontend requires nodeWatch API for node discovery.
+// Private/custom networks don't have a nodeWatch instance, so we provide a
+// compatible proxy that returns the local REST gateway info.
+
+/** Build a single nodeWatch-format entry from the local REST gateway */
+async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
+  const base = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
+  const timeout = 5000;
+  const safeFetch = async (p: string) => {
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), timeout);
+      const r = await fetch(`${base}${p}`, { signal: ac.signal });
+      clearTimeout(t);
+      return r.ok ? await r.json() : null;
+    } catch { return null; }
+  };
+
+  const [nodeInfo, chainInfo, nodeServer] = await Promise.all([
+    safeFetch('/node/info'),
+    safeFetch('/chain/info'),
+    safeFetch('/node/server'),
+  ]);
+  if (!nodeInfo) return null;
+
+  const fin = chainInfo?.latestFinalizedBlock;
+  return {
+    endpoint: `http://localhost:${NODE_REST_PORT}`,
+    mainPublicKey: nodeInfo.publicKey ?? '',
+    name: nodeInfo.friendlyName || nodeInfo.host || 'Local Node',
+    version: nodeInfo.version != null ? String(nodeInfo.version) : '0',
+    roles: nodeInfo.roles ?? 3,
+    height: chainInfo?.height ?? '0',
+    finalizedEpoch: fin?.finalizationEpoch ?? 0,
+    finalizedHash: fin?.hash ?? '',
+    finalizedHeight: fin?.height ?? '0',
+    finalizedPoint: fin?.finalizationPoint ?? 0,
+    host: 'localhost',
+    port: nodeInfo.port ?? 7900,
+    networkGenerationHashSeed: nodeInfo.networkGenerationHashSeed ?? '',
+    restVersion: nodeServer?.serverInfo?.restVersion ?? '',
+    isHealthy: true,
+    isSslEnabled: true,   // report as SSL to pass Explorer's filter
+    geoLocation: null,
+  };
+}
+
+app.get('/api/explorer-proxy/api/symbol/nodes/api', async (_req, res) => {
+  const entry = await buildNodeWatchEntry();
+  res.json(entry ? [entry] : []);
+});
+
+app.get('/api/explorer-proxy/api/symbol/nodes/peer', async (_req, res) => {
+  res.json([]);
+});
+
+app.get('/api/explorer-proxy/api/symbol/nodes/mainPublicKey/:pk', async (_req, res) => {
+  const entry = await buildNodeWatchEntry();
+  entry ? res.json(entry) : res.status(404).json({ message: 'Node not found' });
+});
+
+app.get('/api/explorer-proxy/api/symbol/nodes/count', async (_req, res) => {
+  res.json([{ date: new Date().toISOString().split('T')[0], count: 1 }]);
+});
+
+// =============================================================================
+// Explorer: Docker image build & container lifecycle
+// =============================================================================
+const EXPLORER_IMAGE = 'symbol-explorer-local';
+const EXPLORER_CONTAINER = 'symbol-explorer';
+const EXPLORER_REPO = 'https://github.com/bootarou/explorer-smd.git';
+const EXPLORER_BRANCH = 'main';
+let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
+
+// Detect pre-existing image at startup
+(async () => {
+  try {
+    const { execSync } = await import('child_process');
+    const id = execSync(`docker images -q ${EXPLORER_IMAGE}`, { encoding: 'utf-8' }).trim();
+    if (id) explorerBuildStatus = 'built';
+  } catch { /* ignore */ }
+})();
+
+app.get('/api/explorer/status', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const imageExists = !!execSync(`docker images -q ${EXPLORER_IMAGE}`, { encoding: 'utf-8' }).trim();
+    let containerRunning = false;
+    try {
+      const s = execSync(
+        `docker inspect -f '{{.State.Running}}' ${EXPLORER_CONTAINER} 2>/dev/null`,
+        { encoding: 'utf-8' },
+      ).trim();
+      containerRunning = s === 'true';
+    } catch { /* container doesn't exist */ }
+
+    let status = 'not-built';
+    if (explorerBuildStatus === 'building') status = 'building';
+    else if (containerRunning) status = 'running';
+    else if (imageExists) status = 'stopped';
+
+    res.json({ status, imageExists, containerRunning });
+  } catch (err: any) {
+    res.json({ status: 'error', error: err.message });
+  }
+});
+
+app.post('/api/explorer/build', async (_req, res) => {
+  if (explorerBuildStatus === 'building') {
+    return res.json({ success: false, error: 'Build already in progress' });
+  }
+  explorerBuildStatus = 'building';
+  broadcastLog('[Explorer] Building image from bootarou/explorer-smd (main branch) ...\n');
+  broadcast('EXPLORER_STATUS', { status: 'building' });
+
+  // The main branch does not contain a Dockerfile (it's designed for GitHub
+  // Pages), so we generate one on the fly that clones the main branch and
+  // performs the build inside the container.
+  const dockerfile = [
+    'FROM node:lts-alpine AS builder',
+    'RUN apk add --no-cache python3 make g++ git',
+    'ENV NODE_OPTIONS="--dns-result-order=ipv4first --openssl-legacy-provider"',
+    'WORKDIR /app',
+    `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} .`,
+    'RUN npm install && npm run build',
+    '',
+    'FROM node:lts-alpine AS runner',
+    'WORKDIR /app',
+    'COPY --from=builder /app /app',
+    'EXPOSE 4000',
+    'CMD ["npm", "start"]',
+  ].join('\n');
+
+  const proc = spawn('docker', ['build', '-t', EXPLORER_IMAGE, '-f', '-', '.'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: '/tmp',
+  });
+  // Feed Dockerfile via stdin
+  proc.stdin?.write(dockerfile);
+  proc.stdin?.end();
+
+  proc.stdout?.on('data', (d: Buffer) => broadcastLog(d.toString()));
+  proc.stderr?.on('data', (d: Buffer) => broadcastLog(d.toString()));
+
+  proc.on('close', (code) => {
+    if (code === 0) {
+      explorerBuildStatus = 'built';
+      broadcastLog('[Explorer] ✅ Image built successfully!\n');
+      broadcast('EXPLORER_STATUS', { status: 'stopped' });
+    } else {
+      explorerBuildStatus = 'error';
+      broadcastLog(`[Explorer] ❌ Build failed (exit code ${code})\n`);
+      broadcast('EXPLORER_STATUS', { status: 'error', message: `Build failed (${code})` });
+    }
+  });
+
+  res.json({ success: true, message: 'Build started' });
+});
+
+app.post('/api/explorer/start', async (req, res) => {
+  try {
+    const { execSync, spawnSync } = await import('child_process');
+    const {
+      namespaceName = 'symbol.xym',
+      namespaceId = 'E74B99BA41F4AFEE',
+      divisibility = '6',
+      port = 8090,
+    } = req.body || {};
+
+    // Remove stale container
+    try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }
+
+    const nodeWatchUrl = 'http://localhost:4000/api/explorer-proxy';
+    const endpoints = JSON.stringify({ marketData: '', nodeWatch: nodeWatchUrl });
+    const networkConfig = JSON.stringify({
+      namespaceName,
+      namespaceId,
+      divisibility: String(divisibility),
+    });
+
+    const args = [
+      'run', '-d',
+      '--name', EXPLORER_CONTAINER,
+      '-p', `${port}:4000`,
+      '--network', 'docker_default',
+      '-e', `apiNodePort=${NODE_REST_PORT}`,
+      '-e', `endpoints=${endpoints}`,
+      '-e', `networkConfig=${networkConfig}`,
+      EXPLORER_IMAGE,
+    ];
+    const r = spawnSync('docker', args, { encoding: 'utf-8', timeout: 30_000 });
+    if (r.status !== 0) throw new Error(r.stderr || 'docker run failed');
+
+    broadcastLog(`[Explorer] ✅ Started on port ${port}\n`);
+    broadcast('EXPLORER_STATUS', { status: 'running' });
+    res.json({ success: true, port });
+  } catch (err: any) {
+    broadcastLog(`[Explorer] ❌ Start failed: ${err.message}\n`);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/explorer/stop', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`);
+    broadcastLog('[Explorer] Stopped.\n');
+    broadcast('EXPLORER_STATUS', { status: 'stopped' });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// =============================================================================
 // Storage usage endpoint — returns disk usage for TARGET_DIR
 // =============================================================================
 app.get('/api/storage', async (_req, res) => {

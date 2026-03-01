@@ -257,6 +257,28 @@ export const ja: TranslationDict = {
   'images.helpRestore': '復元手順: .tar をインポート → Configuration の Images カテゴリでイメージ名を設定 → Start',
 
   // ===========================================================================
+  // Explorer Manager
+  // ===========================================================================
+  'explorer.title': 'Explorer',
+  'explorer.status.not-built': 'イメージ未ビルド',
+  'explorer.status.building': 'ビルド中...',
+  'explorer.status.stopped': '停止中',
+  'explorer.status.running': '稼働中',
+  'explorer.status.error': 'エラー',
+  'explorer.networkConfig': 'Explorer ネットワーク設定',
+  'explorer.namespaceName': 'ネームスペース名',
+  'explorer.namespaceId': 'ネームスペースID (hex)',
+  'explorer.divisibility': '可分性',
+  'explorer.build': 'イメージをビルド',
+  'explorer.rebuild': '再ビルド',
+  'explorer.start': 'Explorer 起動',
+  'explorer.stop': 'Explorer 停止',
+  'explorer.open': 'Explorer を開く',
+  'explorer.buildingTitle': 'Explorerをダウンロードしています...',
+  'explorer.buildingHint': 'ターミナルログで進捗を確認できます',
+  'explorer.nodeRequired': 'ノードが稼働中である必要があります',
+
+  // ===========================================================================
   // Join Network
   // ===========================================================================
   'join.title': '既存ネットワークに参加',
