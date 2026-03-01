@@ -1017,13 +1017,12 @@ async function buildNodeWatchEntry(requestHost?: string, forwardedHost?: string)
   // Determine the endpoint URL that the Explorer's browser will use for
   // REST & WebSocket.  When the request was forwarded from the Explorer
   // container's /api/ proxy, x-forwarded-host carries the original browser
-  // host (e.g. "192.168.0.31:8090").  We extract the hostname and pair it
-  // with the manager port so REST/WS calls land on the manager.
+  // host (e.g. "192.168.0.31:8090").  We return it as-is so REST/WS calls
+  // stay same-origin — the Explorer's server.js proxies them to the manager.
   const mPort = process.env.PORT || 4000;
   let effectiveHost: string;
   if (forwardedHost) {
-    const browserHostname = forwardedHost.replace(/:\d+$/, '');
-    effectiveHost = `${browserHostname}:${mPort}`;
+    effectiveHost = forwardedHost;
   } else {
     effectiveHost = requestHost || `localhost:${mPort}`;
   }
@@ -1059,8 +1058,9 @@ app.get('/api/explorer-proxy/api/symbol/nodes/api', async (req, res) => {
   // If user configured an external host, add a second entry so
   // the Explorer node list works from both localhost and external IP.
   if (explorerExternalHost) {
-    const mPort = process.env.PORT || 4000;
-    const extEntry = await buildNodeWatchEntry(`${explorerExternalHost}:${mPort}`);
+    // Use the same port as the primary entry (Explorer port if via proxy, manager port otherwise)
+    const primaryPort = (() => { try { return new URL(entry.endpoint as string).port; } catch { return String(process.env.PORT || 4000); } })();
+    const extEntry = await buildNodeWatchEntry(`${explorerExternalHost}:${primaryPort}`);
     if (extEntry) {
       extEntry.name = `${extEntry.name} (external)`;
       // Avoid duplicate if the dynamic entry already matches
@@ -1185,8 +1185,25 @@ app.post('/api/explorer/build', async (_req, res) => {
     // Local dev has no TLS: force ws:// instead of wss:// in httpToWssUrl
     "RUN sed -i \"s|'3000' === url.port ? 'ws:' : 'wss:'|'ws:'|\" src/helper.js",
     'RUN npm install && npm run build && mv dist www',
-    // Proxy /api/* in Explorer server.js → symbol-manager for external access
-    "RUN sed -i 's|if(req.url === CONFIG_ROUTE)|if(req.url.startsWith(\"/api/\")){var ph=process.env.PROXY_HOST||\"symbol-manager\",pp=+(process.env.PROXY_PORT||4000);var o={hostname:ph,port:pp,path:req.url,method:req.method,headers:Object.assign({},req.headers,{\"x-forwarded-host\":req.headers.host})};var pr=http.request(o,function(pRes){res.writeHead(pRes.statusCode,pRes.headers);pRes.pipe(res)});pr.on(\"error\",function(){res.writeHead(502);res.end(\"Bad Gateway\")});req.pipe(pr)}else if(req.url === CONFIG_ROUTE)|' server.js",
+    // --- Same-origin proxy wrapper ---
+    // The original server.js serves static files + /config on port 4000.
+    // We rename it, shift to port 4001, and create a thin proxy wrapper on
+    // port 4000 that forwards API / REST / WebSocket to symbol-manager
+    // while passing everything else (static files, /config) to the original.
+    // This keeps the browser on a single origin (e.g. 192.168.0.31:8090)
+    // so no CORS issues arise.
+    "RUN mv server.js _server.js && sed -i 's/const PORT = 4000/const PORT = 4001/' _server.js",
+    `RUN cat > server.js << 'PROXYEOF'
+const http=require("http");
+const MH=process.env.PROXY_HOST||"symbol-manager";
+const MP=+(process.env.PROXY_PORT||4000);
+const RE=/^\\/(api|node|chain|blocks?|transactions?|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|secretlock|hashlock)(\\\/|$|\\?)/;
+require("./_server");
+function px(h,p,q,r,x){var o={hostname:h,port:p,path:q.url,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
+var srv=http.createServer(function(q,r){RE.test(q.url)?px(MH,MP,q,r,{"x-forwarded-host":q.headers.host}):px("127.0.0.1",4001,q,r)});
+srv.on("upgrade",function(q,s){var o={hostname:MH,port:MP,path:q.url,method:q.method,headers:q.headers};var p=http.request(o);p.on("upgrade",function(r,ps){var h="HTTP/1.1 101 Switching Protocols\\r\\n";Object.keys(r.headers).forEach(function(k){h+=k+": "+r.headers[k]+"\\r\\n"});h+="\\r\\n";s.write(h);ps.pipe(s);s.pipe(ps)});p.on("error",function(){s.end()});p.end()});
+srv.listen(4000);console.log("Explorer proxy on 4000, original on 4001");
+PROXYEOF`,
     '',
     'FROM node:lts-alpine AS runner',
     'WORKDIR /app',
