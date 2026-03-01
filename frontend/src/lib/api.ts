@@ -273,7 +273,6 @@ export const api = {
 
   startExplorer: async (config: {
     namespaceName: string;
-    namespaceId: string;
     divisibility: string;
     port: number;
   }) => {
@@ -288,5 +287,14 @@ export const api = {
   stopExplorer: async () => {
     const res = await fetch(`${API_BASE}/explorer/stop`, { method: 'POST' });
     return res.json();
+  },
+
+  computeNamespaceId: async (name: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/explorer/namespace-id?name=${encodeURIComponent(name)}`);
+      return res.json();
+    } catch {
+      return { error: 'fetch failed' };
+    }
   },
 };

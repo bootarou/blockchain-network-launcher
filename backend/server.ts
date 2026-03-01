@@ -1016,6 +1016,39 @@ app.get('/api/explorer-proxy/api/symbol/nodes/count', async (_req, res) => {
 });
 
 // =============================================================================
+// Explorer: compute Symbol namespace ID from fully-qualified name
+// =============================================================================
+// Algorithm: For each dot-separated part, SHA3-256(parentId_LE8 + utf8(part)),
+// take first 8 bytes as uint64 LE, set high bit (bit 63).
+function computeNamespaceId(fullyQualifiedName: string): string {
+  const parts = fullyQualifiedName.split('.');
+  let parentId = BigInt(0);
+  for (const part of parts) {
+    const hash = crypto.createHash('sha3-256');
+    const parentBytes = Buffer.alloc(8);
+    parentBytes.writeBigUInt64LE(parentId);
+    hash.update(parentBytes);
+    hash.update(Buffer.from(part, 'utf-8'));
+    const digest = hash.digest();
+    let id = digest.readBigUInt64LE(0);
+    id = id | BigInt('0x8000000000000000');
+    parentId = id;
+  }
+  return parentId.toString(16).toUpperCase().padStart(16, '0');
+}
+
+app.get('/api/explorer/namespace-id', (req, res) => {
+  const name = (req.query.name as string || '').trim();
+  if (!name) return res.json({ error: 'name parameter required' });
+  try {
+    const namespaceId = computeNamespaceId(name);
+    res.json({ name, namespaceId });
+  } catch (err: any) {
+    res.json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // Explorer: Docker image build & container lifecycle
 // =============================================================================
 const EXPLORER_IMAGE = 'symbol-explorer-local';
@@ -1116,10 +1149,13 @@ app.post('/api/explorer/start', async (req, res) => {
     const { execSync, spawnSync } = await import('child_process');
     const {
       namespaceName = 'symbol.xym',
-      namespaceId = 'E74B99BA41F4AFEE',
       divisibility = '6',
       port = 8090,
     } = req.body || {};
+
+    // Auto-compute namespace ID from name (Symbol SHA3-256 algorithm)
+    const namespaceId = computeNamespaceId(namespaceName);
+    broadcastLog(`[Explorer] Namespace: ${namespaceName} → ID: ${namespaceId}\n`);
 
     // Remove stale container
     try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }

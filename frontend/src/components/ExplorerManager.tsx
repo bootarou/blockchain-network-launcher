@@ -32,7 +32,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
   const defaultDiv = String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
 
   const [nsName, setNsName] = useState(defaultNsName);
-  const [nsId, setNsId] = useState('E74B99BA41F4AFEE');
+  const [nsId, setNsId] = useState('');
   const [divisibility, setDivisibility] = useState(defaultDiv);
 
   // ── Poll explorer status ─────────────────────────────────────────────
@@ -48,6 +48,19 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
     const iv = setInterval(fetchStatus, 5000);
     return () => clearInterval(iv);
   }, [fetchStatus]);
+
+  // Auto-compute namespace ID from name
+  useEffect(() => {
+    if (!nsName.trim()) { setNsId(''); return; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.computeNamespaceId(nsName.trim());
+        if (!cancelled && res?.namespaceId) setNsId(res.namespaceId);
+      } catch { /* ignore */ }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [nsName]);
 
   // Update namespace defaults when preset config changes
   useEffect(() => {
@@ -75,7 +88,6 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
     try {
       await api.startExplorer({
         namespaceName: nsName,
-        namespaceId: nsId,
         divisibility,
         port: config.explorerPort || 8090,
       });
@@ -164,14 +176,13 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
             <div>
               <label className="block text-xs text-zinc-500 mb-1">
                 {t('explorer.namespaceId')}
+                <span className="ml-1 text-indigo-400/60">{t('explorer.autoComputed')}</span>
               </label>
               <input
                 type="text"
                 value={nsId}
-                onChange={(e) => setNsId(e.target.value)}
-                disabled={status === 'running'}
-                placeholder="E74B99BA41F4AFEE"
-                className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+                readOnly
+                className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-500 font-mono cursor-default focus:outline-none"
               />
             </div>
             <div>

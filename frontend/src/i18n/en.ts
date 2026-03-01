@@ -268,6 +268,7 @@ export const en: TranslationDict = {
   'explorer.networkConfig': 'Explorer Network Config',
   'explorer.namespaceName': 'Namespace Name',
   'explorer.namespaceId': 'Namespace ID (hex)',
+  'explorer.autoComputed': '(auto)',
   'explorer.divisibility': 'Divisibility',
   'explorer.build': 'Build Image',
   'explorer.rebuild': 'Rebuild',
