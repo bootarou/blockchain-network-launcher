@@ -976,8 +976,9 @@ async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
   if (!nodeInfo) return null;
 
   const fin = chainInfo?.latestFinalizedBlock;
+  const managerPort = process.env.PORT || 4000;
   return {
-    endpoint: `http://localhost:${NODE_REST_PORT}`,
+    endpoint: `http://localhost:${managerPort}`,
     mainPublicKey: nodeInfo.publicKey ?? '',
     name: nodeInfo.friendlyName || nodeInfo.host || 'Local Node',
     version: nodeInfo.version != null ? String(nodeInfo.version) : '0',
