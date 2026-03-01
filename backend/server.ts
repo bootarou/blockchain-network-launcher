@@ -19,7 +19,37 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ noServer: true });
+
+// Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
+server.on('upgrade', (request, socket, head) => {
+  if (request.url === '/ws') {
+    // Proxy WebSocket to Symbol REST gateway for Explorer block notifications
+    wss.handleUpgrade(request, socket, head, (clientWs) => {
+      const upstream = new WebSocket(`ws://${NODE_REST_HOST}:${NODE_REST_PORT}/ws`);
+
+      upstream.on('open', () => {
+        // Relay: upstream → client
+        upstream.on('message', (data) => {
+          if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
+        });
+        // Relay: client → upstream
+        clientWs.on('message', (data) => {
+          if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
+        });
+      });
+
+      clientWs.on('close', () => { try { upstream.close(); } catch {} });
+      upstream.on('close', () => { try { if (clientWs.readyState === WebSocket.OPEN) clientWs.close(); } catch {} });
+      upstream.on('error', () => { try { clientWs.close(); } catch {} });
+    });
+  } else {
+    // Our own log/status WebSocket
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  }
+});
 
 const SHARED_DIR = path.resolve(__dirname, '../shared');
 const PRESET_PATH = path.join(SHARED_DIR, 'custom-preset.yml');
@@ -993,7 +1023,7 @@ async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
     networkGenerationHashSeed: nodeInfo.networkGenerationHashSeed ?? '',
     restVersion: nodeServer?.serverInfo?.restVersion ?? '',
     isHealthy: true,
-    isSslEnabled: true,   // report as SSL to pass Explorer's filter
+    isSslEnabled: false,  // must be false so Explorer uses ws:// not wss://
     geoLocation: null,
   };
 }
@@ -4314,11 +4344,19 @@ app.post('/api/network/fetch', async (req, res) => {
 // Only activated for paths that look like Symbol REST endpoints and do NOT
 // start with /api/ (our own routes) or match static frontend assets.
 
-const REST_PROXY_PATHS = /^\/(node|chain|blocks?|transactions?|accounts?|mosaics?|namespaces?|metadata|receipts|finalization|network|multisig|restrictions?|secretlock|hashlock)(\/|$)/;
+const REST_PROXY_PATHS = /^\/(node|chain|blocks?|transactions?|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|secretlock|hashlock)(\/|$)/;
 
-// Return empty finalization proof for epoch 0 (it never exists)
+// Return valid finalization proof for epoch 0 (it never exists but SDK
+// expects the full shape including messageGroups array)
 app.get('/finalization/proof/epoch/0', (_req, res) => {
-  res.json({ finalizationEpoch: 0, finalizationPoint: 0, height: '0', hash: '0'.repeat(64) });
+  res.json({
+    version: 1,
+    finalizationEpoch: 0,
+    finalizationPoint: 0,
+    height: '1',
+    hash: '0'.repeat(64),
+    messageGroups: [],
+  });
 });
 
 app.use((req, res, next) => {
