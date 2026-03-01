@@ -1074,7 +1074,7 @@ app.post('/api/explorer/build', async (_req, res) => {
     'ENV NODE_OPTIONS="--dns-result-order=ipv4first --openssl-legacy-provider"',
     'WORKDIR /app',
     `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} .`,
-    'RUN npm install && npm run build',
+    'RUN npm install && npm run build && mv dist www',
     '',
     'FROM node:lts-alpine AS runner',
     'WORKDIR /app',
