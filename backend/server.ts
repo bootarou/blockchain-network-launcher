@@ -1054,7 +1054,20 @@ async function buildNodeWatchEntry(requestHost?: string, forwardedHost?: string)
 
 app.get('/api/explorer-proxy/api/symbol/nodes/api', async (req, res) => {
   const entry = await buildNodeWatchEntry(req.headers.host, req.headers['x-forwarded-host'] as string);
-  res.json(entry ? [entry] : []);
+  if (!entry) return res.json([]);
+  const entries = [entry];
+  // If user configured an external host, add a second entry so
+  // the Explorer node list works from both localhost and external IP.
+  if (explorerExternalHost) {
+    const mPort = process.env.PORT || 4000;
+    const extEntry = await buildNodeWatchEntry(`${explorerExternalHost}:${mPort}`);
+    if (extEntry) {
+      extEntry.name = `${extEntry.name} (external)`;
+      // Avoid duplicate if the dynamic entry already matches
+      if (extEntry.endpoint !== entry.endpoint) entries.push(extEntry);
+    }
+  }
+  res.json(entries);
 });
 
 app.get('/api/explorer-proxy/api/symbol/nodes/peer', async (_req, res) => {
@@ -1067,7 +1080,8 @@ app.get('/api/explorer-proxy/api/symbol/nodes/mainPublicKey/:pk', async (req, re
 });
 
 app.get('/api/explorer-proxy/api/symbol/nodes/count', async (_req, res) => {
-  res.json([{ date: new Date().toISOString().split('T')[0], count: 1 }]);
+  const count = explorerExternalHost ? 2 : 1;
+  res.json([{ date: new Date().toISOString().split('T')[0], count }]);
 });
 
 // =============================================================================
@@ -1113,6 +1127,8 @@ const EXPLORER_BRANCH = 'main';
 let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
 /** Network name displayed in the Explorer header (persisted across restarts) */
 let explorerNetworkName = '';
+/** User-configured external host/IP so Explorer node list works from outside */
+let explorerExternalHost = '';
 
 // Detect pre-existing image at startup
 (async () => {
@@ -1234,11 +1250,14 @@ async function startExplorerContainer(
   divisibility: string,
   port = 8090,
   networkName = '',
+  externalHost = '',
 ): Promise<void> {
   const { execSync, spawnSync } = await import('child_process');
 
   // Persist network name for proxy injection (default to baseNamespace)
   explorerNetworkName = networkName || namespaceName.split('.')[0] || '';
+  // Persist external host so nodeWatch entries include it
+  explorerExternalHost = externalHost;
 
   const namespaceId = computeNamespaceId(namespaceName);
   broadcastLog(`[Explorer] Namespace: ${namespaceName} → ID: ${namespaceId}\n`);
@@ -1312,9 +1331,10 @@ app.post('/api/explorer/start', async (req, res) => {
       divisibility = '6',
       port = 8090,
       networkName = '',
+      externalHost = '',
     } = req.body || {};
 
-    await startExplorerContainer(namespaceName, divisibility, port, networkName);
+    await startExplorerContainer(namespaceName, divisibility, port, networkName, externalHost);
     res.json({ success: true, port });
   } catch (err: any) {
     broadcastLog(`[Explorer] ❌ Start failed: ${err.message}\n`);
@@ -4183,7 +4203,8 @@ app.post('/api/commands/start', async (req, res) => {
             const ns = readExplorerNamespaceFromPreset();
             // Preserve the user's previously-set network name
             const prevName = explorerNetworkName;
-            await startExplorerContainer(ns.namespaceName, ns.divisibility, 8090, prevName);
+            const prevExtHost = explorerExternalHost;
+            await startExplorerContainer(ns.namespaceName, ns.divisibility, 8090, prevName, prevExtHost);
           }
         } catch (e: any) {
           broadcastLog(`[Explorer] ⚠️ 自動再起動に失敗: ${e.message}\n`);

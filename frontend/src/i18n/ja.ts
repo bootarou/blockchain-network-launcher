@@ -268,6 +268,8 @@ export const ja: TranslationDict = {
   'explorer.networkConfig': 'Explorer ネットワーク設定',
   'explorer.networkName': 'ネットワーク名',
   'explorer.networkNameHint': '(Explorerヘッダーに表示)',
+  'explorer.externalHost': '外部ホスト / IP アドレス',
+  'explorer.externalHostHint': '(外部からExplorerにアクセスする場合に設定)',
   'explorer.namespaceName': 'ネームスペース名',
   'explorer.namespaceId': 'ネームスペースID (hex)',
   'explorer.autoComputed': '(自動算出)',

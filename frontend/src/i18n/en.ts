@@ -268,6 +268,8 @@ export const en: TranslationDict = {
   'explorer.networkConfig': 'Explorer Network Config',
   'explorer.networkName': 'Network Name',
   'explorer.networkNameHint': '(shown in Explorer header)',
+  'explorer.externalHost': 'External Host / IP Address',
+  'explorer.externalHostHint': '(set if accessing Explorer from outside)',
   'explorer.namespaceName': 'Namespace Name',
   'explorer.namespaceId': 'Namespace ID (hex)',
   'explorer.autoComputed': '(auto)',

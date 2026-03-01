@@ -276,6 +276,7 @@ export const api = {
     divisibility: string;
     port: number;
     networkName?: string;
+    externalHost?: string;
   }) => {
     const res = await fetch(`${API_BASE}/explorer/start`, {
       method: 'POST',

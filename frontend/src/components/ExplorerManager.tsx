@@ -35,6 +35,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
   const [nsId, setNsId] = useState('');
   const [divisibility, setDivisibility] = useState(defaultDiv);
   const [networkName, setNetworkName] = useState(config.baseNamespace || '');
+  const [externalHost, setExternalHost] = useState('');
 
   // ── Poll explorer status ─────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -93,6 +94,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
         divisibility,
         port: config.explorerPort || 8090,
         networkName,
+        externalHost: externalHost.trim() || undefined,
       });
     } catch { /* ignore */ }
     setTimeout(() => setLoading(false), 2000);
@@ -177,6 +179,22 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
               disabled={status === 'running'}
               placeholder="My Network"
               className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
+
+          {/* External host for outside access */}
+          <div>
+            <label className="block text-xs text-zinc-500 mb-1">
+              {t('explorer.externalHost')}
+              <span className="ml-1 text-indigo-400/60">{t('explorer.externalHostHint')}</span>
+            </label>
+            <input
+              type="text"
+              value={externalHost}
+              onChange={(e) => setExternalHost(e.target.value)}
+              disabled={status === 'running'}
+              placeholder="192.168.0.31"
+              className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 focus:outline-none focus:border-indigo-500/50 font-mono"
             />
           </div>
 
