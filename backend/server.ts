@@ -1177,49 +1177,111 @@ app.post('/api/explorer/build', async (_req, res) => {
   res.json({ success: true, message: 'Build started' });
 });
 
+// ---------------------------------------------------------------------------
+// Explorer: internal helpers (used by API routes AND automatic restart)
+// ---------------------------------------------------------------------------
+
+/** Read namespace & divisibility from custom-preset.yml for Explorer config */
+function readExplorerNamespaceFromPreset(): { namespaceName: string; divisibility: string } {
+  const defaults = { namespaceName: 'symbol.xym', divisibility: '6' };
+  try {
+    if (!fs.existsSync(PRESET_PATH)) return defaults;
+    const content = fs.readFileSync(PRESET_PATH, 'utf-8');
+    const doc = yaml.load(content) as Record<string, unknown>;
+    const ns = doc?.baseNamespace ? String(doc.baseNamespace) : defaults.namespaceName;
+    const nemesis = doc?.nemesis as Record<string, unknown> | undefined;
+    const mosaics = nemesis?.mosaics as any[] | undefined;
+    const div = mosaics?.[0]?.divisibility != null
+      ? String(mosaics[0].divisibility)
+      : defaults.divisibility;
+    return { namespaceName: ns, divisibility: div };
+  } catch {
+    return defaults;
+  }
+}
+
+/** Start (or restart) the Explorer container with the given namespace config */
+async function startExplorerContainer(
+  namespaceName: string,
+  divisibility: string,
+  port = 8090,
+): Promise<void> {
+  const { execSync, spawnSync } = await import('child_process');
+
+  const namespaceId = computeNamespaceId(namespaceName);
+  broadcastLog(`[Explorer] Namespace: ${namespaceName} → ID: ${namespaceId}\n`);
+
+  // Remove stale container
+  try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }
+
+  const managerPort = process.env.PORT || 4000;
+  const nodeWatchUrl = `http://localhost:${managerPort}/api/explorer-proxy`;
+  const endpoints = JSON.stringify({ marketData: '', nodeWatch: nodeWatchUrl });
+  const networkConfig = JSON.stringify({
+    namespaceName,
+    namespaceId,
+    divisibility: String(divisibility),
+  });
+
+  broadcastLog(`[Explorer] Config: nodeWatch=${nodeWatchUrl}, ns=${namespaceName} (${namespaceId}), div=${divisibility}\n`);
+
+  const args = [
+    'run', '-d',
+    '--name', EXPLORER_CONTAINER,
+    '-p', `${port}:4000`,
+    '--network', 'docker_default',
+    '-e', `apiNodePort=${managerPort}`,
+    '-e', `endpoints=${endpoints}`,
+    '-e', `networkConfig=${networkConfig}`,
+    EXPLORER_IMAGE,
+  ];
+  const r = spawnSync('docker', args, { encoding: 'utf-8', timeout: 30_000 });
+  if (r.status !== 0) throw new Error(r.stderr || 'docker run failed');
+
+  broadcastLog(`[Explorer] ✅ Started on port ${port}\n`);
+  broadcast('EXPLORER_STATUS', { status: 'running' });
+}
+
+/** Check if the Explorer container is currently running */
+function isExplorerRunning(): boolean {
+  try {
+    const { execSync } = require('child_process');
+    const s = execSync(
+      `docker inspect -f '{{.State.Running}}' ${EXPLORER_CONTAINER} 2>/dev/null`,
+      { encoding: 'utf-8' },
+    ).trim();
+    return s === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/** Stop and remove Explorer container + optionally remove image */
+async function cleanupExplorer(removeImage = false): Promise<void> {
+  const { execSync } = await import('child_process');
+  try {
+    execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`);
+    broadcastLog('[Explorer] Container removed\n');
+  } catch { /* container didn't exist */ }
+  if (removeImage) {
+    try {
+      execSync(`docker rmi ${EXPLORER_IMAGE} 2>/dev/null`);
+      explorerBuildStatus = 'none';
+      broadcastLog('[Explorer] Image removed\n');
+    } catch { /* image didn't exist */ }
+  }
+  broadcast('EXPLORER_STATUS', { status: removeImage ? 'not-built' : 'stopped' });
+}
+
 app.post('/api/explorer/start', async (req, res) => {
   try {
-    const { execSync, spawnSync } = await import('child_process');
     const {
       namespaceName = 'symbol.xym',
       divisibility = '6',
       port = 8090,
     } = req.body || {};
 
-    // Auto-compute namespace ID from name (Symbol SHA3-256 algorithm)
-    const namespaceId = computeNamespaceId(namespaceName);
-    broadcastLog(`[Explorer] Namespace: ${namespaceName} → ID: ${namespaceId}\n`);
-
-    // Remove stale container
-    try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }
-
-    const managerPort = process.env.PORT || 4000;
-    const nodeWatchUrl = `http://localhost:${managerPort}/api/explorer-proxy`;
-    const endpoints = JSON.stringify({ marketData: '', nodeWatch: nodeWatchUrl });
-    const networkConfig = JSON.stringify({
-      namespaceName,
-      namespaceId,
-      divisibility: String(divisibility),
-    });
-
-    // Log the config being applied
-    broadcastLog(`[Explorer] Config: nodeWatch=${nodeWatchUrl}, ns=${namespaceName} (${namespaceId}), div=${divisibility}\n`);
-
-    const args = [
-      'run', '-d',
-      '--name', EXPLORER_CONTAINER,
-      '-p', `${port}:4000`,
-      '--network', 'docker_default',
-      '-e', `apiNodePort=${managerPort}`,
-      '-e', `endpoints=${endpoints}`,
-      '-e', `networkConfig=${networkConfig}`,
-      EXPLORER_IMAGE,
-    ];
-    const r = spawnSync('docker', args, { encoding: 'utf-8', timeout: 30_000 });
-    if (r.status !== 0) throw new Error(r.stderr || 'docker run failed');
-
-    broadcastLog(`[Explorer] ✅ Started on port ${port}\n`);
-    broadcast('EXPLORER_STATUS', { status: 'running' });
+    await startExplorerContainer(namespaceName, divisibility, port);
     res.json({ success: true, port });
   } catch (err: any) {
     broadcastLog(`[Explorer] ❌ Start failed: ${err.message}\n`);
@@ -4072,6 +4134,25 @@ app.post('/api/commands/start', async (req, res) => {
 
       broadcastLog(`[System] Polling http://${NODE_REST_HOST}:${NODE_REST_PORT}/node/health ...\n`);
       await waitForNodeHealth(90);    // up to 90 seconds
+
+      // Step 6b: Auto-restart Explorer if it was previously running
+      //   When the node is reconfigured (e.g. namespace changed), the Explorer
+      //   must be restarted with the new config.  We read the namespace from
+      //   custom-preset.yml so the user doesn't have to manually restart it.
+      if (isExplorerRunning() || explorerBuildStatus === 'built') {
+        try {
+          const wasRunning = isExplorerRunning();
+          if (wasRunning) {
+            broadcastLog('[Explorer] ♻️ ノード再構成を検出 — Explorerを自動再起動します...\n');
+          }
+          if (wasRunning) {
+            const ns = readExplorerNamespaceFromPreset();
+            await startExplorerContainer(ns.namespaceName, ns.divisibility);
+          }
+        } catch (e: any) {
+          broadcastLog(`[Explorer] ⚠️ 自動再起動に失敗: ${e.message}\n`);
+        }
+      }
     };
 
     // Fire-and-forget
@@ -4124,7 +4205,7 @@ app.post('/api/commands/resetData', async (_req, res) => {
   }
 });
 
-// Full reset — stop everything, delete target dir, seeds, ui-meta
+// Full reset — stop everything, delete target dir, seeds, ui-meta, Explorer
 app.post('/api/commands/fullReset', async (_req, res) => {
   try {
     broadcastLog('\n[System] ========== FULL RESET ==========\n');
@@ -4132,6 +4213,10 @@ app.post('/api/commands/fullReset', async (_req, res) => {
     broadcastStatus();
 
     const { execSync } = await import('child_process');
+
+    // 0. Stop and remove Explorer container + image
+    broadcastLog('[Reset] Removing Explorer...\n');
+    await cleanupExplorer(true);  // removeImage=true
 
     // 1. Stop V2 containers (docker compose down) if they exist
     const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
