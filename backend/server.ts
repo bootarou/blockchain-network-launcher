@@ -1173,7 +1173,7 @@ app.post('/api/explorer/start', async (req, res) => {
       '--name', EXPLORER_CONTAINER,
       '-p', `${port}:4000`,
       '--network', 'docker_default',
-      '-e', `apiNodePort=${NODE_REST_PORT}`,
+      '-e', `apiNodePort=${process.env.PORT || 4000}`,
       '-e', `endpoints=${endpoints}`,
       '-e', `networkConfig=${networkConfig}`,
       EXPLORER_IMAGE,
@@ -4300,6 +4300,52 @@ app.post('/api/network/fetch', async (req, res) => {
       error: `Failed to fetch from node: ${err.message}`,
     });
   }
+});
+
+// =============================================================================
+// REST gateway reverse proxy (for Explorer frontend)
+// =============================================================================
+// The Explorer Vue app (running in the user's browser) calls
+// http://localhost:{apiNodePort}/... to reach the Symbol REST gateway.
+// By setting apiNodePort to the symbol-manager port and proxying here,
+// we can intercept known-bad requests (e.g. finalization/proof/epoch/0).
+//
+// Only activated for paths that look like Symbol REST endpoints and do NOT
+// start with /api/ (our own routes) or match static frontend assets.
+
+const REST_PROXY_PATHS = /^\/(node|chain|blocks?|transactions?|accounts?|mosaics?|namespaces?|metadata|receipts|finalization|network|multisig|restrictions?|secretlock|hashlock)(\/|$)/;
+
+// Return empty finalization proof for epoch 0 (it never exists)
+app.get('/finalization/proof/epoch/0', (_req, res) => {
+  res.json({ finalizationEpoch: 0, finalizationPoint: 0, height: '0', hash: '0'.repeat(64) });
+});
+
+app.use((req, res, next) => {
+  if (!REST_PROXY_PATHS.test(req.path)) return next();
+
+  const target = `http://${NODE_REST_HOST}:${NODE_REST_PORT}${req.originalUrl}`;
+  const opts: RequestInit = {
+    method: req.method,
+    headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
+  };
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    opts.body = JSON.stringify(req.body);
+  }
+
+  fetch(target, opts)
+    .then(async (upstream) => {
+      res.status(upstream.status);
+      upstream.headers.forEach((v, k) => {
+        if (!['transfer-encoding', 'content-encoding', 'connection'].includes(k.toLowerCase())) {
+          res.setHeader(k, v);
+        }
+      });
+      const body = await upstream.text();
+      res.send(body);
+    })
+    .catch(() => {
+      res.status(502).json({ code: 'ProxyError', message: 'REST gateway unreachable' });
+    });
 });
 
 // =============================================================================
