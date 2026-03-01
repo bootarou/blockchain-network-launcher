@@ -985,8 +985,14 @@ app.get('/api/node-stats', async (_req, res) => {
 // Private/custom networks don't have a nodeWatch instance, so we provide a
 // compatible proxy that returns the local REST gateway info.
 
-/** Build a single nodeWatch-format entry from the local REST gateway */
-async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
+/**
+ * Build a single nodeWatch-format entry from the local REST gateway.
+ * @param requestHost - the Host header from the incoming HTTP request
+ *   (e.g. "192.168.1.10:4000" or "localhost:4000").
+ *   The returned `endpoint` will use this so the Explorer's browser-side
+ *   REST/WS connections go back through the same host the user accessed.
+ */
+async function buildNodeWatchEntry(requestHost?: string): Promise<Record<string, unknown> | null> {
   const base = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
   const timeout = 5000;
   const safeFetch = async (p: string) => {
@@ -1007,9 +1013,17 @@ async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
   if (!nodeInfo) return null;
 
   const fin = chainInfo?.latestFinalizedBlock;
-  const managerPort = process.env.PORT || 4000;
+
+  // Determine the endpoint URL that the Explorer's browser will use for
+  // REST & WebSocket. If the request came via an external IP we must
+  // return that same host:port so the browser can reach it.
+  const effectiveHost = requestHost || `localhost:${process.env.PORT || 4000}`;
+  const endpointUrl = `http://${effectiveHost}`;
+  // hostname only (strip port) for the "host" field
+  const hostOnly = effectiveHost.replace(/:\d+$/, '');
+
   return {
-    endpoint: `http://localhost:${managerPort}`,
+    endpoint: endpointUrl,
     mainPublicKey: nodeInfo.publicKey ?? '',
     name: nodeInfo.friendlyName || nodeInfo.host || 'Local Node',
     version: nodeInfo.version != null ? String(nodeInfo.version) : '0',
@@ -1019,7 +1033,7 @@ async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
     finalizedHash: fin?.hash ?? '',
     finalizedHeight: fin?.height ?? '0',
     finalizedPoint: fin?.finalizationPoint ?? 0,
-    host: 'localhost',
+    host: hostOnly,
     port: nodeInfo.port ?? 7900,
     networkGenerationHashSeed: nodeInfo.networkGenerationHashSeed ?? '',
     restVersion: nodeServer?.serverInfo?.restVersion ?? '',
@@ -1029,8 +1043,8 @@ async function buildNodeWatchEntry(): Promise<Record<string, unknown> | null> {
   };
 }
 
-app.get('/api/explorer-proxy/api/symbol/nodes/api', async (_req, res) => {
-  const entry = await buildNodeWatchEntry();
+app.get('/api/explorer-proxy/api/symbol/nodes/api', async (req, res) => {
+  const entry = await buildNodeWatchEntry(req.headers.host);
   res.json(entry ? [entry] : []);
 });
 
@@ -1038,8 +1052,8 @@ app.get('/api/explorer-proxy/api/symbol/nodes/peer', async (_req, res) => {
   res.json([]);
 });
 
-app.get('/api/explorer-proxy/api/symbol/nodes/mainPublicKey/:pk', async (_req, res) => {
-  const entry = await buildNodeWatchEntry();
+app.get('/api/explorer-proxy/api/symbol/nodes/mainPublicKey/:pk', async (req, res) => {
+  const entry = await buildNodeWatchEntry(req.headers.host);
   entry ? res.json(entry) : res.status(404).json({ message: 'Node not found' });
 });
 
