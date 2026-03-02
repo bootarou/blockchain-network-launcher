@@ -45,6 +45,7 @@ import {
   Send,
   TrendingDown,
   Gem,
+  AlertTriangle,
 } from 'lucide-react';
 import { configToYaml } from '../lib/utils';
 import { useTranslation } from '../i18n';
@@ -672,6 +673,15 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
           <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
           <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
         </div>
+        {category.requiresFullReset && (
+          <div className="flex items-start gap-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 text-xs text-amber-300">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-medium">{t('config.fullResetRequired')}</span>
+              <span className="text-amber-400/70 ml-1">{t('config.fullResetDesc')}</span>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {otherFields.map((f) => (
             <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
@@ -720,12 +730,29 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
                 {cat.id === 'inflation' && (
                   <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.inflation.length}</span>
                 )}
+                {cat.requiresFullReset && (
+                  <span className="ml-auto text-[10px] font-semibold bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded" title={t('config.fullResetRequired')}>
+                    Reset
+                  </span>
+                )}
               </button>
             );
           })}
 
           {/* YAML Preview toggle */}
           <div className="pt-3 border-t border-zinc-800 mt-3">
+            {/* Legend */}
+            <div className="px-3 pb-3 space-y-1.5 text-[10px]">
+              <div className="flex items-center gap-1.5 text-amber-400/80">
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-400/60" />
+                <span className="font-medium bg-amber-500/15 px-1 py-0.5 rounded">Reset</span>
+                <span className="text-zinc-500">= {t('config.legendFullReset')}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-emerald-400/80">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400/60" />
+                <span className="text-zinc-500">{t('config.legendStopStart')}</span>
+              </div>
+            </div>
             <button
               onClick={() => setShowYaml(!showYaml)}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium text-sm transition-all duration-200 ${

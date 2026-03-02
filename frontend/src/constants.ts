@@ -85,6 +85,8 @@ export interface CategoryMeta {
   icon?: string;
   description: string;
   fields: FieldMeta[];
+  /** true = ネットワークレベル設定。変更にはFull Resetが必要 */
+  requiresFullReset?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +294,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'General',
     icon: 'settings',
     description: 'ネットワーク基本設定・ジェネシス情報',
+    requiresFullReset: true,
     fields: [
       { key: 'preset', label: 'Base Preset', type: 'select', description: 'symbol-bootstrap のベーステンプレート', options: [{ value: 'bootstrap', label: 'bootstrap (local dev)' }, { value: 'testnet', label: 'testnet' }, { value: 'mainnet', label: 'mainnet' }] },
       { key: 'assembly', label: 'Assembly', type: 'select', description: 'ノードアセンブリタイプ', options: [{ value: 'dual', label: 'dual (Peer + API)' }, { value: 'peer', label: 'peer' }, { value: 'api', label: 'api' }, { value: 'demo', label: 'demo' }, { value: 'multinode', label: 'multinode' }] },
@@ -316,6 +319,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'ネメシスモザイク',
     icon: 'nemesisMosaics',
     description: 'ネットワーク通貨(Currency / Harvest)モザイク定義',
+    requiresFullReset: true,
     fields: [
       { key: 'baseNamespace', label: 'Base Namespace', type: 'text', description: 'モザイクの基本ネームスペース', placeholder: 'cat' },
     ],
@@ -339,6 +343,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'ブロック生成・チェーン',
     icon: 'blocks',
     description: 'ブロック時間、キャッシュ、通貨供給量',
+    requiresFullReset: true,
     fields: [
       { key: 'blockGenerationTargetTime', label: 'Block Generation Target Time', type: 'text', description: 'ブロック生成目標時間', placeholder: '30s' },
       { key: 'blockTimeSmoothingFactor', label: 'Smoothing Factor', type: 'number', description: '難易度スムージング係数', min: 0 },
@@ -361,6 +366,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: '手数料',
     icon: 'fees',
     description: 'トランザクション手数料・有効期間',
+    requiresFullReset: true,
     fields: [
       { key: 'defaultDynamicFeeMultiplier', label: 'Default Fee Multiplier', type: 'number', description: 'デフォルト動的手数料乗数', min: 0 },
       { key: 'maxTransactionLifetime', label: 'Max Transaction Lifetime', type: 'text', description: '未確認Txの最大有効期間', placeholder: '6h' },
@@ -371,6 +377,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'ハーベスト',
     icon: 'harvest',
     description: '資格残高・報酬分配・ネットワーク手数料シンク',
+    requiresFullReset: true,
     fields: [
       { key: 'minHarvesterBalance', label: 'Min Harvester Balance', type: 'text', description: 'ハーベスト資格の最小残高' },
       { key: 'maxHarvesterBalance', label: 'Max Harvester Balance', type: 'text', description: 'インポータンス計算の最大残高' },
@@ -385,6 +392,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: '投票・ファイナリティ',
     icon: 'voting',
     description: '投票キー・ファイナライゼーション設定',
+    requiresFullReset: true,
     fields: [
       { key: 'minVoterBalance', label: 'Min Voter Balance', type: 'text', description: '投票資格の最小残高' },
       { key: 'votingSetGrouping', label: 'Voting Set Grouping', type: 'number', description: '投票セットグルーピング(ブロック数)', min: 1 },
@@ -398,6 +406,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'アグリゲート',
     icon: 'aggregate',
     description: 'アグリゲートTx・連署設定',
+    requiresFullReset: true,
     fields: [
       { key: 'maxTransactionsPerAggregate', label: 'Max Txns / Aggregate', type: 'number', description: 'アグリゲート内の最大Tx数', min: 1 },
       { key: 'maxCosignaturesPerAggregate', label: 'Max Cosignatures / Aggregate', type: 'number', description: 'アグリゲートあたりの最大連署数', min: 1 },
@@ -411,6 +420,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'ハッシュロック',
     icon: 'lock',
     description: 'ボンドアグリゲート用ハッシュロック',
+    requiresFullReset: true,
     fields: [
       { key: 'lockedFundsPerAggregate', label: 'Locked Funds / Aggregate', type: 'text', description: 'アグリゲートボンドごとのロック額' },
       { key: 'maxHashLockDuration', label: 'Max Duration', type: 'text', description: 'ハッシュロック最大期間', placeholder: '2d' },
@@ -421,6 +431,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'シークレットロック',
     icon: 'secretlock',
     description: 'クロスチェーンスワップ用ロック',
+    requiresFullReset: true,
     fields: [
       { key: 'maxSecretLockDuration', label: 'Max Duration', type: 'text', description: 'シークレットロック最大期間', placeholder: '365d' },
       { key: 'minProofSize', label: 'Min Proof Size', type: 'number', description: 'プルーフ最小サイズ(bytes)', min: 0 },
@@ -432,6 +443,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'メタデータ',
     icon: 'metadata',
     description: 'メタデータ値の最大サイズ',
+    requiresFullReset: true,
     fields: [
       { key: 'maxValueSize', label: 'Max Value Size', type: 'number', description: 'メタデータ値の最大バイト数', min: 0 },
     ],
@@ -441,6 +453,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'モザイク',
     icon: 'mosaic',
     description: 'モザイク(トークン) リミット・レンタル手数料',
+    requiresFullReset: true,
     fields: [
       { key: 'maxMosaicsPerAccount', label: 'Max / Account', type: 'number', description: 'アカウントあたり最大モザイク数', min: 1 },
       { key: 'maxMosaicDuration', label: 'Max Duration', type: 'text', description: 'モザイク最大有効期間', placeholder: '3650d' },
@@ -455,6 +468,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'ネームスペース',
     icon: 'namespace',
     description: '深さ・期間・レンタル手数料',
+    requiresFullReset: true,
     fields: [
       { key: 'maxNameSize', label: 'Max Name Size', type: 'number', description: '名前の最大文字数', min: 1 },
       { key: 'maxNamespacesPerAccount', label: 'Max / Account', type: 'number', description: 'アカウントあたり最大数', min: 1 },
@@ -475,6 +489,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'マルチシグ',
     icon: 'multisig',
     description: 'マルチシグの深さ・連署者数制限',
+    requiresFullReset: true,
     fields: [
       { key: 'maxMultisigDepth', label: 'Max Depth', type: 'number', description: 'マルチシグネスト最大深度', min: 1 },
       { key: 'maxCosignatoriesPerAccount', label: 'Max Cosignatories / Account', type: 'number', description: '最大連署者数', min: 1 },
@@ -486,6 +501,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: '制限(Restriction)',
     icon: 'restriction',
     description: 'アカウント・モザイク制限の値数',
+    requiresFullReset: true,
     fields: [
       { key: 'maxAccountRestrictionValues', label: 'Max Account Values', type: 'number', description: 'アカウント制限あたり最大値数', min: 1 },
       { key: 'maxMosaicRestrictionValues', label: 'Max Mosaic Values', type: 'number', description: 'モザイク制限あたり最大値数', min: 1 },
@@ -496,6 +512,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'トランスファー',
     icon: 'transfer',
     description: '転送メッセージサイズ',
+    requiresFullReset: true,
     fields: [
       { key: 'maxMessageSize', label: 'Max Message Size', type: 'number', description: '転送メッセージ最大バイト数', min: 0 },
     ],
@@ -505,6 +522,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'インフレーション',
     icon: 'inflation',
     description: 'ブロック報酬(インフレーション)スケジュール',
+    requiresFullReset: true,
     fields: [],
   },
   {
