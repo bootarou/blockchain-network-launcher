@@ -102,6 +102,8 @@ export interface NodeConfig {
   voting: boolean;
   database: boolean;
   minFeeMultiplier: number;
+  enableTransactionSpamThrottling: boolean;
+  transactionSpamThrottlingMaxBoostFee: number;
   maxTrackedNodes: number;
   trustedHosts: string;
   localNetworks: string;
@@ -548,6 +550,8 @@ export const NODE_FIELDS: FieldMeta[] = [
   { key: 'voting', label: 'Voting', type: 'boolean', description: '投票有効' },
   { key: 'database', label: 'Database', type: 'boolean', description: 'MongoDB実行' },
   { key: 'minFeeMultiplier', label: 'Min Fee Multiplier', type: 'number', description: '最小手数料乗数', min: 0 },
+  { key: 'enableTransactionSpamThrottling', label: 'Spam Throttling', type: 'boolean', description: 'Txスパム制御を有効化' },
+  { key: 'transactionSpamThrottlingMaxBoostFee', label: 'Spam Max Boost Fee', type: 'number', description: 'スパム判定の最大ブースト手数料', min: 0 },
   { key: 'maxTrackedNodes', label: 'Max Tracked Nodes', type: 'number', description: 'ピア追跡上限', min: 1 },
   { key: 'trustedHosts', label: 'Trusted Hosts', type: 'text', description: '信頼ホスト(カンマ区切り)' },
   { key: 'localNetworks', label: 'Local Networks', type: 'text', description: 'ローカルCIDR(カンマ区切り)' },
@@ -616,6 +620,8 @@ export const DEFAULT_NODE: NodeConfig = {
   voting: false,
   database: true,
   minFeeMultiplier: 100,
+  enableTransactionSpamThrottling: true,
+  transactionSpamThrottlingMaxBoostFee: 10000000,
   maxTrackedNodes: 5000,
   trustedHosts: '127.0.0.1',
   localNetworks: '127.0.0.1',
@@ -774,7 +780,8 @@ export const DEFAULT_PRESET: PresetConfig = {
   nodes: [{
     name: 'api-node-0', host: 'localhost', friendlyName: 'My API Node', roles: 'Peer,Api',
     harvesting: true, api: true, voting: false, database: true,
-    minFeeMultiplier: 100, maxTrackedNodes: 5000, trustedHosts: '127.0.0.1', localNetworks: '127.0.0.1',
+    minFeeMultiplier: 100, enableTransactionSpamThrottling: true, transactionSpamThrottlingMaxBoostFee: 10000000,
+    maxTrackedNodes: 5000, trustedHosts: '127.0.0.1', localNetworks: '127.0.0.1',
   }],
   gateways: [{
     apiNodeName: 'api-node-0', host: 'localhost', port: 3000, databaseHost: 'db',
