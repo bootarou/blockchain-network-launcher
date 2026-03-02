@@ -217,6 +217,35 @@ export const en: TranslationDict = {
   'stats.minutesAgo': '{n}m ago',
   'stats.hoursAgo': '{n}h ago',
 
+  // Certificate info
+  'cert.title': 'Certificate Expiration',
+  'cert.nodeCert': 'Node Certificate',
+  'cert.caCert': 'CA Certificate',
+  'cert.restNodeCert': 'REST Node Certificate',
+  'cert.restCaCert': 'REST CA Certificate',
+  'cert.days': ' days',
+  'cert.validFrom': 'From:',
+  'cert.validUntil': 'Until:',
+  'cert.expiringSoon': '⚠️ Expiring soon',
+  'cert.expiringWarning': '⚠ Expiration notice',
+  'cert.renewWarning': 'A certificate will expire within 30 days. Please renew before node communication stops.',
+  'cert.renewButton': 'Renew Certs',
+  'cert.renewTitle': 'Renew Certificates',
+  'cert.renewDesc': 'Regenerate node and REST gateway TLS certificates. The node must be stopped before renewal. Restart the node after completion.',
+  'cert.passwordLabel': 'Network encryption password',
+  'cert.passwordPlaceholder': 'Enter the same password used to start the node',
+  'cert.forceRenew': 'Force renewal even if certificates are not close to expiry',
+  'cert.renewExecute': 'Renew',
+  'cert.renewing': 'Renewing...',
+  'cert.renewCancel': 'Cancel',
+  'cert.renewClose': 'Close',
+  'cert.renewSuccess': '✅ Certificates have been renewed successfully.',
+  'cert.renewRestartHint': 'Restart the node to apply the new certificates.',
+  'cert.errorNodeRunning': 'Please stop the node before renewing certificates.',
+  'cert.errorPasswordRequired': 'Please enter the password.',
+  'cert.errorNoCertificates': 'No certificate files found. Please start the node at least once first.',
+  'cert.errorRenewFailed': 'Certificate renewal failed. Check the terminal logs for details.',
+
   // ===========================================================================
   // Terminal Logs
   // ===========================================================================

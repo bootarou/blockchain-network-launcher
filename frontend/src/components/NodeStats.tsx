@@ -18,6 +18,9 @@ import {  AlertTriangle,  BarChart3,
   Loader2,
   Trash2,
   Info,
+  KeyRound,
+  ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useTranslation } from '../i18n';
@@ -70,6 +73,25 @@ interface StorageData {
   targetDir: string;
   filesystem: { totalBytes: number; usedBytes: number; availBytes: number };
   target: { usedBytes: number; breakdown: Record<string, number> };
+}
+
+interface CertEntry {
+  exists: boolean;
+  notBefore: string | null;
+  notAfter: string | null;
+  daysRemaining: number | null;
+}
+
+interface CertificateData {
+  available: boolean;
+  nodeCert?: CertEntry;
+  caCert?: CertEntry;
+  restNodeCert?: CertEntry;
+  restCaCert?: CertEntry;
+  preset?: {
+    nodeCertificateExpirationInDays: number | null;
+    caCertificateExpirationInDays: number | null;
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -571,11 +593,267 @@ function StorageIndicator({ data, networkState }: { data: StorageData; networkSt
   );
 }
 
+// ── Certificate info component ───────────────────────────────────────────
+
+function certDaysColor(days: number | null): string {
+  if (days === null) return 'text-zinc-500';
+  if (days <= 30) return 'text-red-400';
+  if (days <= 90) return 'text-amber-400';
+  return 'text-emerald-400';
+}
+
+function certDaysBg(days: number | null): string {
+  if (days === null) return 'border-zinc-800';
+  if (days <= 30) return 'border-red-800/50 bg-red-950/20';
+  if (days <= 90) return 'border-amber-800/50 bg-amber-950/20';
+  return 'border-zinc-800';
+}
+
+function certIcon(days: number | null) {
+  if (days === null) return <KeyRound className="w-4 h-4 text-zinc-500" />;
+  if (days <= 30) return <ShieldAlert className="w-4 h-4 text-red-400" />;
+  if (days <= 90) return <ShieldAlert className="w-4 h-4 text-amber-400" />;
+  return <ShieldCheck className="w-4 h-4 text-emerald-400" />;
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  } catch {
+    return dateStr;
+  }
+}
+
+function CertificateIndicator({ data, networkState, onRenewed }: {
+  data: CertificateData;
+  networkState: string;
+  onRenewed: () => void;
+}) {
+  const { t } = useTranslation();
+  const [showRenewDialog, setShowRenewDialog] = useState(false);
+  const [renewPassword, setRenewPassword] = useState('');
+  const [forceRenew, setForceRenew] = useState(false);
+  const [renewing, setRenewing] = useState(false);
+  const [renewError, setRenewError] = useState('');
+  const [renewSuccess, setRenewSuccess] = useState(false);
+
+  if (!data.available) return null;
+
+  const nodeStopped = networkState === 'stopped' || networkState === 'error';
+
+  const certs: { key: string; label: string; entry: CertEntry | undefined }[] = [
+    { key: 'node', label: t('cert.nodeCert'), entry: data.nodeCert },
+    { key: 'ca', label: t('cert.caCert'), entry: data.caCert },
+    { key: 'restNode', label: t('cert.restNodeCert'), entry: data.restNodeCert },
+    { key: 'restCa', label: t('cert.restCaCert'), entry: data.restCaCert },
+  ];
+
+  // Find the minimum days remaining for the overall status icon
+  const allDays = certs
+    .map((c) => c.entry?.daysRemaining)
+    .filter((d): d is number => d !== null && d !== undefined);
+  const minDays = allDays.length > 0 ? Math.min(...allDays) : null;
+
+  const handleRenew = async () => {
+    if (!renewPassword.trim()) return;
+    setRenewing(true);
+    setRenewError('');
+    setRenewSuccess(false);
+    try {
+      const result = await api.renewCertificate(renewPassword, forceRenew);
+      if (result.success) {
+        setRenewSuccess(true);
+        setRenewPassword('');
+        onRenewed();
+      } else if (result.error === 'NODE_RUNNING') {
+        setRenewError(t('cert.errorNodeRunning'));
+      } else if (result.error === 'PASSWORD_REQUIRED') {
+        setRenewError(t('cert.errorPasswordRequired'));
+      } else if (result.error === 'NO_CERTIFICATES') {
+        setRenewError(t('cert.errorNoCertificates'));
+      } else {
+        setRenewError(result.message || result.error || 'Unknown error');
+      }
+    } catch {
+      setRenewError(t('cert.errorRenewFailed'));
+    }
+    setRenewing(false);
+  };
+
+  const closeDialog = () => {
+    setShowRenewDialog(false);
+    setRenewPassword('');
+    setRenewError('');
+    setRenewSuccess(false);
+    setForceRenew(false);
+  };
+
+  return (
+    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
+      {/* Header */}
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        {certIcon(minDays)}
+        <span>{t('cert.title')}</span>
+        {minDays !== null && minDays <= 90 && (
+          <span className={`text-xs font-medium ${certDaysColor(minDays)}`}>
+            {minDays <= 30 ? t('cert.expiringSoon') : t('cert.expiringWarning')}
+          </span>
+        )}
+        <button
+          onClick={() => { setShowRenewDialog(true); setRenewSuccess(false); setRenewError(''); }}
+          className="ml-auto text-[10px] px-2 py-0.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors flex items-center gap-1"
+        >
+          <RefreshCw className="w-3 h-3" />
+          {t('cert.renewButton')}
+        </button>
+      </div>
+
+      {/* Renew dialog */}
+      {showRenewDialog && (
+        <div className="bg-zinc-900/80 border border-zinc-700/60 rounded-lg p-3 space-y-3">
+          <div>
+            <div className="text-xs font-semibold text-zinc-300 mb-1">{t('cert.renewTitle')}</div>
+            <div className="text-[10px] text-zinc-500">{t('cert.renewDesc')}</div>
+          </div>
+
+          {/* Warning: node must be stopped */}
+          {!nodeStopped && (
+            <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+              <span className="text-xs text-amber-400">{t('cert.errorNodeRunning')}</span>
+            </div>
+          )}
+
+          {/* Error */}
+          {renewError && (
+            <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">
+              <span className="text-xs text-red-400">{renewError}</span>
+            </div>
+          )}
+
+          {/* Success */}
+          {renewSuccess && (
+            <div className="bg-emerald-950/40 border border-emerald-800/50 rounded-lg p-3 space-y-1">
+              <div className="text-xs text-emerald-400">{t('cert.renewSuccess')}</div>
+              <div className="text-[10px] text-zinc-500">{t('cert.renewRestartHint')}</div>
+            </div>
+          )}
+
+          {!renewSuccess && (
+            <>
+              {/* Password input */}
+              <div>
+                <div className="text-[10px] text-zinc-500 mb-1">{t('cert.passwordLabel')}</div>
+                <input
+                  type="password"
+                  value={renewPassword}
+                  onChange={(e) => setRenewPassword(e.target.value)}
+                  placeholder={t('cert.passwordPlaceholder')}
+                  className="w-full text-xs bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+                  onKeyDown={(e) => { if (e.key === 'Enter' && renewPassword.trim() && nodeStopped) handleRenew(); }}
+                />
+              </div>
+
+              {/* Force option */}
+              <label className="flex items-center gap-2 text-[10px] text-zinc-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={forceRenew}
+                  onChange={(e) => setForceRenew(e.target.checked)}
+                  className="rounded border-zinc-600 bg-zinc-900 text-indigo-500 focus:ring-indigo-500/30"
+                />
+                {t('cert.forceRenew')}
+              </label>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={handleRenew}
+                  disabled={!renewPassword.trim() || renewing || !nodeStopped}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                  title={!nodeStopped ? t('cert.errorNodeRunning') : ''}
+                >
+                  {renewing && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {renewing ? t('cert.renewing') : t('cert.renewExecute')}
+                </button>
+                <button
+                  onClick={closeDialog}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  {t('cert.renewCancel')}
+                </button>
+              </div>
+            </>
+          )}
+
+          {renewSuccess && (
+            <button
+              onClick={closeDialog}
+              className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              {t('cert.renewClose')}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Certificate cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {certs.map(({ key, label, entry }) => {
+          if (!entry?.exists) return null;
+          return (
+            <div
+              key={key}
+              className={`border rounded-lg p-3 space-y-1.5 ${certDaysBg(entry.daysRemaining)}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-zinc-400 font-medium">{label}</span>
+                {entry.daysRemaining !== null && (
+                  <span className={`text-lg font-bold tracking-tight ${certDaysColor(entry.daysRemaining)}`}>
+                    {entry.daysRemaining.toLocaleString()}<span className="text-xs font-normal ml-0.5">{t('cert.days')}</span>
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                <span>{t('cert.validFrom')} {formatDate(entry.notBefore)}</span>
+                <span>{t('cert.validUntil')} {formatDate(entry.notAfter)}</span>
+              </div>
+              {/* Progress bar showing remaining life */}
+              {entry.notBefore && entry.notAfter && entry.daysRemaining !== null && (
+                <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                  {(() => {
+                    const total = (new Date(entry.notAfter).getTime() - new Date(entry.notBefore).getTime()) / (1000 * 60 * 60 * 24);
+                    const elapsed = total - entry.daysRemaining;
+                    const pct = total > 0 ? Math.max(0, Math.min(100, (elapsed / total) * 100)) : 0;
+                    const color = entry.daysRemaining <= 30 ? 'bg-red-500' : entry.daysRemaining <= 90 ? 'bg-amber-500' : 'bg-emerald-500';
+                    return <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${pct}%` }} />;
+                  })()}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Warning banner if any cert is close to expiry */}
+      {minDays !== null && minDays <= 30 && (
+        <div className="bg-red-950/40 border border-red-900/50 rounded-lg px-3 py-2 flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0 mt-0.5" />
+          <span className="text-xs text-red-400">{t('cert.renewWarning')}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export function NodeStats() {
   const [stats, setStats] = useState<NodeStatsData | null>(null);
   const [storage, setStorage] = useState<StorageData | null>(null);
+  const [certInfo, setCertInfo] = useState<CertificateData | null>(null);
   const [networkState, setNetworkState] = useState<string>('stopped');
   const [loading, setLoading] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
@@ -585,14 +863,16 @@ export function NodeStats() {
   const fetchStats = useCallback(async () => {
     setLoading(true);
     try {
-      const [nodeData, storageData, statusData] = await Promise.all([
+      const [nodeData, storageData, statusData, certData] = await Promise.all([
         api.getNodeStats(),
         api.getStorage().catch(() => null),
         api.getStatus().catch(() => null),
+        api.getCertificateInfo().catch(() => null),
       ]);
       setStats(nodeData);
       if (storageData && !storageData.error) setStorage(storageData);
       if (statusData?.state) setNetworkState(statusData.state);
+      if (certData && !certData.error) setCertInfo(certData);
     } catch {
       // keep previous stats on error
     } finally {
@@ -820,6 +1100,9 @@ export function NodeStats() {
 
       {/* ── Storage usage (always shown if data available) ── */}
       {storage && <StorageIndicator data={storage} networkState={networkState} />}
+
+      {/* ── Certificate expiration (always shown if data available) ── */}
+      {certInfo && <CertificateIndicator data={certInfo} networkState={networkState} onRenewed={fetchStats} />}
     </div>
   );
 }

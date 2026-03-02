@@ -1381,6 +1381,149 @@ app.post('/api/explorer/stop', async (_req, res) => {
 });
 
 // =============================================================================
+// Certificate info endpoint — reads TLS cert expiration from PEM files
+// =============================================================================
+app.get('/api/certificate-info', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+
+    /** Helper: read notBefore / notAfter from a PEM file via openssl */
+    const readCert = (pemPath: string): {
+      exists: boolean;
+      notBefore: string | null;
+      notAfter: string | null;
+      daysRemaining: number | null;
+    } => {
+      if (!fs.existsSync(pemPath)) {
+        return { exists: false, notBefore: null, notAfter: null, daysRemaining: null };
+      }
+      try {
+        const out = execSync(
+          `openssl x509 -noout -startdate -enddate -in "${pemPath}"`,
+          { encoding: 'utf-8', timeout: 5000 },
+        ).trim();
+        // Parse: notBefore=Feb 28 13:15:09 2026 GMT  /  notAfter=Mar 10 13:15:09 2027 GMT
+        let notBefore: string | null = null;
+        let notAfter: string | null = null;
+        for (const line of out.split('\n')) {
+          const m = line.match(/^(notBefore|notAfter)=(.+)$/);
+          if (m) {
+            if (m[1] === 'notBefore') notBefore = m[2].trim();
+            if (m[1] === 'notAfter') notAfter = m[2].trim();
+          }
+        }
+        let daysRemaining: number | null = null;
+        if (notAfter) {
+          const expiry = new Date(notAfter).getTime();
+          daysRemaining = Math.floor((expiry - Date.now()) / (1000 * 60 * 60 * 24));
+        }
+        return { exists: true, notBefore, notAfter, daysRemaining };
+      } catch {
+        return { exists: true, notBefore: null, notAfter: null, daysRemaining: null };
+      }
+    };
+
+    const nodeCertDir = path.join(TARGET_DIR, 'nodes', 'api-node-0', 'cert');
+    const gatewayCertDir = path.join(TARGET_DIR, 'gateways', 'rest-gateway', 'api-node-config', 'cert');
+
+    const nodeCert = readCert(path.join(nodeCertDir, 'node.crt.pem'));
+    const caCert = readCert(path.join(nodeCertDir, 'ca.cert.pem'));
+    const restNodeCert = readCert(path.join(gatewayCertDir, 'node.crt.pem'));
+    const restCaCert = readCert(path.join(gatewayCertDir, 'rest-ca.cert.pem'));
+
+    // Also read preset config values for reference
+    let presetNodeDays: number | null = null;
+    let presetCaDays: number | null = null;
+    try {
+      if (fs.existsSync(PRESET_PATH)) {
+        const raw = fs.readFileSync(PRESET_PATH, 'utf-8');
+        const m1 = raw.match(/nodeCertificateExpirationInDays\s*:\s*(\d+)/);
+        const m2 = raw.match(/caCertificateExpirationInDays\s*:\s*(\d+)/);
+        if (m1) presetNodeDays = Number(m1[1]);
+        if (m2) presetCaDays = Number(m2[1]);
+      }
+    } catch { /* ignore */ }
+
+    res.json({
+      available: nodeCert.exists || caCert.exists,
+      nodeCert,
+      caCert,
+      restNodeCert,
+      restCaCert,
+      preset: {
+        nodeCertificateExpirationInDays: presetNodeDays,
+        caCertificateExpirationInDays: presetCaDays,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Certificate renewal endpoint
+// Runs `symbol-bootstrap renewCertificates` then regenerates REST gateway cert.
+// Requires: node stopped, password.
+// =============================================================================
+app.post('/api/certificate-renew', async (req, res) => {
+  try {
+    const { password, force } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'PASSWORD_REQUIRED' });
+    }
+
+    // Node must be stopped
+    if (networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
+      return res.status(409).json({ error: 'NODE_RUNNING' });
+    }
+
+    // Certificate files must exist
+    const nodeCertDir = path.join(TARGET_DIR, 'nodes', 'api-node-0', 'cert');
+    if (!fs.existsSync(path.join(nodeCertDir, 'node.crt.pem'))) {
+      return res.status(404).json({ error: 'NO_CERTIFICATES' });
+    }
+
+    broadcastLog('[Cert] Starting certificate renewal...\n');
+
+    // Run symbol-bootstrap renewCertificates
+    const args = [`--password=${password}`];
+    if (force) args.push('--force');
+
+    try {
+      await runBootstrapCommand('renewCertificates', args, {
+        stateWhileRunning: 'stopping',   // reuse a transient state
+        stateOnSuccess: 'stopped',
+      });
+      broadcastLog('[Cert] ✅ Node certificates renewed via symbol-bootstrap\n');
+    } catch (err: any) {
+      broadcastLog(`[Cert] ⚠️  renewCertificates failed: ${err.message}\n`);
+      networkStatus.state = 'stopped';
+      broadcastStatus();
+      return res.status(500).json({ error: 'RENEW_FAILED', message: err.message });
+    }
+
+    // Regenerate REST gateway certificate (separate identity from api-node)
+    try {
+      broadcastLog('[Cert] Regenerating REST gateway certificate...\n');
+      generateRestGatewayCert(TARGET_DIR, true);
+      broadcastLog('[Cert] ✅ REST gateway certificate regenerated\n');
+    } catch (err: any) {
+      broadcastLog(`[Cert] ⚠️  REST gateway cert regeneration failed: ${err.message}\n`);
+      // Non-fatal: node cert was already renewed
+    }
+
+    broadcastLog('[Cert] ✅ Certificate renewal complete. Please restart the node.\n');
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.json({ success: true });
+  } catch (err: any) {
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // Storage usage endpoint — returns disk usage for TARGET_DIR
 // =============================================================================
 app.get('/api/storage', async (_req, res) => {
@@ -2898,7 +3041,7 @@ function patchLocalNetworks(targetDir: string) {
 // rejects the connection with "rejecting new host ... with in use identity key".
 // Uses child_process to call openssl (available in the DinD node:20 image).
 // =============================================================================
-function generateRestGatewayCert(targetDir: string) {
+function generateRestGatewayCert(targetDir: string, forceRegen = false) {
   const { execSync } = require('child_process') as typeof import('child_process');
   const gatewaysDir = path.join(targetDir, 'gateways');
   if (!fs.existsSync(gatewaysDir)) return;
@@ -2917,7 +3060,7 @@ function generateRestGatewayCert(targetDir: string) {
     // Check if REST already has a different cert (no need to regenerate)
     const restKeyPath = path.join(certDir, 'node.key.pem');
     const apiKeyPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'node.key.pem');
-    if (fs.existsSync(restKeyPath) && fs.existsSync(apiKeyPath)) {
+    if (!forceRegen && fs.existsSync(restKeyPath) && fs.existsSync(apiKeyPath)) {
       const restKey = fs.readFileSync(restKeyPath);
       const apiKey = fs.readFileSync(apiKeyPath);
       if (!restKey.equals(apiKey)) {

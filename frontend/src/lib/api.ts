@@ -80,6 +80,26 @@ export const api = {
     return res.json();
   },
 
+  // ── Certificate info ───────────────────────────────────────────────────
+
+  getCertificateInfo: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/certificate-info`);
+      return res.json();
+    } catch {
+      return { available: false };
+    }
+  },
+
+  renewCertificate: async (password: string, force?: boolean) => {
+    const res = await fetch(`${API_BASE}/certificate-renew`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, force }),
+    });
+    return res.json();
+  },
+
   getVolumes: async () => {
     const res = await fetch(`${API_BASE}/storage/volumes`);
     return res.json();

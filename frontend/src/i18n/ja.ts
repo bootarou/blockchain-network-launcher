@@ -217,6 +217,35 @@ export const ja: TranslationDict = {
   'stats.minutesAgo': '{n}分前',
   'stats.hoursAgo': '{n}時間前',
 
+  // Certificate info
+  'cert.title': '証明書の有効期限',
+  'cert.nodeCert': 'ノード証明書',
+  'cert.caCert': 'CA 証明書',
+  'cert.restNodeCert': 'REST ノード証明書',
+  'cert.restCaCert': 'REST CA 証明書',
+  'cert.days': '日',
+  'cert.validFrom': '開始:',
+  'cert.validUntil': '期限:',
+  'cert.expiringSoon': '⚠️ まもなく期限切れ',
+  'cert.expiringWarning': '⚠ 期限に注意',
+  'cert.renewWarning': '証明書の有効期限が残り30日以内です。ノードの通信が停止する前に証明書を更新してください。',
+  'cert.renewButton': '証明書を更新',
+  'cert.renewTitle': '証明書の更新',
+  'cert.renewDesc': 'ノード証明書と REST Gateway 証明書を再生成します。更新にはノードの停止が必要です。更新後はノードを再起動してください。',
+  'cert.passwordLabel': 'ネットワーク暗号化パスワード',
+  'cert.passwordPlaceholder': 'ノード起動時と同じパスワードを入力',
+  'cert.forceRenew': '期限が近くなくても強制的に更新する',
+  'cert.renewExecute': '更新を実行',
+  'cert.renewing': '更新中...',
+  'cert.renewCancel': 'キャンセル',
+  'cert.renewClose': '閉じる',
+  'cert.renewSuccess': '✅ 証明書の更新が完了しました。',
+  'cert.renewRestartHint': 'ノードを再起動すると新しい証明書が適用されます。',
+  'cert.errorNodeRunning': '証明書を更新するにはノードを停止してください。',
+  'cert.errorPasswordRequired': 'パスワードを入力してください。',
+  'cert.errorNoCertificates': '証明書ファイルが見つかりません。ノードを一度起動してから実行してください。',
+  'cert.errorRenewFailed': '証明書の更新に失敗しました。ターミナルログを確認してください。',
+
   // ===========================================================================
   // Terminal Logs
   // ===========================================================================
