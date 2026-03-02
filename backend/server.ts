@@ -22,7 +22,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 // Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
-server.on('upgrade', (request, socket, head) => {
+server.on('upgrade', (request: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer) => {
   if (request.url === '/ws') {
     // Proxy WebSocket to Symbol REST gateway for Explorer block notifications
     wss.handleUpgrade(request, socket, head, (clientWs) => {
