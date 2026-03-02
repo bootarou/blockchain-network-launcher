@@ -30,12 +30,21 @@ server.on('upgrade', (request, socket, head) => {
 
       upstream.on('open', () => {
         // Relay: upstream → client
-        upstream.on('message', (data) => {
-          if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data);
+        // Send as text (not binary) so the browser receives a string
+        // instead of a Blob.  symbol-sdk's Listener.js does JSON.parse()
+        // on event.data, which fails when it receives a Blob.
+        upstream.on('message', (data, isBinary) => {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            const msg = isBinary ? data : data.toString();
+            clientWs.send(msg, { binary: isBinary });
+          }
         });
         // Relay: client → upstream
-        clientWs.on('message', (data) => {
-          if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
+        clientWs.on('message', (data, isBinary) => {
+          if (upstream.readyState === WebSocket.OPEN) {
+            const msg = isBinary ? data : data.toString();
+            upstream.send(msg, { binary: isBinary });
+          }
         });
       });
 
@@ -1197,7 +1206,7 @@ app.post('/api/explorer/build', async (_req, res) => {
 const http=require("http");
 const MH=process.env.PROXY_HOST||"symbol-manager";
 const MP=+(process.env.PROXY_PORT||4000);
-const RE=/^\\/(api|node|chain|blocks?|transactions?|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|secretlock|hashlock)(\\\/|$|\\?)/;
+const RE=/^\\/(api|node|chain|blocks?|transactions?|transactionStatus|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|lock|secretlock|hashlock)(\\\/|$|\\?)/;
 require("./_server");
 function px(h,p,q,r,x){var o={hostname:h,port:p,path:q.url,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
 var srv=http.createServer(function(q,r){RE.test(q.url)?px(MH,MP,q,r,{"x-forwarded-host":q.headers.host}):px("127.0.0.1",4001,q,r)});
@@ -4606,7 +4615,7 @@ app.use('/explorer-smd', async (req, res, next) => {
 // Only activated for paths that look like Symbol REST endpoints and do NOT
 // start with /api/ (our own routes) or match static frontend assets.
 
-const REST_PROXY_PATHS = /^\/(node|chain|blocks?|transactions?|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|secretlock|hashlock)(\/|$)/;
+const REST_PROXY_PATHS = /^\/(node|chain|blocks?|transactions?|transactionStatus|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|lock|secretlock|hashlock)(\/|$)/;
 
 // Return valid finalization proof for epoch 0 (it never exists but SDK
 // expects the full shape including messageGroups array)
