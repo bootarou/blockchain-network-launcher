@@ -84,6 +84,13 @@ docker compose up -d
 
 初回ビルドには **5〜15分** かかります（インターネット速度に依存）。
 
+> **symbol-bootstrap のインストール元について**  
+> デフォルトでは [bootarou/symbol-bootstrap](https://github.com/bootarou/symbol-bootstrap) から  
+> インストールされます。別のリポジトリを使用する場合は `.env` に追記してください：  
+> ```
+> SYMBOL_BOOTSTRAP_REPO=https://github.com/<your-org>/symbol-bootstrap.git
+> ```
+
 ### 2-4. 起動確認
 
 ```powershell

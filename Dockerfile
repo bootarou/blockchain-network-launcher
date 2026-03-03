@@ -26,7 +26,10 @@ RUN printf '#!/bin/sh\nexec docker compose "$@"\n' > /usr/local/bin/docker-compo
     && chmod +x /usr/local/bin/docker-compose
 
 # Install symbol-bootstrap globally
-RUN npm install -g symbol-bootstrap@latest
+# Default: install from bootarou fork (the original fbsobreira repo was deleted).
+# Override at build time:  docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=https://github.com/<you>/symbol-bootstrap.git
+ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
+RUN npm install -g ${SYMBOL_BOOTSTRAP_REPO}
 
 WORKDIR /app
 

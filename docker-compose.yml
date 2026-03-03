@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        SYMBOL_BOOTSTRAP_REPO: ${SYMBOL_BOOTSTRAP_REPO:-https://github.com/bootarou/symbol-bootstrap.git}
     container_name: symbol-manager
     ports:
       - "4000:4000"   # Backend API & WebSocket
