@@ -21,6 +21,7 @@ export const ja: TranslationDict = {
   'tabs.join': 'Join Network',
   'tabs.share': 'Share',
   'tabs.dashboard': 'Dashboard',
+  'tabs.backup': 'Backup',
   'tabs.help': 'Help',
 
   // ===========================================================================
@@ -816,4 +817,35 @@ export const ja: TranslationDict = {
   // Inflation fields
   'field.inflation.startHeight.desc': '適用開始ブロック高',
   'field.inflation.amount.desc': 'ブロックあたりの報酬額 (atomic単位)',
+
+  // ===========================================================================
+  // Backup / Restore
+  // ===========================================================================
+  'backup.title': 'ノードバックアップ / リストア',
+  'backup.description': 'ノードのID情報（鍵・設定・ジェネシスブロック）をZIPファイルとしてバックアップ・リストアします。ブロックチェーンデータやMongoDBは含まれません。',
+  'backup.section.backup': 'バックアップ',
+  'backup.section.restore': 'リストア',
+  'backup.download': 'バックアップをダウンロード',
+  'backup.downloading': 'ダウンロード中...',
+  'backup.status.checking': 'ステータスを確認中...',
+  'backup.status.ready': 'バックアップ可能',
+  'backup.status.notReady': 'バックアップ不可（ノードが未初期化）',
+  'backup.files.title': 'バックアップ対象ファイル',
+  'backup.files.preset': 'ネットワーク設定',
+  'backup.files.addresses': 'ノード鍵（暗号化済み）',
+  'backup.files.seed': 'ジェネシスシードデータ',
+  'backup.files.transactions': 'ジェネシストランザクション',
+  'backup.files.available': '✓ 存在',
+  'backup.files.missing': '✗ 未生成',
+  'backup.note': '※ addresses.yml には暗号化された秘密鍵が含まれます。バックアップファイルは安全な場所に保管してください。',
+  'backup.restore.description': 'バックアップZIPをアップロードしてノードIDを復元します。',
+  'backup.restore.dropzone': 'バックアップZIPをドロップまたはクリックして選択',
+  'backup.restore.dropzoneActive': 'ここにドロップしてください',
+  'backup.restore.uploading': 'アップロード中... {percent}%',
+  'backup.restore.success': 'リストア完了！ノードを起動して設定を反映してください。',
+  'backup.restore.requireStop': 'リストアするにはノードを停止してください。',
+  'backup.restore.confirm': 'リストアを実行すると現在の設定ファイルが上書きされます。続行しますか？',
+  'backup.restore.restoredFiles': 'リストアされたファイル:',
+  'backup.restore.error': 'リストア失敗: {error}',
+  'backup.restore.button': 'リストアを実行',
 };

@@ -21,6 +21,7 @@ export const en: TranslationDict = {
   'tabs.join': 'Join Network',
   'tabs.share': 'Share',
   'tabs.dashboard': 'Dashboard',
+  'tabs.backup': 'Backup',
   'tabs.help': 'Help',
 
   // ===========================================================================
@@ -816,4 +817,35 @@ export const en: TranslationDict = {
   // Inflation fields
   'field.inflation.startHeight.desc': 'Starting block height',
   'field.inflation.amount.desc': 'Reward per block (atomic units)',
+
+  // ===========================================================================
+  // Backup / Restore
+  // ===========================================================================
+  'backup.title': 'Node Backup / Restore',
+  'backup.description': 'Back up and restore your node identity files (keys, settings, genesis block) as a ZIP file. Blockchain data and MongoDB are not included.',
+  'backup.section.backup': 'Backup',
+  'backup.section.restore': 'Restore',
+  'backup.download': 'Download Backup',
+  'backup.downloading': 'Downloading...',
+  'backup.status.checking': 'Checking status...',
+  'backup.status.ready': 'Ready to backup',
+  'backup.status.notReady': 'Cannot backup (node not initialized)',
+  'backup.files.title': 'Files included in backup',
+  'backup.files.preset': 'Network configuration',
+  'backup.files.addresses': 'Node keys (encrypted)',
+  'backup.files.seed': 'Genesis seed data',
+  'backup.files.transactions': 'Genesis transactions',
+  'backup.files.available': '✓ Available',
+  'backup.files.missing': '✗ Not generated',
+  'backup.note': '※ addresses.yml contains encrypted private keys. Store backup files in a secure location.',
+  'backup.restore.description': 'Upload a backup ZIP to restore your node identity.',
+  'backup.restore.dropzone': 'Drop backup ZIP here or click to select',
+  'backup.restore.dropzoneActive': 'Drop here',
+  'backup.restore.uploading': 'Uploading... {percent}%',
+  'backup.restore.success': 'Restore complete! Start the node to apply the restored configuration.',
+  'backup.restore.requireStop': 'Please stop the node before restoring.',
+  'backup.restore.confirm': 'Restoring will overwrite current configuration files. Continue?',
+  'backup.restore.restoredFiles': 'Restored files:',
+  'backup.restore.error': 'Restore failed: {error}',
+  'backup.restore.button': 'Restore',
 };

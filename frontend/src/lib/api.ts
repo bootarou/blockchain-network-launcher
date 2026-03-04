@@ -319,4 +319,49 @@ export const api = {
       return { error: 'fetch failed' };
     }
   },
+
+  // ── Backup / Restore ───────────────────────────────────────────────────
+
+  getBackupStatus: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/backup/status`);
+      return res.json();
+    } catch {
+      return { canBackup: false, files: {}, nodeState: 'unknown' };
+    }
+  },
+
+  getBackupDownloadUrl: () => {
+    return `${API_BASE}/backup`;
+  },
+
+  uploadRestore: async (
+    file: File,
+    onProgress?: (percent: number) => void,
+  ): Promise<{ success: boolean; restoredFiles: string[]; message: string; error?: string }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/restore`);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status === 200) resolve(data);
+          else reject(new Error(data.error || `HTTP ${xhr.status}`));
+        } catch {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(file);
+    });
+  },
 };

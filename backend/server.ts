@@ -4164,6 +4164,241 @@ app.post('/api/share/import', (req, res) => {
 });
 
 // =============================================================================
+// Backup / Restore endpoints
+// =============================================================================
+
+/** GET /api/backup — download a ZIP containing node identity files */
+app.get('/api/backup', (_req, res) => {
+  try {
+    broadcastLog('[Backup] Creating node backup ZIP...\n');
+
+    // Collect files to backup
+    const filesToBackup: { diskPath: string; zipPath: string }[] = [];
+
+    // 1) custom-preset.yml
+    if (fs.existsSync(PRESET_PATH)) {
+      filesToBackup.push({ diskPath: PRESET_PATH, zipPath: 'custom-preset.yml' });
+    } else {
+      return res.status(400).json({ error: 'custom-preset.yml not found. Start your node at least once first.' });
+    }
+
+    // 2) .ui-meta.json (UI metadata — preset/assembly/version)
+    if (fs.existsSync(UI_META_PATH)) {
+      filesToBackup.push({ diskPath: UI_META_PATH, zipPath: 'ui-meta.json' });
+    }
+
+    // 3) addresses.yml
+    const addressesPath = path.join(TARGET_DIR, 'addresses.yml');
+    if (fs.existsSync(addressesPath)) {
+      filesToBackup.push({ diskPath: addressesPath, zipPath: 'addresses.yml' });
+    } else {
+      broadcastLog('[Backup] ⚠️  addresses.yml not found — skipping (not yet generated?)\n');
+    }
+
+    // 4) nemesis/seed directory
+    const nemesisSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+    if (fs.existsSync(nemesisSeedDir)) {
+      const seedFiles = fs.readdirSync(nemesisSeedDir);
+      for (const f of seedFiles) {
+        const fp = path.join(nemesisSeedDir, f);
+        if (fs.statSync(fp).isFile()) {
+          filesToBackup.push({ diskPath: fp, zipPath: `nemesis/seed/00000/${f}` });
+        }
+      }
+    }
+
+    // Also check for seed index files at parent level
+    const nemesisSeedParent = path.join(TARGET_DIR, 'nemesis', 'seed');
+    for (const f of ['index.dat', 'proof.index.dat']) {
+      const fp = path.join(nemesisSeedParent, f);
+      if (fs.existsSync(fp)) {
+        filesToBackup.push({ diskPath: fp, zipPath: `nemesis/seed/${f}` });
+      }
+    }
+
+    // 5) nemesis/transactions directory
+    const nemesisTxDir = path.join(TARGET_DIR, 'nemesis', 'transactions');
+    if (fs.existsSync(nemesisTxDir)) {
+      const txFiles = fs.readdirSync(nemesisTxDir);
+      for (const f of txFiles) {
+        const fp = path.join(nemesisTxDir, f);
+        if (fs.statSync(fp).isFile()) {
+          filesToBackup.push({ diskPath: fp, zipPath: `nemesis/transactions/${f}` });
+        }
+      }
+    }
+
+    // Build backup metadata
+    const backupMeta = {
+      formatVersion: 1,
+      type: 'node-backup',
+      createdAt: new Date().toISOString(),
+      files: filesToBackup.map((f) => f.zipPath),
+    };
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `node-backup-${timestamp}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err: Error) => {
+      broadcastLog(`[Backup] ❌ Error: ${err.message}\n`);
+      if (!res.headersSent) res.status(500).end();
+    });
+    archive.pipe(res);
+
+    // Add metadata
+    archive.append(JSON.stringify(backupMeta, null, 2), { name: 'backup-meta.json' });
+
+    // Add all files
+    for (const f of filesToBackup) {
+      archive.file(f.diskPath, { name: f.zipPath });
+    }
+
+    archive.finalize();
+    broadcastLog(`[Backup] ✅ Exporting backup: ${filename} (${filesToBackup.length} files)\n`);
+  } catch (err: any) {
+    broadcastLog(`[Backup] ❌ Failed: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/backup/status — check which backup files are available */
+app.get('/api/backup/status', (_req, res) => {
+  const addressesPath = path.join(TARGET_DIR, 'addresses.yml');
+  const nemesisSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+  const nemesisTxDir = path.join(TARGET_DIR, 'nemesis', 'transactions');
+
+  const hasPreset = fs.existsSync(PRESET_PATH);
+  const hasAddresses = fs.existsSync(addressesPath);
+  const hasSeed = fs.existsSync(nemesisSeedDir) && fs.readdirSync(nemesisSeedDir).length > 0;
+  const hasTx = fs.existsSync(nemesisTxDir) && fs.readdirSync(nemesisTxDir).length > 0;
+
+  res.json({
+    canBackup: hasPreset,
+    files: {
+      'custom-preset.yml': hasPreset,
+      'addresses.yml': hasAddresses,
+      'nemesis/seed/': hasSeed,
+      'nemesis/transactions/': hasTx,
+    },
+    nodeState: networkStatus.state,
+  });
+});
+
+/** POST /api/restore — upload a backup ZIP and restore node identity */
+app.post('/api/restore', (req, res) => {
+  // Only allow restore when node is stopped
+  if (networkStatus.state !== 'stopped') {
+    return res.status(409).json({
+      error: 'Node must be stopped before restoring. Please stop the node first.',
+    });
+  }
+
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', () => {
+    try {
+      const zipBuf = Buffer.concat(chunks);
+      if (zipBuf.length < 4) {
+        return res.status(400).json({ error: 'Empty or invalid ZIP file.' });
+      }
+
+      const zip = new AdmZip(zipBuf);
+      const entries = zip.getEntries();
+      const entryNames = entries.map((e: any) => e.entryName);
+
+      broadcastLog(`[Restore] Received backup ZIP (${(zipBuf.length / 1024).toFixed(1)} KB, ${entries.length} entries)\n`);
+
+      // Validate: must contain custom-preset.yml
+      if (!entryNames.includes('custom-preset.yml')) {
+        return res.status(400).json({ error: 'Invalid backup: custom-preset.yml not found.' });
+      }
+
+      const restoredFiles: string[] = [];
+
+      // 1) Restore custom-preset.yml
+      const presetEntry = zip.getEntry('custom-preset.yml');
+      if (presetEntry) {
+        fs.writeFileSync(PRESET_PATH, presetEntry.getData());
+        restoredFiles.push('custom-preset.yml');
+        broadcastLog(`[Restore] 📄 custom-preset.yml (${presetEntry.getData().length}B)\n`);
+      }
+
+      // 2) Restore ui-meta.json
+      const uiMetaEntry = zip.getEntry('ui-meta.json');
+      if (uiMetaEntry) {
+        fs.writeFileSync(UI_META_PATH, uiMetaEntry.getData());
+        restoredFiles.push('ui-meta.json');
+        broadcastLog(`[Restore] 📄 ui-meta.json (${uiMetaEntry.getData().length}B)\n`);
+      }
+
+      // 3) Restore addresses.yml
+      const addressesEntry = zip.getEntry('addresses.yml');
+      if (addressesEntry) {
+        const destPath = path.join(TARGET_DIR, 'addresses.yml');
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, addressesEntry.getData());
+        restoredFiles.push('addresses.yml');
+        broadcastLog(`[Restore] 🔑 addresses.yml (${addressesEntry.getData().length}B)\n`);
+      }
+
+      // 4) Restore nemesis/seed files
+      const seedEntries = entries.filter(
+        (e: any) => e.entryName.startsWith('nemesis/seed/') && !e.isDirectory,
+      );
+      for (const entry of seedEntries) {
+        const destPath = path.join(TARGET_DIR, entry.entryName);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+        restoredFiles.push(entry.entryName);
+        broadcastLog(`[Restore] 🌱 ${entry.entryName} (${entry.getData().length}B)\n`);
+      }
+
+      // 5) Restore nemesis/transactions files
+      const txEntries = entries.filter(
+        (e: any) => e.entryName.startsWith('nemesis/transactions/') && !e.isDirectory,
+      );
+      for (const entry of txEntries) {
+        const destPath = path.join(TARGET_DIR, entry.entryName);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+        restoredFiles.push(entry.entryName);
+        broadcastLog(`[Restore] 📦 ${entry.entryName} (${entry.getData().length}B)\n`);
+      }
+
+      // Also copy seed files to SEED_DIR for the share/join system
+      const seedDir00 = path.join(SEED_DIR, '00000');
+      fs.mkdirSync(seedDir00, { recursive: true });
+      for (const entry of seedEntries) {
+        const relativePath = entry.entryName.replace(/^nemesis\/seed\//, '');
+        const destPath = path.join(SEED_DIR, relativePath);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+      }
+
+      broadcastLog(`[Restore] ✅ Restored ${restoredFiles.length} files successfully\n`);
+      broadcastLog(`[Restore] ℹ️  Next: Start the node with your password to apply the restored configuration.\n`);
+
+      res.json({
+        success: true,
+        restoredFiles,
+        message: 'Backup restored successfully. Start the node to apply.',
+      });
+    } catch (err: any) {
+      broadcastLog(`[Restore] ❌ Failed: ${err.message}\n`);
+      res.status(400).json({ error: `Failed to process backup ZIP: ${err.message}` });
+    }
+  });
+  req.on('error', (err) => {
+    res.status(500).json({ error: err.message });
+  });
+});
+
+// =============================================================================
 // Command endpoints
 // =============================================================================
 
