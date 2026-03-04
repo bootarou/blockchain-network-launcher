@@ -4530,7 +4530,44 @@ app.post('/api/commands/start', async (req, res) => {
       //   Reads custom-preset.yml which now has the patched image name.
       //   Note: --upgrade preserves existing data but skips nemesis seed generation
       //   when data/ doesn't exist.  Only use --upgrade when data/ already exists.
+      //
+      //   Post-restore scenario: TARGET_DIR has addresses.yml + nemesis/ but
+      //   NO preset.yml or nodes/.  symbol-bootstrap sees non-empty target and
+      //   tries to upgrade, but fails without preset.yml.
+      //   --reset (-r) also fails inside Docker because it tries to rmdir
+      //   the volume mount point itself (EBUSY).
+      //   Instead, we stash the restored identity files, clear TARGET_DIR
+      //   so config sees an empty directory, then restore identity files
+      //   after config finishes.
       const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000'));
+      const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
+      const targetHasContent = fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length > 0;
+      const needsReset = !generatedPresetExists && !dataExists && targetHasContent;
+
+      // Stash restored identity files so config sees an empty target dir
+      // NOTE: TARGET_DIR is a Docker volume mount, so fs.renameSync across
+      // to /tmp fails with EXDEV.  Use copy + delete instead.
+      const STASH_DIR = '/tmp/restore-stash';
+      if (needsReset) {
+        broadcastLog('[System] Post-restore detected: stashing identity files for clean config...\n');
+        if (fs.existsSync(STASH_DIR)) fs.rmSync(STASH_DIR, { recursive: true, force: true });
+        fs.mkdirSync(STASH_DIR, { recursive: true });
+        const items = fs.readdirSync(TARGET_DIR);
+        for (const item of items) {
+          const src = path.join(TARGET_DIR, item);
+          const dst = path.join(STASH_DIR, item);
+          const stat = fs.statSync(src);
+          if (stat.isDirectory()) {
+            fs.cpSync(src, dst, { recursive: true });
+            fs.rmSync(src, { recursive: true, force: true });
+          } else {
+            fs.copyFileSync(src, dst);
+            fs.unlinkSync(src);
+          }
+        }
+        broadcastLog(`[System] Stashed ${items.length} item(s): ${items.join(', ')}\n`);
+      }
+
       broadcastLog(`[System] Step 1/6 – Generating configuration... (upgrade=${dataExists})\n`);
       const configArgs = [
         '-p', basePreset,
@@ -4538,11 +4575,34 @@ app.post('/api/commands/start', async (req, res) => {
         '-c', 'custom-preset.yml',
         '--password', password,
       ];
-      if (dataExists) configArgs.push('--upgrade');
+      if (dataExists) {
+        configArgs.push('--upgrade');
+      }
+      // needsReset: target was cleared above, no flag needed
       await runBootstrapCommand('config', configArgs, {
         stateWhileRunning: 'starting',
         stateOnSuccess: 'starting',
       });
+
+      // After config, restore stashed identity files (overwrite generated ones)
+      if (needsReset && fs.existsSync(STASH_DIR)) {
+        // Restore addresses.yml (node private keys)
+        const addrSrc = path.join(STASH_DIR, 'addresses.yml');
+        if (fs.existsSync(addrSrc)) {
+          fs.copyFileSync(addrSrc, path.join(TARGET_DIR, 'addresses.yml'));
+          broadcastLog('[System] ✅ Restored backed-up addresses.yml (node identity preserved).\n');
+        }
+        // Restore nemesis/ directory (genesis block data)
+        const nemSrc = path.join(STASH_DIR, 'nemesis');
+        if (fs.existsSync(nemSrc)) {
+          const nemDst = path.join(TARGET_DIR, 'nemesis');
+          if (fs.existsSync(nemDst)) fs.rmSync(nemDst, { recursive: true, force: true });
+          fs.cpSync(nemSrc, nemDst, { recursive: true });
+          broadcastLog('[System] ✅ Restored backed-up nemesis/ directory.\n');
+        }
+        // Clean up stash
+        fs.rmSync(STASH_DIR, { recursive: true, force: true });
+      }
 
       // Step 1b: Read generated MosaicIDs from config-network.properties
       //   and backfill them into custom-preset.yml for export/UI display.
