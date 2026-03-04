@@ -2426,6 +2426,39 @@ function forceCorrectDockerComposeImages(targetDir: string) {
     } else {
       broadcastLog(`[Patch] docker-compose.yml images already correct ✓\n`);
     }
+
+    // ------------------------------------------------------------------
+    // Normalise the api-node container / service name to "api-node-0".
+    // symbol-bootstrap may name it "node" (single-node) or "api-node-0"
+    // (multi-node). REST gateway's rest.json always targets "api-node-0",
+    // so ensure docker-compose also uses that name.
+    // ------------------------------------------------------------------
+    const doc = yaml.load(content) as Record<string, unknown>;
+    const services = (doc as any)?.services ?? {};
+    if (services['node'] && !services['api-node-0']) {
+      broadcastLog(`[Patch] Renaming docker-compose service "node" → "api-node-0"...\n`);
+
+      // 1. Rename the service key
+      content = content.replace(/^(\s{4})node:/m, '$1api-node-0:');
+      // 2. Rename container_name: node → api-node-0
+      content = content.replace(/container_name:\s*node\b/, 'container_name: api-node-0');
+      // 3. Update volumes path: ../nodes/node → ../nodes/api-node-0
+      content = content.replace(/\.\.\/nodes\/node/g, '../nodes/api-node-0');
+      // 4. Update depends_on references
+      content = content.replace(/(depends_on:\s*\n\s+-\s+)node\b/g, '$1api-node-0');
+
+      fs.writeFileSync(composePath, content, 'utf-8');
+
+      // 5. Rename the actual nodes directory on disk
+      const oldNodeDir = path.join(targetDir, 'nodes', 'node');
+      const newNodeDir = path.join(targetDir, 'nodes', 'api-node-0');
+      if (fs.existsSync(oldNodeDir) && !fs.existsSync(newNodeDir)) {
+        fs.renameSync(oldNodeDir, newNodeDir);
+        broadcastLog(`[Patch] Renamed nodes/node → nodes/api-node-0\n`);
+      }
+
+      broadcastLog(`[Patch] docker-compose.yml service name normalised ✓\n`);
+    }
   } catch (e: any) {
     broadcastLog(`[Patch] Warning: could not patch docker-compose.yml: ${e.message}\n`);
   }
@@ -3050,10 +3083,17 @@ function generateRestGatewayCert(targetDir: string, forceRegen = false) {
     const certDir = path.join(gatewaysDir, gwName, 'api-node-config', 'cert');
     if (!fs.existsSync(certDir)) continue;
 
-    // Find the api-node's CA cert to keep it as `ca.cert.pem` (server verification)
+    // Find the api-node's CA cert + key — needed to sign the REST node cert.
+    // catapult identifies peers by CA public key.  The REST gateway's cert
+    // MUST be signed by the same CA as api-node-0, otherwise catapult rejects
+    // (and bans) the REST connection as an unknown peer.
+    //
+    // symbol-bootstrap places ca.key.pem only in the gateway cert dir
+    // (not in api-node-0/cert/ — that copy is removed after cert generation).
     const apiCaCertPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'ca.cert.pem');
-    if (!fs.existsSync(apiCaCertPath)) {
-      broadcastLog(`[Cert] ⚠️  API-node CA cert not found, skipping REST cert generation\n`);
+    const caKeyPath     = path.join(certDir, 'ca.key.pem');  // placed here by bootstrap
+    if (!fs.existsSync(apiCaCertPath) || !fs.existsSync(caKeyPath)) {
+      broadcastLog(`[Cert] ⚠️  API-node CA cert or key not found, skipping REST cert generation\n`);
       continue;
     }
 
@@ -3072,40 +3112,37 @@ function generateRestGatewayCert(targetDir: string, forceRegen = false) {
     broadcastLog(`[Cert] Generating separate TLS certificate for ${gwName}...\n`);
 
     try {
-      const caKeyPath = path.join(certDir, 'ca.key.pem');
-      const restCaCertPath = path.join(certDir, 'rest-ca.cert.pem');
       const csrPath = path.join(certDir, 'node.csr.pem');
 
-      // Read certificate expiration days from preset (default: CA=7300, node=375)
-      let caCertDays = 7300;
+      // Read certificate expiration days from preset (default: node=375)
       let nodeCertDays = 375;
       try {
         if (fs.existsSync(PRESET_PATH)) {
           const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-          if (presetDoc.caCertificateExpirationInDays) caCertDays = Number(presetDoc.caCertificateExpirationInDays);
           if (presetDoc.nodeCertificateExpirationInDays) nodeCertDays = Number(presetDoc.nodeCertificateExpirationInDays);
         }
       } catch { /* use defaults */ }
 
-      // Generate new CA key + self-signed cert for REST
-      execSync(`openssl genpkey -algorithm ED25519 -out "${caKeyPath}"`, { stdio: 'pipe' });
-      execSync(`openssl req -new -x509 -key "${caKeyPath}" -out "${restCaCertPath}" -days ${caCertDays} -subj "/CN=${gwName}-account"`, { stdio: 'pipe' });
-
-      // Generate new node key + cert signed by REST CA
+      // Generate new node key for REST (separate from api-node's node key)
       execSync(`openssl genpkey -algorithm ED25519 -out "${restKeyPath}"`, { stdio: 'pipe' });
       execSync(`openssl req -new -key "${restKeyPath}" -out "${csrPath}" -subj "/CN=${gwName}"`, { stdio: 'pipe' });
-      execSync(`openssl x509 -req -in "${csrPath}" -CA "${restCaCertPath}" -CAkey "${caKeyPath}" -CAcreateserial -out "${path.join(certDir, 'node.crt.pem')}" -days ${nodeCertDays}`, { stdio: 'pipe' });
 
-      // node.crt.pem = REST node cert + REST CA cert (full chain for TLS client)
+      // Sign with the API-NODE's CA so catapult accepts the connection
+      // (catapult identifies peers by the CA public key in the cert chain)
+      execSync(`openssl x509 -req -in "${csrPath}" -CA "${apiCaCertPath}" -CAkey "${caKeyPath}" -CAcreateserial -out "${path.join(certDir, 'node.crt.pem')}" -days ${nodeCertDays}`, { stdio: 'pipe' });
+
+      // node.crt.pem = REST node cert + api-node CA cert (full chain)
       const nodeCert = fs.readFileSync(path.join(certDir, 'node.crt.pem'), 'utf-8');
-      const restCaCert = fs.readFileSync(restCaCertPath, 'utf-8');
-      fs.writeFileSync(path.join(certDir, 'node.crt.pem'), nodeCert.trimEnd() + '\n' + restCaCert, 'utf-8');
+      const caCert = fs.readFileSync(apiCaCertPath, 'utf-8');
+      fs.writeFileSync(path.join(certDir, 'node.crt.pem'), nodeCert.trimEnd() + '\n' + caCert, 'utf-8');
 
       // ca.cert.pem = API-NODE's CA cert (for verifying the server's TLS cert)
       fs.copyFileSync(apiCaCertPath, path.join(certDir, 'ca.cert.pem'));
 
       // Clean up temporary files
-      for (const tmp of [csrPath, path.join(certDir, 'rest-ca.cert.srl')]) {
+      for (const tmp of [csrPath, path.join(certDir, 'node.crt.srl'),
+                          path.join(certDir, 'rest-ca.cert.srl'),
+                          path.join(certDir, 'rest-ca.cert.pem')]) {
         if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
       }
 
