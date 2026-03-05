@@ -2005,18 +2005,22 @@ function patchMustacheTemplates(version: CatapultVersionDef) {
 }
 
 /**
- * Single-currency mode: patch the config-network.properties.mustache template
- * so that `harvestingMosaicId` outputs the same value as `currencyMosaicId`.
+ * Single-currency mode: patch BOTH the base preset and the mustache template
+ * so that only ONE mosaic exists and harvestingMosaicId = currencyMosaicId.
  *
- * symbol-bootstrap's `_.merge()` merges arrays by index, so the base preset's
- * 2nd harvest mosaic always survives even when the user defines only 1 mosaic.
- * `AddressesService` then generates a separate `harvestingMosaicId` (nonce=1).
+ * Problem: symbol-bootstrap's _.merge() merges arrays by INDEX, so the base
+ * preset's 2nd mosaic ("harvest") always survives even when the user defines
+ * only 1 mosaic.  AddressesService then sees mosaics.length > 1 and generates
+ * a separate harvestingMosaicId (nonce=1), which gets baked into the nemesis
+ * block.  Post-hoc config patching cannot undo that.
  *
- * By patching the mustache template BEFORE `symbol-bootstrap config`, the
- * generated config-network.properties will have `harvestingMosaicId = currencyMosaicId`.
- * nemgen reads this config and calculates importance based on the currency mosaic,
- * which matches `totalChainImportance` = currency supply.  This prevents
- * `Failure_Core_Importance_Block_Mismatch` at node startup.
+ * Fix (two-pronged):
+ *  A. Trim the base preset's mosaics array to 1 element BEFORE config runs.
+ *     This makes _.merge() produce only the user's single mosaic.
+ *     AddressesService sees mosaics.length === 1 and sets
+ *     harvestingMosaicId = currencyMosaicId automatically.
+ *  B. Patch the mustache template so that config-network.properties also
+ *     outputs harvestingMosaicId = currencyMosaicId (belt-and-suspenders).
  */
 function patchMustacheForSingleCurrency(): void {
   // Determine if single-currency mode from custom-preset.yml
@@ -2028,6 +2032,37 @@ function patchMustacheForSingleCurrency(): void {
     isSingleCurrency = Array.isArray(mosaics) && mosaics.length === 1;
   } catch { /* ignore */ }
 
+  // ── Part A: Patch base preset's mosaics array ──
+  const basePresetPath = '/usr/local/lib/node_modules/symbol-bootstrap/presets/bootstrap/network.yml';
+  if (fs.existsSync(basePresetPath)) {
+    const baseDoc = yaml.load(fs.readFileSync(basePresetPath, 'utf-8')) as Record<string, unknown>;
+    const baseNemesis = baseDoc?.nemesis as Record<string, unknown> | undefined;
+    const baseMosaics = baseNemesis?.mosaics as any[] | undefined;
+
+    if (isSingleCurrency && baseMosaics && baseMosaics.length > 1) {
+      // Trim to 1 mosaic so _.merge() cannot resurrect the 2nd
+      baseNemesis!.mosaics = baseMosaics.slice(0, 1);
+      fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
+      broadcastLog(`[Pre-Patch] Single-currency: trimmed base preset mosaics to 1 (was ${baseMosaics.length})\n`);
+    } else if (!isSingleCurrency && baseMosaics && baseMosaics.length < 2) {
+      // Restore default harvest mosaic if switching back to dual-currency
+      const defaultHarvest = {
+        name: 'harvest',
+        divisibility: 3,
+        duration: 0,
+        supply: 15000000,
+        isTransferable: true,
+        isSupplyMutable: true,
+        isRestrictable: false,
+        accounts: 2,
+      };
+      baseMosaics.push(defaultHarvest);
+      fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
+      broadcastLog('[Pre-Patch] Restored harvest mosaic in base preset (dual-currency mode)\n');
+    }
+  }
+
+  // ── Part B: Patch mustache template ──
   const templatePath = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources/config-network.properties.mustache';
   if (!fs.existsSync(templatePath)) return;
 
