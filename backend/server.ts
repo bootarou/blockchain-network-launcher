@@ -3083,21 +3083,29 @@ function generateRestGatewayCert(targetDir: string, forceRegen = false) {
     const certDir = path.join(gatewaysDir, gwName, 'api-node-config', 'cert');
     if (!fs.existsSync(certDir)) continue;
 
-    // Find the api-node's CA cert + key — needed to sign the REST node cert.
-    // catapult identifies peers by CA public key.  The REST gateway's cert
-    // MUST be signed by the same CA as api-node-0, otherwise catapult rejects
-    // (and bans) the REST connection as an unknown peer.
+    // catapult identifies peers by the CA public key extracted from the TLS
+    // cert chain.  The local node registers itself with its own CA pubkey
+    // as identity (NodeSource::Local).  If the REST gateway presents a cert
+    // with the SAME CA, catapult rejects the connection as "in use identity
+    // key" because the Host equality strategy's secondary key lookup finds
+    // the local node and NodeSource::Local blocks identity updates.
     //
-    // symbol-bootstrap places ca.key.pem only in the gateway cert dir
-    // (not in api-node-0/cert/ — that copy is removed after cert generation).
+    // Fix: generate a COMPLETELY SEPARATE CA + node cert for the REST
+    // gateway.  catapult's CatapultCertificateProcessor accepts any properly
+    // self-signed CA certificate (verifyUnverifiedRoot), so TLS succeeds
+    // and the identity key is the REST gateway's own CA pubkey — no conflict.
+    //
+    // ca.cert.pem in the gateway cert dir is used by the REST TLS client
+    // to verify the api-node server's TLS cert, so it MUST remain the
+    // api-node's CA cert.
+
     const apiCaCertPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'ca.cert.pem');
-    const caKeyPath     = path.join(certDir, 'ca.key.pem');  // placed here by bootstrap
-    if (!fs.existsSync(apiCaCertPath) || !fs.existsSync(caKeyPath)) {
-      broadcastLog(`[Cert] ⚠️  API-node CA cert or key not found, skipping REST cert generation\n`);
+    if (!fs.existsSync(apiCaCertPath)) {
+      broadcastLog(`[Cert] ⚠️  API-node CA cert not found, skipping REST cert generation\n`);
       continue;
     }
 
-    // Check if REST already has a different cert (no need to regenerate)
+    // Check if REST already has a different node key (no need to regenerate)
     const restKeyPath = path.join(certDir, 'node.key.pem');
     const apiKeyPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'node.key.pem');
     if (!forceRegen && fs.existsSync(restKeyPath) && fs.existsSync(apiKeyPath)) {
@@ -3112,37 +3120,52 @@ function generateRestGatewayCert(targetDir: string, forceRegen = false) {
     broadcastLog(`[Cert] Generating separate TLS certificate for ${gwName}...\n`);
 
     try {
-      const csrPath = path.join(certDir, 'node.csr.pem');
+      // Paths for the REST gateway's own CA
+      const restCaKeyPath  = path.join(certDir, 'rest-ca.key.pem');
+      const restCaCertPath = path.join(certDir, 'rest-ca.cert.pem');
+      const csrPath        = path.join(certDir, 'node.csr.pem');
 
-      // Read certificate expiration days from preset (default: node=375)
+      // Read certificate expiration days from preset (default: CA=375*3, node=375)
       let nodeCertDays = 375;
+      let caCertDays = 375 * 3;
       try {
         if (fs.existsSync(PRESET_PATH)) {
           const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
           if (presetDoc.nodeCertificateExpirationInDays) nodeCertDays = Number(presetDoc.nodeCertificateExpirationInDays);
+          if (presetDoc.caCertificateExpirationInDays) caCertDays = Number(presetDoc.caCertificateExpirationInDays);
         }
       } catch { /* use defaults */ }
 
-      // Generate new node key for REST (separate from api-node's node key)
+      // 1. Generate a completely separate CA key pair for the REST gateway
+      execSync(`openssl genpkey -algorithm ED25519 -out "${restCaKeyPath}"`, { stdio: 'pipe' });
+
+      // 2. Create a self-signed CA certificate (catapult requires subject == issuer for root)
+      execSync(`openssl req -new -x509 -key "${restCaKeyPath}" -out "${restCaCertPath}" -days ${caCertDays} -subj "/CN=${gwName}-ca"`, { stdio: 'pipe' });
+
+      // 3. Generate a new node key for the REST gateway
       execSync(`openssl genpkey -algorithm ED25519 -out "${restKeyPath}"`, { stdio: 'pipe' });
+
+      // 4. Create a CSR for the REST node cert
       execSync(`openssl req -new -key "${restKeyPath}" -out "${csrPath}" -subj "/CN=${gwName}"`, { stdio: 'pipe' });
 
-      // Sign with the API-NODE's CA so catapult accepts the connection
-      // (catapult identifies peers by the CA public key in the cert chain)
-      execSync(`openssl x509 -req -in "${csrPath}" -CA "${apiCaCertPath}" -CAkey "${caKeyPath}" -CAcreateserial -out "${path.join(certDir, 'node.crt.pem')}" -days ${nodeCertDays}`, { stdio: 'pipe' });
+      // 5. Sign the REST node cert with the REST gateway's OWN CA
+      execSync(`openssl x509 -req -in "${csrPath}" -CA "${restCaCertPath}" -CAkey "${restCaKeyPath}" -CAcreateserial -out "${path.join(certDir, 'node.crt.pem')}" -days ${nodeCertDays}`, { stdio: 'pipe' });
 
-      // node.crt.pem = REST node cert + api-node CA cert (full chain)
+      // 6. node.crt.pem = REST node cert + REST CA cert (full chain)
+      //    catapult's TLS verification processes the chain and extracts
+      //    the CA public key as the peer identity.
       const nodeCert = fs.readFileSync(path.join(certDir, 'node.crt.pem'), 'utf-8');
-      const caCert = fs.readFileSync(apiCaCertPath, 'utf-8');
-      fs.writeFileSync(path.join(certDir, 'node.crt.pem'), nodeCert.trimEnd() + '\n' + caCert, 'utf-8');
+      const restCaCert = fs.readFileSync(restCaCertPath, 'utf-8');
+      fs.writeFileSync(path.join(certDir, 'node.crt.pem'), nodeCert.trimEnd() + '\n' + restCaCert, 'utf-8');
 
-      // ca.cert.pem = API-NODE's CA cert (for verifying the server's TLS cert)
+      // 7. ca.cert.pem = API-NODE's CA cert (for verifying the server's TLS cert)
+      //    This is what the REST TLS client uses in the `ca` option.
       fs.copyFileSync(apiCaCertPath, path.join(certDir, 'ca.cert.pem'));
 
       // Clean up temporary files
-      for (const tmp of [csrPath, path.join(certDir, 'node.crt.srl'),
-                          path.join(certDir, 'rest-ca.cert.srl'),
-                          path.join(certDir, 'rest-ca.cert.pem')]) {
+      for (const tmp of [csrPath,
+                          path.join(certDir, 'node.csr.pem'),
+                          path.join(certDir, 'rest-ca.cert.srl')]) {
         if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
       }
 
