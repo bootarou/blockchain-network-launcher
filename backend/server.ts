@@ -1502,13 +1502,13 @@ app.post('/api/certificate-renew', async (req, res) => {
       return res.status(500).json({ error: 'RENEW_FAILED', message: err.message });
     }
 
-    // Regenerate REST gateway certificate (separate identity from api-node)
+    // Re-sync REST gateway certificate (must match api-node after renewal)
     try {
-      broadcastLog('[Cert] Regenerating REST gateway certificate...\n');
+      broadcastLog('[Cert] Re-syncing REST gateway certificate...\n');
       generateRestGatewayCert(TARGET_DIR, true);
-      broadcastLog('[Cert] ✅ REST gateway certificate regenerated\n');
+      broadcastLog('[Cert] ✅ REST gateway certificate re-synced\n');
     } catch (err: any) {
-      broadcastLog(`[Cert] ⚠️  REST gateway cert regeneration failed: ${err.message}\n`);
+      broadcastLog(`[Cert] ⚠️  REST gateway cert sync failed: ${err.message}\n`);
       // Non-fatal: node cert was already renewed
     }
 
@@ -3022,7 +3022,27 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
 // Docker network subnet so the REST gateway (running in a sibling container)
 // is treated as a local/trusted connection.  symbol-bootstrap only sets
 // "127.0.0.1" by default — the REST container connects from 172.20.0.x.
+//
+// IMPORTANT – catapult's config::IsLocalHost() performs a **prefix-match**
+// (std::memcmp on the raw string), NOT CIDR parsing.
+//   "172.20.0.0/24" (13 chars) can never match "172.20.0.25" (11 chars)
+//   because the host string is shorter than the pattern.
+// We must convert CIDR → prefix form  ("172.20.0.0/24" → "172.20.0.")
+// so that any IP in the subnet is correctly recognised as local and the
+// banning bypass in DispatcherService works.
 // =============================================================================
+
+/** Convert a CIDR subnet string to a prefix suitable for catapult's
+ *  IsLocalHost() prefix-match.  e.g. "172.20.0.0/24" → "172.20.0." */
+function cidrToPrefix(cidr: string): string {
+  const m = cidr.match(/^([\d.]+)\/(\d+)$/);
+  if (!m) return cidr;                       // not CIDR – return as-is
+  const octets = m[1].split('.');
+  const fullOctets = Math.floor(parseInt(m[2], 10) / 8);
+  if (fullOctets >= 4) return m[1];          // /32 – exact IP
+  return octets.slice(0, fullOctets).join('.') + '.';
+}
+
 function patchLocalNetworks(targetDir: string) {
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
@@ -3036,6 +3056,8 @@ function patchLocalNetworks(targetDir: string) {
     if (subnetMatch) subnet = subnetMatch[1];
   }
 
+  const prefix = cidrToPrefix(subnet);   // e.g. "172.20.0."
+
   let patched = 0;
   for (const nodeName of fs.readdirSync(nodesDir)) {
     for (const configDir of ['server-config', 'broker-config']) {
@@ -3048,18 +3070,31 @@ function patchLocalNetworks(targetDir: string) {
       for (const key of ['trustedHosts', 'localNetworks']) {
         const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
         const match = content.match(regex);
-        if (match && !match[2].includes(subnet)) {
-          const oldVal = match[2].trim();
-          const newVal = oldVal ? `${oldVal}, ${subnet}` : subnet;
-          content = content.replace(regex, `$1${newVal}`);
+        if (!match) continue;
+
+        let val = match[2].trim();
+
+        // Replace any existing CIDR notation with prefix notation
+        if (val.includes(subnet)) {
+          val = val.replace(subnet, prefix);
           changed = true;
+        }
+
+        // Ensure the prefix is present
+        if (!val.includes(prefix)) {
+          val = val ? `${val}, ${prefix}` : prefix;
+          changed = true;
+        }
+
+        if (changed) {
+          content = content.replace(regex, (_, keyPart: string) => `${keyPart}${val}`);
         }
       }
 
       if (changed) {
         fs.writeFileSync(configPath, content, 'utf-8');
         patched++;
-        broadcastLog(`[Patch] Added Docker subnet ${subnet} to trustedHosts/localNetworks in ${nodeName}/${configDir}\n`);
+        broadcastLog(`[Patch] Patched trustedHosts/localNetworks → prefix "${prefix}" in ${nodeName}/${configDir}\n`);
       }
     }
   }
@@ -3069,109 +3104,73 @@ function patchLocalNetworks(targetDir: string) {
 }
 
 // =============================================================================
-// Generate a separate TLS certificate for the REST gateway so its identity
-// (CA public key) differs from the api-node's.  Without this, the api-node
-// rejects the connection with "rejecting new host ... with in use identity key".
-// Uses child_process to call openssl (available in the DinD node:20 image).
+// Ensure the REST gateway's TLS cert directory has COPIES of the api-node's
+// cert files.  This is the standard symbol-bootstrap configuration: REST and
+// api-node share the same CA, so the REST gateway's identity key (CA public
+// key extracted from the TLS chain) matches the api-node's.
+//
+// Combined with the localNetworks prefix fix, the REST gateway's host is
+// mapped to "_local_" by NodeContainerSubscriberAdapter, and because the
+// identity key is the same as the local node's own, the NodeDataContainer
+// accepts the connection (same identity at same host = no conflict).
+//
+// This also means the banning bypass in DispatcherService fires for the
+// REST gateway (it is recognised as a local host), so even if a bad
+// transaction is pushed through the REST API, the gateway won't be banned.
 // =============================================================================
-function generateRestGatewayCert(targetDir: string, forceRegen = false) {
-  const { execSync } = require('child_process') as typeof import('child_process');
+function generateRestGatewayCert(targetDir: string, _forceRegen = false) {
   const gatewaysDir = path.join(targetDir, 'gateways');
   if (!fs.existsSync(gatewaysDir)) return;
 
   for (const gwName of fs.readdirSync(gatewaysDir)) {
     const certDir = path.join(gatewaysDir, gwName, 'api-node-config', 'cert');
-    if (!fs.existsSync(certDir)) continue;
+    if (!fs.existsSync(certDir)) {
+      fs.mkdirSync(certDir, { recursive: true });
+    }
 
-    // catapult identifies peers by the CA public key extracted from the TLS
-    // cert chain.  The local node registers itself with its own CA pubkey
-    // as identity (NodeSource::Local).  If the REST gateway presents a cert
-    // with the SAME CA, catapult rejects the connection as "in use identity
-    // key" because the Host equality strategy's secondary key lookup finds
-    // the local node and NodeSource::Local blocks identity updates.
-    //
-    // Fix: generate a COMPLETELY SEPARATE CA + node cert for the REST
-    // gateway.  catapult's CatapultCertificateProcessor accepts any properly
-    // self-signed CA certificate (verifyUnverifiedRoot), so TLS succeeds
-    // and the identity key is the REST gateway's own CA pubkey — no conflict.
-    //
-    // ca.cert.pem in the gateway cert dir is used by the REST TLS client
-    // to verify the api-node server's TLS cert, so it MUST remain the
-    // api-node's CA cert.
-
-    const apiCaCertPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'ca.cert.pem');
-    if (!fs.existsSync(apiCaCertPath)) {
-      broadcastLog(`[Cert] ⚠️  API-node CA cert not found, skipping REST cert generation\n`);
+    const apiCertDir = path.join(targetDir, 'nodes', 'api-node-0', 'cert');
+    if (!fs.existsSync(apiCertDir)) {
+      broadcastLog(`[Cert] ⚠️  API-node cert dir not found, skipping REST cert sync\n`);
       continue;
     }
 
-    // Check if REST already has a different node key (no need to regenerate)
-    const restKeyPath = path.join(certDir, 'node.key.pem');
-    const apiKeyPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'node.key.pem');
-    if (!forceRegen && fs.existsSync(restKeyPath) && fs.existsSync(apiKeyPath)) {
-      const restKey = fs.readFileSync(restKeyPath);
-      const apiKey = fs.readFileSync(apiKeyPath);
-      if (!restKey.equals(apiKey)) {
-        broadcastLog(`[Cert] REST gateway already has a distinct certificate — skipping\n`);
-        continue;
+    // Files that the REST gateway needs (same as api-node)
+    const certFiles = ['ca.cert.pem', 'node.key.pem', 'node.crt.pem'];
+    let copied = 0;
+
+    for (const file of certFiles) {
+      const src = path.join(apiCertDir, file);
+      const dst = path.join(certDir, file);
+      if (!fs.existsSync(src)) continue;
+
+      // Copy if destination is missing or differs
+      const srcBuf = fs.readFileSync(src);
+      if (!fs.existsSync(dst) || !srcBuf.equals(fs.readFileSync(dst))) {
+        fs.writeFileSync(dst, srcBuf);
+        copied++;
       }
     }
 
-    broadcastLog(`[Cert] Generating separate TLS certificate for ${gwName}...\n`);
+    // Also copy node.full.crt.pem as node.crt.pem if node.crt.pem wasn't
+    // available but the full chain cert exists.
+    const fullCrtSrc = path.join(apiCertDir, 'node.full.crt.pem');
+    const crtDst = path.join(certDir, 'node.crt.pem');
+    if (!fs.existsSync(crtDst) && fs.existsSync(fullCrtSrc)) {
+      fs.copyFileSync(fullCrtSrc, crtDst);
+      copied++;
+    }
 
-    try {
-      // Paths for the REST gateway's own CA
-      const restCaKeyPath  = path.join(certDir, 'rest-ca.key.pem');
-      const restCaCertPath = path.join(certDir, 'rest-ca.cert.pem');
-      const csrPath        = path.join(certDir, 'node.csr.pem');
+    // Clean up leftover files from previous separate-CA approach
+    for (const stale of ['rest-ca.key.pem', 'rest-ca.cert.pem',
+                          'rest-ca.cert.srl', 'node.csr.pem']) {
+      const p = path.join(certDir, stale);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
 
-      // Read certificate expiration days from preset (default: CA=375*3, node=375)
-      let nodeCertDays = 375;
-      let caCertDays = 375 * 3;
-      try {
-        if (fs.existsSync(PRESET_PATH)) {
-          const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-          if (presetDoc.nodeCertificateExpirationInDays) nodeCertDays = Number(presetDoc.nodeCertificateExpirationInDays);
-          if (presetDoc.caCertificateExpirationInDays) caCertDays = Number(presetDoc.caCertificateExpirationInDays);
-        }
-      } catch { /* use defaults */ }
-
-      // 1. Generate a completely separate CA key pair for the REST gateway
-      execSync(`openssl genpkey -algorithm ED25519 -out "${restCaKeyPath}"`, { stdio: 'pipe' });
-
-      // 2. Create a self-signed CA certificate (catapult requires subject == issuer for root)
-      execSync(`openssl req -new -x509 -key "${restCaKeyPath}" -out "${restCaCertPath}" -days ${caCertDays} -subj "/CN=${gwName}-ca"`, { stdio: 'pipe' });
-
-      // 3. Generate a new node key for the REST gateway
-      execSync(`openssl genpkey -algorithm ED25519 -out "${restKeyPath}"`, { stdio: 'pipe' });
-
-      // 4. Create a CSR for the REST node cert
-      execSync(`openssl req -new -key "${restKeyPath}" -out "${csrPath}" -subj "/CN=${gwName}"`, { stdio: 'pipe' });
-
-      // 5. Sign the REST node cert with the REST gateway's OWN CA
-      execSync(`openssl x509 -req -in "${csrPath}" -CA "${restCaCertPath}" -CAkey "${restCaKeyPath}" -CAcreateserial -out "${path.join(certDir, 'node.crt.pem')}" -days ${nodeCertDays}`, { stdio: 'pipe' });
-
-      // 6. node.crt.pem = REST node cert + REST CA cert (full chain)
-      //    catapult's TLS verification processes the chain and extracts
-      //    the CA public key as the peer identity.
-      const nodeCert = fs.readFileSync(path.join(certDir, 'node.crt.pem'), 'utf-8');
-      const restCaCert = fs.readFileSync(restCaCertPath, 'utf-8');
-      fs.writeFileSync(path.join(certDir, 'node.crt.pem'), nodeCert.trimEnd() + '\n' + restCaCert, 'utf-8');
-
-      // 7. ca.cert.pem = API-NODE's CA cert (for verifying the server's TLS cert)
-      //    This is what the REST TLS client uses in the `ca` option.
-      fs.copyFileSync(apiCaCertPath, path.join(certDir, 'ca.cert.pem'));
-
-      // Clean up temporary files
-      for (const tmp of [csrPath,
-                          path.join(certDir, 'node.csr.pem'),
-                          path.join(certDir, 'rest-ca.cert.srl')]) {
-        if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-      }
-
-      broadcastLog(`[Cert] ✅ REST gateway certificate generated for ${gwName}\n`);
-    } catch (e: any) {
-      broadcastLog(`[Cert] ⚠️  Failed to generate REST cert: ${e.message}\n`);
+    if (copied > 0) {
+      broadcastLog(`[Cert] ✅ Synced ${copied} cert file(s) from api-node-0 → ${gwName}\n`);
+    } else {
+      broadcastLog(`[Cert] ${gwName} certs already in sync with api-node-0\n`);
     }
   }
 }
