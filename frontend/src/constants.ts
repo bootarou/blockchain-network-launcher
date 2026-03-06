@@ -630,7 +630,7 @@ export const DEFAULT_HARVEST_MOSAIC: NemesisMosaic = {
 
 export const DEFAULT_NODE: NodeConfig = {
   name: 'api-node-0',
-  host: 'localhost',
+  host: '0.0.0.0',
   friendlyName: 'My API Node',
   roles: 'Peer,Api',
   harvesting: true,
@@ -796,7 +796,7 @@ export const DEFAULT_PRESET: PresetConfig = {
   ],
 
   nodes: [{
-    name: 'api-node-0', host: 'localhost', friendlyName: 'My API Node', roles: 'Peer,Api',
+    name: 'api-node-0', host: '0.0.0.0', friendlyName: 'My API Node', roles: 'Peer,Api',
     harvesting: true, api: true, voting: false, database: true,
     minFeeMultiplier: 100, enableTransactionSpamThrottling: true, transactionSpamThrottlingMaxBoostFee: 10000000,
     maxTrackedNodes: 5000, trustedHosts: '127.0.0.1', localNetworks: '127.0.0.1',
