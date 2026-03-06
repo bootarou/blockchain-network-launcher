@@ -2536,6 +2536,144 @@ function forceCorrectDockerComposeImages(targetDir: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Promote networkProperties.chain.* / plugin.* values to the document root
+// of custom-preset.yml.
+//
+// symbol-bootstrap generates config-network.properties via mustache templates
+// that read FLAT (top-level) keys from the merged preset.  A deep-merge of
+//   customPreset.networkProperties.chain.blockGenerationTargetTime: 30s
+// on top of
+//   basePreset.blockGenerationTargetTime: 15s
+// does NOT update the base preset's top-level value; only the nested path is
+// set.  We must duplicate every chain/plugin key at the document root so
+// bootstrap's mustache templates can pick them up.
+//
+// This must be called BEFORE `symbol-bootstrap config`.
+//
+// Exceptions:
+//   currencyMosaicId, harvestingMosaicId — managed by backfillMosaicIds()
+//   after nemesis generation.  We do not promote them here to avoid
+//   bootstrapping with a stale ID from a previous run.
+// ---------------------------------------------------------------------------
+function normalizePresetTopLevelOverrides(presetPath: string): void {
+  if (!fs.existsSync(presetPath)) return;
+  try {
+    const content = fs.readFileSync(presetPath, 'utf-8');
+    const doc = yaml.load(content) as Record<string, unknown>;
+    if (!doc || typeof doc !== 'object') return;
+
+    const SKIP_KEYS = new Set(['currencyMosaicId', 'harvestingMosaicId']);
+    let promoted = 0;
+
+    const np = doc.networkProperties as Record<string, unknown> | undefined;
+    if (np) {
+      const promoteSection = (section: Record<string, unknown> | undefined) => {
+        if (!section) return;
+        for (const [k, v] of Object.entries(section)) {
+          if (SKIP_KEYS.has(k)) continue;
+          if (v === undefined || v === null || v === '') continue;
+          // Convert quoted-number strings like "8'998'999'998'000'000" to Number
+          // so bootstrap arithmetic (Math.min/floor etc.) works correctly.
+          let topVal: unknown = v;
+          if (typeof v === 'string' && /^\d[\d']*$/.test(v)) {
+            const num = Number(v.replace(/'/g, ''));
+            if (!isNaN(num)) topVal = num;
+          }
+          doc[k] = topVal;
+          promoted++;
+        }
+      };
+      promoteSection(np.chain as Record<string, unknown> | undefined);
+      promoteSection(np.plugin as Record<string, unknown> | undefined);
+    }
+
+    if (promoted > 0) {
+      fs.writeFileSync(presetPath, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+      broadcastLog(`[Preset] ✅ Promoted ${promoted} networkProperties.chain/plugin keys to top level\n`);
+    } else {
+      broadcastLog('[Preset] No chain/plugin keys needed promotion\n');
+    }
+  } catch (e: any) {
+    broadcastLog(`[Preset] ⚠️  normalizePresetTopLevelOverrides failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read the actual currency mosaic ID from the generated nemesis seed block.
+//
+// Background: symbol-bootstrap config generates config-network.properties
+// with currencyMosaicId = ID of the base-preset's standalone "currency"
+// mosaic (nonce=0, computed from nemesisSigner address).
+// But when a custom baseNamespace is set (e.g. "bootarou"), nemgen creates
+// "bootarou:point" as a NAMESPACE-SCOPED mosaic whose ID is computed via
+// SHA3-256 from the namespace path — a completely different value.
+// The catapult server checks that the sum of harvestingMosaicId outflows
+// in the nemesis block receipts equals totalChainImportance.  If
+// harvestingMosaicId points at the wrong mosaic, outflows = 0 → crash.
+//
+// This function reads nemesis/seed/00000/00001.dat and extracts the mosaic
+// ID from any EmbeddedMosaicDefinitionTransaction (type 0x414D) whose body
+// is consistent with non-zero supply.  If found, that ID is the true
+// currencyMosaicId that matches what is actually in the nemesis block.
+// ---------------------------------------------------------------------------
+function readMosaicIdFromNemesisSeed(targetDir: string): string {
+  const datPath = path.join(targetDir, 'nemesis', 'seed', '00000', '00001.dat');
+  if (!fs.existsSync(datPath)) return '';
+
+  try {
+    const data = fs.readFileSync(datPath);
+    const MOSAIC_DEF_TYPE = 0x414D;
+    // Transaction header layout (catapult):
+    //   size(4) reserved(4) signature(64) signerPublicKey(32) reserved2(4)
+    //   version(1) network(1) type(2)   → total header = 112 bytes
+    // EmbeddedMosaicDefinitionTransaction body (after header):
+    //   nonce(4) mosaicId(8) flags(1) divisibility(1) duration(8)
+    const HEADER_SIZE = 112;
+    // Regular (non-embedded) transaction body layout:
+    //   fee (8) + deadline (8) + [tx-specific body]
+    // MosaicDefinitionTransaction-specific body (after fee+deadline):
+    //   id (8) ← this is what we want
+    //   duration (8)
+    //   nonce (4)
+    //   flags (1)
+    //   divisibility (1)
+    const FEE_DEADLINE_SIZE = 16;  // fee(8) + deadline(8) before tx-specific body
+    const ids: bigint[] = [];
+
+    for (let offset = 0; offset + HEADER_SIZE + FEE_DEADLINE_SIZE + 8 <= data.length; offset++) {
+      const txType = data.readUInt16LE(offset + 110);
+      if (txType !== MOSAIC_DEF_TYPE) continue;
+
+      const txSize = data.readUInt32LE(offset);
+      if (txSize < HEADER_SIZE || txSize > data.length - offset) continue;
+
+      // mosaicId is at: header + fee(8) + deadline(8)
+      const idLo = data.readUInt32LE(offset + HEADER_SIZE + FEE_DEADLINE_SIZE);
+      const idHi = data.readUInt32LE(offset + HEADER_SIZE + FEE_DEADLINE_SIZE + 4);
+      if (idLo === 0 && idHi === 0) continue;
+      const id = (BigInt(idHi) << 32n) | BigInt(idLo);
+      ids.push(id);
+      // Advance past this transaction to avoid re-scanning its bytes
+      offset += txSize - 1;
+    }
+
+    if (ids.length === 0) return '';
+
+    // Use the last found mosaic ID — the namespace-scoped mosaic is defined
+    // after the standalone bootstrap "currency" mosaic in the block.
+    const chosen = ids[ids.length - 1];
+    const hex = chosen.toString(16).toUpperCase().padStart(16, '0');
+    const formatted = "0x" + hex.match(/.{1,4}/g)!.join("'");
+    broadcastLog(`[MosaicID] Detected mosaic IDs in nemesis block: ${ids.map(id => '0x'+id.toString(16).toUpperCase().padStart(16,'0')).join(', ')}\n`);
+    broadcastLog(`[MosaicID] Using last (namespace) mosaic ID: ${formatted}\n`);
+    return formatted;
+  } catch (e: any) {
+    broadcastLog(`[MosaicID] ⚠️  Could not read mosaic ID from nemesis seed: ${e.message}\n`);
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Read generated MosaicIDs from config-network.properties after
 // symbol-bootstrap config and write them back to custom-preset.yml.
 // This is needed because bootstrap preset auto-generates the IDs from the
@@ -2585,7 +2723,20 @@ function backfillMosaicIds(targetDir: string): void {
   // by index, so the base preset's 2nd harvest mosaic survives and generates a
   // separate ID (nonce=1).  We override it here after config.
   if (userMosaicCount <= 1 && currencyId) {
-    broadcastLog(`[MosaicID] Single-currency mode: forcing harvestingMosaicId = currencyMosaicId\n`);
+    // When a custom baseNamespace is configured (e.g. "bootarou"), nemgen
+    // generates "bootarou:point" as a namespace-scoped mosaic.  Its ID is
+    // derived from the namespace path via SHA3-256 — completely different from
+    // the bootstrap-computed standalone "currency" mosaic ID that ends up in
+    // config-network.properties.  Read the TRUE mosaic ID directly from the
+    // generated nemesis block to avoid the mismatch.
+    const nemesisMosaicId = readMosaicIdFromNemesisSeed(targetDir);
+    if (nemesisMosaicId) {
+      broadcastLog(`[MosaicID] Single-currency: overriding currencyMosaicId/harvestingMosaicId with nemesis-derived ID: ${nemesisMosaicId}\n`);
+      currencyId = nemesisMosaicId;
+    } else {
+      broadcastLog(`[MosaicID] Single-currency: could not read nemesis mosaic ID — using config-derived currencyMosaicId\n`);
+    }
+    broadcastLog(`[MosaicID] Single-currency mode: forcing harvestingMosaicId = currencyMosaicId = ${currencyId}\n`);
     harvestId = currencyId;
 
     // Read currency supply for totalChainImportance patch
@@ -2608,6 +2759,10 @@ function backfillMosaicIds(targetDir: string): void {
         const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties');
         if (!fs.existsSync(configPath)) continue;
         let content = fs.readFileSync(configPath, 'utf-8');
+        content = content.replace(
+          /currencyMosaicId\s*=\s*\S+/,
+          `currencyMosaicId = ${currencyId}`,
+        );
         content = content.replace(
           /harvestingMosaicId\s*=\s*\S+/,
           `harvestingMosaicId = ${currencyId}`,
@@ -2637,6 +2792,10 @@ function backfillMosaicIds(targetDir: string): void {
         const gwConfigPath = path.join(gwDir, gwName, 'api-node-config', 'config-network.properties');
         if (!fs.existsSync(gwConfigPath)) continue;
         let gwContent = fs.readFileSync(gwConfigPath, 'utf-8');
+        gwContent = gwContent.replace(
+          /currencyMosaicId\s*=\s*\S+/,
+          `currencyMosaicId = ${currencyId}`,
+        );
         gwContent = gwContent.replace(
           /harvestingMosaicId\s*=\s*\S+/,
           `harvestingMosaicId = ${currencyId}`,
@@ -4930,6 +5089,17 @@ app.post('/api/commands/start', async (req, res) => {
       // and importance based on the currency supply, preventing
       // Failure_Core_Importance_Block_Mismatch at node startup.
       patchMustacheForSingleCurrency();
+
+      // Step 0e: Promote networkProperties.chain / plugin values to the top
+      // level of custom-preset.yml so symbol-bootstrap's mustache templates
+      // pick them up.  The templates only read FLAT (root-level) keys; nested
+      // values under networkProperties.chain are ignored for flat rendering.
+      // Without this step, bootstrap's defaults (blockGenerationTargetTime=15s,
+      // importanceGrouping=180, etc.) would override the user's settings,
+      // causing a mismatch between the generated nemesis block and
+      // config-network.properties → Failure_Core_Importance_Block_Mismatch.
+      broadcastLog('[System] Step 0e – Promoting chain/plugin overrides to preset top level...\n');
+      normalizePresetTopLevelOverrides(PRESET_PATH);
 
       // Step 1: symbol-bootstrap config  (--upgrade to force regeneration)
       //   Reads custom-preset.yml which now has the patched image name.
