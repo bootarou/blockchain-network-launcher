@@ -2685,8 +2685,27 @@ function backfillMosaicIds(targetDir: string): void {
     if (currencyId) doc.currencyMosaicId = currencyId;
     if (harvestId) doc.harvestingMosaicId = harvestId;
 
+    // Backfill nemesisGenerationHashSeed from generated preset.yml
+    // This ensures custom-preset.yml always contains the generation hash for export
+    const generatedPresetPath = path.join(targetDir, 'preset.yml');
+    if (fs.existsSync(generatedPresetPath)) {
+      try {
+        const genDoc = yaml.load(fs.readFileSync(generatedPresetPath, 'utf-8')) as Record<string, unknown>;
+        if (genDoc.nemesisGenerationHashSeed && !np.nemesisGenerationHashSeed) {
+          np.nemesisGenerationHashSeed = genDoc.nemesisGenerationHashSeed;
+          broadcastLog(`[MosaicID] Backfilled nemesisGenerationHashSeed: ${genDoc.nemesisGenerationHashSeed}\n`);
+        }
+        if (genDoc.nemesisSignerPublicKey && !np.nemesisSignerPublicKey) {
+          np.nemesisSignerPublicKey = genDoc.nemesisSignerPublicKey;
+          broadcastLog(`[MosaicID] Backfilled nemesisSignerPublicKey\n`);
+        }
+      } catch (e: any) {
+        broadcastLog(`[MosaicID] ⚠️  Could not read generated preset for backfill: ${e.message}\n`);
+      }
+    }
+
     fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
-    broadcastLog('[MosaicID] ✅ Backfilled MosaicIDs to custom-preset.yml\n');
+    broadcastLog('[MosaicID] ✅ Backfilled MosaicIDs and network properties to custom-preset.yml\n');
   } catch (e: any) {
     broadcastLog(`[MosaicID] ⚠️ Failed to backfill: ${e.message}\n`);
   }
