@@ -656,6 +656,21 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
 
       {/* ── Terminal ── */}
       <TerminalLogs />
+
+      {/* ── Footer / Version Info ── */}
+      <div className="mt-8 pt-6 border-t border-gray-800 text-center text-xs text-gray-500">
+        <p>Symbol Blockchain Network Launcher v1.1.0</p>
+        <p className="mt-1">
+          <a 
+            href="https://github.com/bootarou/blockchain-network-launcher" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-indigo-400 hover:text-indigo-300 transition-colors"
+          >
+            GitHub Repository
+          </a>
+        </p>
+      </div>
     </div>
   );
 }
