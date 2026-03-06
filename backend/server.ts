@@ -4345,6 +4345,39 @@ app.get('/api/share/export', (req, res) => {
       }
     }
 
+    // Sanitize nodes[] for joining nodes:
+    // - Replace peerNodeUrls with the EXPORTER'S own URL (sourceNodeHint) so that
+    //   importing machines discover THIS node as a peer (not themselves).
+    // - Strip machine-specific fields that each node sets independently.
+    try {
+      const exportDoc = yaml.load(presetContent) as Record<string, unknown>;
+      if (exportDoc && Array.isArray(exportDoc.nodes)) {
+        exportDoc.nodes = (exportDoc.nodes as Record<string, unknown>[]).map((node) => {
+          const cleaned = { ...node };
+          // Point peerNodeUrls at the exporting (origin) node so importing nodes
+          // can find us. If no hint is available, remove the field entirely so
+          // symbol-bootstrap uses knownPeers from peers-p2p.json instead.
+          const originUrl = sourceNodeHint || (uiMeta.sourceNodeUrl as string) || '';
+          if (originUrl) {
+            cleaned.peerNodeUrls = originUrl;
+          } else {
+            delete cleaned.peerNodeUrls;
+          }
+          // Clear fields that belong to this specific machine.
+          // The importing node sets these for itself during Start.
+          delete cleaned.host;          // each machine has its own host/IP
+          delete cleaned.friendlyName;  // each node has its own display name
+          delete cleaned.localNetworks; // auto-patched by patchLocalNetworks()
+          delete cleaned.trustedHosts;  // auto-patched by patchLocalNetworks()
+          return cleaned;
+        });
+        presetContent = yaml.dump(exportDoc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false });
+        broadcastLog(`[Share] 🧹 Sanitized nodes[] in export (peerNodeUrls → ${sourceNodeHint || 'cleared'})\n`);
+      }
+    } catch (e: any) {
+      broadcastLog(`[Share] ⚠️  Could not sanitize nodes section: ${e.message}\n`);
+    }
+
     archive.append(presetContent, { name: 'custom-preset.yml' });
 
     // 3) ui-meta.json
@@ -4465,6 +4498,37 @@ app.post('/api/share/import', (req, res) => {
         if (fs.existsSync(targetNemesisDir)) {
           fs.rmSync(targetNemesisDir, { recursive: true, force: true });
           broadcastLog('[Share] 🧹 Removed stale nemesis/\n');
+        }
+
+        // 4b) Patch peerNodeUrls in imported custom-preset.yml so the joining
+        //     node peers with the ORIGIN (not itself).
+        //     sourceNodeHint in metadata.json is the exporter's REST URL.
+        const importOriginUrl: string = (metadata.sourceNodeHint as string) || '';
+        if (importOriginUrl) {
+          try {
+            const importedPreset = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+            if (importedPreset && Array.isArray(importedPreset.nodes)) {
+              (importedPreset.nodes as Record<string, unknown>[]).forEach((node) => {
+                (node as Record<string, unknown>).peerNodeUrls = importOriginUrl;
+              });
+              fs.writeFileSync(PRESET_PATH, yaml.dump(importedPreset, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
+              broadcastLog(`[Share] 🔗 Set nodes[].peerNodeUrls → ${importOriginUrl}\n`);
+            }
+          } catch (e: any) {
+            broadcastLog(`[Share] ⚠️  Could not patch peerNodeUrls in preset: ${e.message}\n`);
+          }
+          // Also update sourceNodeUrl in ui-meta.json so Step 4c's peer fetch
+          // also uses the correct origin URL.
+          try {
+            if (fs.existsSync(UI_META_PATH)) {
+              const uiMetaImport = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8')) as Record<string, unknown>;
+              uiMetaImport.sourceNodeUrl = importOriginUrl;
+              fs.writeFileSync(UI_META_PATH, JSON.stringify(uiMetaImport, null, 2), 'utf-8');
+              broadcastLog(`[Share] 🔗 Updated ui-meta.json sourceNodeUrl → ${importOriginUrl}\n`);
+            }
+          } catch { /* ignore */ }
+        } else {
+          broadcastLog('[Share] ℹ️  No sourceNodeHint in package — peerNodeUrls not patched (set manually in Config)\n');
         }
 
         // 5) Build response with imported config for UI
