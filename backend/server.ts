@@ -2496,25 +2496,35 @@ function forceCorrectDockerComposeImages(targetDir: string) {
     }
 
     // ------------------------------------------------------------------
-    // Patch config-node.properties: host must be 0.0.0.0 (not 127.0.0.1)
+    // Patch config-node.properties: host must be 0.0.0.0 (not 127.0.0.1 or localhost)
     // so that REST Gateway (in sibling container, different Docker network)
     // can connect to the node via Docker-to-host networking.
     // ------------------------------------------------------------------
     const nodesDir = path.join(targetDir, 'nodes');
+    broadcastLog(`[Patch] Looking for config-node.properties in: ${nodesDir}\n`);
     if (fs.existsSync(nodesDir)) {
       let hostPatched = 0;
-      for (const nodeName of fs.readdirSync(nodesDir)) {
-        const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-node.properties');
-        if (fs.existsSync(configPath)) {
-          let configContent = fs.readFileSync(configPath, 'utf-8');
-          const oldContent = configContent;
-          configContent = configContent.replace(/^host\s*=\s*127\.0\.0\.1\s*$/m, 'host = 0.0.0.0');
-          if (configContent !== oldContent) {
-            fs.writeFileSync(configPath, configContent, 'utf-8');
-            hostPatched++;
-            broadcastLog(`[Patch] ${nodeName}: host = 127.0.0.1 → host = 0.0.0.0\n`);
+      try {
+        const items = fs.readdirSync(nodesDir);
+        broadcastLog(`[Patch] Found nodes: ${items.join(', ')}\n`);
+        for (const nodeName of items) {
+          const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-node.properties');
+          broadcastLog(`[Patch] Checking: ${configPath}\n`);
+          if (fs.existsSync(configPath)) {
+            let configContent = fs.readFileSync(configPath, 'utf-8');
+            const oldContent = configContent;
+            // Match both "127.0.0.1" and "localhost" (symbol-bootstrap may use either)
+            configContent = configContent.replace(/^host\s*=\s*(127\.0\.0\.1|localhost)\s*$/m, 'host = 0.0.0.0');
+            if (configContent !== oldContent) {
+              fs.writeFileSync(configPath, configContent, 'utf-8');
+              hostPatched++;
+              const oldVal = oldContent.match(/^host\s*=\s*(\S+)\s*$/m)?.[1] || '?';
+              broadcastLog(`[Patch] ${nodeName}: host = ${oldVal} → host = 0.0.0.0\n`);
+            }
           }
         }
+      } catch (err: any) {
+        broadcastLog(`[Patch] Error patching nodes dir: ${err.message}\n`);
       }
       if (hostPatched > 0) {
         broadcastLog(`[Patch] config-node.properties host patched (${hostPatched} files) ✓\n`);
@@ -2799,6 +2809,197 @@ interface PeerEntry {
   metadata: { name: string; roles: string };
 }
 
+function dedupePeerEntries(entries: PeerEntry[]): PeerEntry[] {
+  const byKey = new Set<string>();
+  const byEndpoint = new Set<string>();
+  const out: PeerEntry[] = [];
+  for (const entry of entries) {
+    const endpointKey = `${entry.endpoint.host}:${entry.endpoint.port}`;
+    if (entry.publicKey && byKey.has(entry.publicKey)) continue;
+    if (byEndpoint.has(endpointKey)) continue;
+    if (entry.publicKey) byKey.add(entry.publicKey);
+    byEndpoint.add(endpointKey);
+    out.push(entry);
+  }
+  return out;
+}
+
+function writePeerFiles(targetDir: string, p2pPeers: PeerEntry[], apiPeers: PeerEntry[], infoMessage: string): void {
+  const p2pJson = JSON.stringify({
+    _info: infoMessage,
+    knownPeers: p2pPeers,
+  }, null, 2);
+
+  const apiJson = JSON.stringify({
+    _info: infoMessage,
+    knownPeers: apiPeers,
+  }, null, 2);
+
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) {
+    broadcastLog(`[Peers] ⚠️  No nodes directory found at ${nodesDir}\n`);
+    return;
+  }
+
+  let filesWritten = 0;
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    for (const configDir of ['server-config', 'broker-config']) {
+      const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
+      if (!fs.existsSync(resourcesDir)) continue;
+
+      const p2pPath = path.join(resourcesDir, 'peers-p2p.json');
+      const apiPath = path.join(resourcesDir, 'peers-api.json');
+
+      if (fs.existsSync(p2pPath)) {
+        fs.writeFileSync(p2pPath, p2pJson, 'utf-8');
+        filesWritten++;
+      }
+      if (fs.existsSync(apiPath)) {
+        fs.writeFileSync(apiPath, apiJson, 'utf-8');
+        filesWritten++;
+      }
+    }
+  }
+
+  broadcastLog(`[Peers] ✅ Wrote ${filesWritten} peer files (${p2pPeers.length} p2p, ${apiPeers.length} api peers)\n`);
+}
+
+function readManualPeerUrlsFromPreset(presetPath: string): string[] {
+  try {
+    if (!fs.existsSync(presetPath)) return [];
+    const doc = yaml.load(fs.readFileSync(presetPath, 'utf-8')) as Record<string, unknown>;
+    const nodes = doc?.nodes;
+    if (!Array.isArray(nodes)) return [];
+
+    const urls = new Set<string>();
+    for (const node of nodes as Record<string, unknown>[]) {
+      const raw = node?.peerNodeUrls;
+      if (typeof raw !== 'string') continue;
+      for (const part of raw.split(/[\n,]/)) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        urls.add(trimmed);
+      }
+    }
+    return [...urls];
+  } catch {
+    return [];
+  }
+}
+
+function normalizePeerRestUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `http://${trimmed}`;
+}
+
+function readExistingPeers(targetDir: string): { p2p: PeerEntry[]; api: PeerEntry[] } {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return { p2p: [], api: [] };
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const resourcesDir = path.join(nodesDir, nodeName, 'server-config', 'resources');
+    const p2pPath = path.join(resourcesDir, 'peers-p2p.json');
+    const apiPath = path.join(resourcesDir, 'peers-api.json');
+    if (!fs.existsSync(p2pPath) && !fs.existsSync(apiPath)) continue;
+
+    const read = (filePath: string): PeerEntry[] => {
+      try {
+        if (!fs.existsSync(filePath)) return [];
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { knownPeers?: PeerEntry[] };
+        return Array.isArray(parsed.knownPeers) ? parsed.knownPeers : [];
+      } catch {
+        return [];
+      }
+    };
+
+    return {
+      p2p: read(p2pPath),
+      api: read(apiPath),
+    };
+  }
+
+  return { p2p: [], api: [] };
+}
+
+async function fetchPeerEntriesFromManualUrls(urls: string[]): Promise<PeerEntry[]> {
+  const collected: PeerEntry[] = [];
+
+  for (const rawUrl of urls) {
+    const base = normalizePeerRestUrl(rawUrl);
+    if (!base) continue;
+    let parsedHost = '';
+    try {
+      parsedHost = new URL(base).hostname;
+    } catch {
+      broadcastLog(`[Peers] ⚠️  Invalid peer URL: ${rawUrl}\n`);
+      continue;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const r = await fetch(`${base}/node/info`, { signal: controller.signal });
+      if (!r.ok) {
+        broadcastLog(`[Peers] ⚠️  ${base}/node/info returned HTTP ${r.status}\n`);
+        continue;
+      }
+      const nodeInfo = await r.json() as Record<string, any>;
+      const entry: PeerEntry = {
+        publicKey: String(nodeInfo.publicKey ?? ''),
+        endpoint: {
+          host: parsedHost,
+          port: Number(nodeInfo.port ?? 7900),
+        },
+        metadata: {
+          name: String(nodeInfo.friendlyName || parsedHost),
+          roles: rolesToString(Number(nodeInfo.roles ?? 1)),
+        },
+      };
+      if (!entry.publicKey || !entry.endpoint.host) {
+        broadcastLog(`[Peers] ⚠️  Skipping ${base} (missing publicKey/host)\n`);
+        continue;
+      }
+      collected.push(entry);
+    } catch (e: any) {
+      broadcastLog(`[Peers] ⚠️  Could not fetch peer from ${base}: ${e.message}\n`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return dedupePeerEntries(collected);
+}
+
+async function mergeManualPeerUrlsIntoPeerFiles(targetDir: string, manualUrls: string[]): Promise<void> {
+  if (manualUrls.length === 0) return;
+  broadcastLog(`[Peers] Fetching manual peers from ${manualUrls.length} URL(s)...\n`);
+
+  const fetched = await fetchPeerEntriesFromManualUrls(manualUrls);
+  if (fetched.length === 0) {
+    broadcastLog('[Peers] ⚠️  No valid peers fetched from manual URLs\n');
+    return;
+  }
+
+  const existing = readExistingPeers(targetDir);
+  const mergedP2p = dedupePeerEntries([
+    ...existing.p2p,
+    ...fetched.filter((p) => p.metadata.roles.includes('Peer')),
+  ]);
+  const mergedApi = dedupePeerEntries([
+    ...existing.api,
+    ...fetched.filter((p) => p.metadata.roles.includes('Api')),
+  ]);
+
+  writePeerFiles(
+    targetDir,
+    mergedP2p,
+    mergedApi,
+    'this file contains a list of peers — auto-generated from source/manual peers',
+  );
+}
+
 /**
  * Fetch /node/info and /node/peers from the source node URL, then build and
  * overwrite peers-p2p.json and peers-api.json for every node in the target.
@@ -2889,47 +3090,17 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
   broadcastLog(`[Peers] Discovered ${peerEntries.length} additional peers, total unique: ${allPeers.length}\n`);
 
   // Split into p2p peers (has Peer role) and api peers (has Api role)
-  const p2pPeers = allPeers.filter(p => p.metadata.roles.includes('Peer'));
-  const apiPeers = allPeers.filter(p => p.metadata.roles.includes('Api'));
+  const p2pPeers = allPeers.filter((p) => p.metadata.roles.includes('Peer'));
+  const apiPeers = allPeers.filter((p) => p.metadata.roles.includes('Api'));
 
-  const p2pJson = JSON.stringify({
-    _info: 'this file contains a list of peers — auto-generated from source node',
-    knownPeers: p2pPeers,
-  }, null, 2);
+  writePeerFiles(
+    targetDir,
+    p2pPeers,
+    apiPeers,
+    'this file contains a list of peers — auto-generated from source node',
+  );
 
-  const apiJson = JSON.stringify({
-    _info: 'this file contains a list of api peers — auto-generated from source node',
-    knownPeers: apiPeers,
-  }, null, 2);
-
-  // Overwrite peers files for every node (server-config and broker-config)
   const nodesDir = path.join(targetDir, 'nodes');
-  if (!fs.existsSync(nodesDir)) {
-    broadcastLog(`[Peers] ⚠️  No nodes directory found at ${nodesDir}\n`);
-    return;
-  }
-
-  let filesWritten = 0;
-  for (const nodeName of fs.readdirSync(nodesDir)) {
-    for (const configDir of ['server-config', 'broker-config']) {
-      const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
-      if (!fs.existsSync(resourcesDir)) continue;
-
-      const p2pPath = path.join(resourcesDir, 'peers-p2p.json');
-      const apiPath = path.join(resourcesDir, 'peers-api.json');
-
-      if (fs.existsSync(p2pPath)) {
-        fs.writeFileSync(p2pPath, p2pJson, 'utf-8');
-        filesWritten++;
-      }
-      if (fs.existsSync(apiPath)) {
-        fs.writeFileSync(apiPath, apiJson, 'utf-8');
-        filesWritten++;
-      }
-    }
-  }
-
-  broadcastLog(`[Peers] ✅ Wrote ${filesWritten} peer files (${p2pPeers.length} p2p, ${apiPeers.length} api peers)\n`);
 
   // -----------------------------------------------------------------------
   // Patch config-network.properties with ALL values from the source node.
@@ -4188,6 +4359,14 @@ app.get('/api/share/export', (req, res) => {
 /** POST /api/share/import — upload a .symbol-network.zip and unpack it */
 app.post('/api/share/import', (req, res) => {
   try {
+    // Import should only be done while stopped, otherwise stale runtime data can
+    // remain active and cause network mismatches after join.
+    if (networkStatus.state !== 'stopped') {
+      return res.status(409).json({
+        error: 'Node must be stopped before importing a network package. Please stop the node first.',
+      });
+    }
+
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
@@ -4246,7 +4425,30 @@ app.post('/api/share/import', (req, res) => {
           broadcastLog(`[Share] 🌱 Imported seed: ${relativePath} (${entry.getData().length}B)\n`);
         }
 
-        // 4) Build response with imported config for UI
+        // 4) Clean runtime/generated data so next start performs a true join
+        // with imported preset + seed (prevents carrying over old chain/addresses).
+        const dirsToClean = ['databases', 'nodes', 'docker', 'gateways'];
+        for (const dir of dirsToClean) {
+          const dirPath = path.join(TARGET_DIR, dir);
+          if (fs.existsSync(dirPath)) {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            broadcastLog(`[Share] 🧹 Removed stale ${dir}/\n`);
+          }
+        }
+        for (const file of ['preset.yml', 'addresses.yml']) {
+          const filePath = path.join(TARGET_DIR, file);
+          if (fs.existsSync(filePath)) {
+            fs.rmSync(filePath, { force: true });
+            broadcastLog(`[Share] 🧹 Removed stale ${file}\n`);
+          }
+        }
+        const targetNemesisDir = path.join(TARGET_DIR, 'nemesis');
+        if (fs.existsSync(targetNemesisDir)) {
+          fs.rmSync(targetNemesisDir, { recursive: true, force: true });
+          broadcastLog('[Share] 🧹 Removed stale nemesis/\n');
+        }
+
+        // 5) Build response with imported config for UI
         let importedConfig: Record<string, unknown> = {};
         try {
           const presetData = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
@@ -4759,14 +4961,20 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
       let sourceUrl: string | undefined;
+      let manualPeerUrls: string[] = [];
       try {
         const meta = fs.existsSync(UI_META_PATH)
           ? JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'))
           : {};
         sourceUrl = meta.sourceNodeUrl;
+        manualPeerUrls = readManualPeerUrlsFromPreset(PRESET_PATH);
         if (sourceUrl) {
           broadcastLog('[System] Step 4c – Fetching peers from source node...\n');
           await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
+        }
+        if (manualPeerUrls.length > 0) {
+          broadcastLog('[System] Step 4c – Merging peers from node-level Peer Node URLs...\n');
+          await mergeManualPeerUrlsIntoPeerFiles(TARGET_DIR, manualPeerUrls);
         }
       } catch (e: any) {
         broadcastLog(`[Peers] ⚠️  Peer fetch failed (non-fatal): ${e.message}\n`);
@@ -4781,7 +4989,7 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 4d: Install nemesis seed data
       //   Priority: 1) Imported seed files from network admin (shared/seed/)
       //             2) REST API reconstruction (fallback, may not work for all networks)
-      if (sourceUrl) {
+      {
         const importedSeedDir = path.join(SEED_DIR, '00000');
         const hasImportedSeed = fs.existsSync(path.join(importedSeedDir, '00001.dat'));
         if (hasImportedSeed) {
@@ -4792,7 +5000,7 @@ app.post('/api/commands/start', async (req, res) => {
             broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
             broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
           }
-        } else {
+        } else if (sourceUrl) {
           try {
             broadcastLog('[System] Step 4d – No imported seed found; attempting REST API reconstruction...\n');
             await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl);
@@ -4800,6 +5008,8 @@ app.post('/api/commands/start', async (req, res) => {
             broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
             broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
           }
+        } else {
+          broadcastLog('[System] Step 4d – No imported seed and no source node URL; using local generation.\n');
         }
       }
 
