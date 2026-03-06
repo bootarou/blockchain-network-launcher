@@ -2494,6 +2494,32 @@ function forceCorrectDockerComposeImages(targetDir: string) {
 
       broadcastLog(`[Patch] docker-compose.yml service name normalised ✓\n`);
     }
+
+    // ------------------------------------------------------------------
+    // Patch config-node.properties: host must be 0.0.0.0 (not 127.0.0.1)
+    // so that REST Gateway (in sibling container, different Docker network)
+    // can connect to the node via Docker-to-host networking.
+    // ------------------------------------------------------------------
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (fs.existsSync(nodesDir)) {
+      let hostPatched = 0;
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-node.properties');
+        if (fs.existsSync(configPath)) {
+          let configContent = fs.readFileSync(configPath, 'utf-8');
+          const oldContent = configContent;
+          configContent = configContent.replace(/^host\s*=\s*127\.0\.0\.1\s*$/m, 'host = 0.0.0.0');
+          if (configContent !== oldContent) {
+            fs.writeFileSync(configPath, configContent, 'utf-8');
+            hostPatched++;
+            broadcastLog(`[Patch] ${nodeName}: host = 127.0.0.1 → host = 0.0.0.0\n`);
+          }
+        }
+      }
+      if (hostPatched > 0) {
+        broadcastLog(`[Patch] config-node.properties host patched (${hostPatched} files) ✓\n`);
+      }
+    }
   } catch (e: any) {
     broadcastLog(`[Patch] Warning: could not patch docker-compose.yml: ${e.message}\n`);
   }

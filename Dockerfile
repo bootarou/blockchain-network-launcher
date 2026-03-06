@@ -45,12 +45,10 @@ COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY shared/ ./shared/
 
-# Copy start script
+# Copy and prepare start script (normalize line endings for cross-platform compatibility)
 COPY start.sh /start.sh
-#Linux
-# RUN chmod +x /start.sh
-#Windows (remove CRLF line endings and make executable)
 RUN sed -i 's/\r$//' /start.sh && chmod +x /start.sh
+
 # Expose ports: 3000 (API+WS), 5173 (Vite dev), 80 (prod)
 EXPOSE 3000 5173 80
 
