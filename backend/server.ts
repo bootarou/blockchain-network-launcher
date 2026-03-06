@@ -77,6 +77,18 @@ if (!fs.existsSync(SHARED_DIR)) {
   fs.mkdirSync(SHARED_DIR, { recursive: true });
 }
 
+/**
+ * Read and JSON-parse a file, stripping UTF-8 BOM (\uFEFF) if present.
+ * Windows tools (PowerShell, Notepad, etc.) sometimes prepend a BOM to
+ * UTF-8 files.  Node's JSON.parse rejects the BOM with a syntax error,
+ * which caused the silent-catch in several places to swallow the metadata
+ * and fall back to default values in the UI.
+ */
+function parseJsonFile(filePath: string): any {
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  return JSON.parse(content);
+}
+
 // =============================================================================
 // Network status tracking
 // =============================================================================
@@ -642,7 +654,7 @@ app.get('/api/preset', (req, res) => {
       // Merge in UI metadata (preset, assembly, etc.)
       if (fs.existsSync(UI_META_PATH)) {
         try {
-          const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf8'));
+          const meta = parseJsonFile(UI_META_PATH);
           flat = { ...meta, ...flat };
         } catch { /* ignore corrupt meta */ }
       }
@@ -2161,7 +2173,7 @@ function resolveVersion(): CatapultVersionDef {
   // Try reading catapultVersion from ui-meta
   try {
     if (fs.existsSync(UI_META_PATH)) {
-      const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+      const meta = parseJsonFile(UI_META_PATH);
       broadcastLog(`[resolveVersion] ui-meta catapultVersion=${meta.catapultVersion}\n`);
       const ver = CATAPULT_VERSIONS.find(v => v.id === meta.catapultVersion);
       if (ver) {
@@ -3382,7 +3394,7 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
   let customInflationEntries: { startHeight: number; amount: string }[] = [];
   try {
     if (fs.existsSync(UI_META_PATH)) {
-      const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+      const meta = parseJsonFile(UI_META_PATH);
       const preset = (meta.preset ?? '').toLowerCase();
       if (preset === 'testnet' || preset === 'mainnet') {
         isPublicNetwork = true;
@@ -4365,7 +4377,7 @@ app.get('/api/share/status', (_req, res) => {
     let generationHashSeed = '';
     if (hasMeta) {
       try {
-        const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+        const meta = parseJsonFile(UI_META_PATH);
         networkName = meta.networkName || meta.friendlyName || '';
       } catch { /* ignore */ }
     }
@@ -4420,7 +4432,7 @@ app.get('/api/share/export', (req, res) => {
     // Read metadata
     let uiMeta: Record<string, unknown> = {};
     if (fs.existsSync(UI_META_PATH)) {
-      try { uiMeta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8')); } catch { /* */ }
+      try { uiMeta = parseJsonFile(UI_META_PATH); } catch { /* */ }
     }
     // Override sourceNodeUrl in the export if user provided a hint
     if (sourceNodeHint) {
@@ -4680,7 +4692,7 @@ app.post('/api/share/import', (req, res) => {
           // also uses the correct origin URL.
           try {
             if (fs.existsSync(UI_META_PATH)) {
-              const uiMetaImport = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8')) as Record<string, unknown>;
+              const uiMetaImport = parseJsonFile(UI_META_PATH);
               uiMetaImport.sourceNodeUrl = importOriginUrl;
               fs.writeFileSync(UI_META_PATH, JSON.stringify(uiMetaImport, null, 2), 'utf-8');
               broadcastLog(`[Share] 🔗 Updated ui-meta.json sourceNodeUrl → ${importOriginUrl}\n`);
@@ -4702,7 +4714,7 @@ app.post('/api/share/import', (req, res) => {
           }
           // Merge UI metadata
           if (fs.existsSync(UI_META_PATH)) {
-            const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+            const meta = parseJsonFile(UI_META_PATH);
             importedConfig = { ...meta, ...importedConfig };
           }
         } catch { /* ignore parse errors */ }

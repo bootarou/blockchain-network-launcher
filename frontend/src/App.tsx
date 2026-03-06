@@ -7,7 +7,7 @@ import { ShareNetwork } from './components/ShareNetwork';
 import { BackupRestore } from './components/BackupRestore';
 import { HelpPage } from './components/HelpPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
-import { DEFAULT_PRESET, type PresetConfig } from './constants';
+import { DEFAULT_PRESET, DEFAULT_NODE, DEFAULT_GATEWAY, type PresetConfig, type NodeConfig, type GatewayConfig } from './constants';
 import { api } from './lib/api';
 import { useTranslation } from './i18n';
 import { useTheme } from './theme';
@@ -24,7 +24,18 @@ function App() {
       .loadPreset()
       .then((data) => {
         if (data && typeof data === 'object' && !data.error) {
-          setConfig((prev) => ({ ...prev, ...data }));
+          // Shallow-merge over DEFAULT_PRESET so all scalar fields are updated.
+          const merged = { ...DEFAULT_PRESET, ...data } as PresetConfig;
+          // Deep-merge each node/gateway with its default template so that
+          // fields not stored in custom-preset.yml (e.g. enableTransactionSpamThrottling)
+          // still show their correct defaults instead of appearing blank/false.
+          if (Array.isArray(data.nodes)) {
+            merged.nodes = (data.nodes as NodeConfig[]).map((n) => ({ ...DEFAULT_NODE, ...n }));
+          }
+          if (Array.isArray(data.gateways)) {
+            merged.gateways = (data.gateways as GatewayConfig[]).map((g) => ({ ...DEFAULT_GATEWAY, ...g }));
+          }
+          setConfig(merged);
         }
       })
       .catch(() => {}); // Silently ignore when backend is not running
