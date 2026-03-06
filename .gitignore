@@ -4,7 +4,7 @@ node_modules/
 # Build output
 dist/
 
-# Environment (user-specific settings)
+# Environment (user-specific settings — copy .env.example to .env)
 .env
 
 # Logs
@@ -19,11 +19,19 @@ check_element_format.py
 verify_type.py
 debug_wrapper.sh
 body.json
+test-body.json
 shared/check_txs*.py
 
 # User-specific preset & runtime data
 shared/custom-preset.yml
 shared/.ui-meta.json
+
+# Distribution ZIPs (large binaries — rebuild with draft/build-zips.ps1)
+draft/windows.zip
+draft/**/*.zip
+
+# Development notes
+summary.md
 
 # OS
 Thumbs.db
