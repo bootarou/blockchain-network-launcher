@@ -43,7 +43,7 @@ export const ja: TranslationDict = {
   'dashboard.download': 'Download',
   'dashboard.close': 'Close',
   'dashboard.alertNoPassword': 'ネットワーク暗号化パスワードを入力してください。',
-  'dashboard.confirmReset': '全てのネットワークデータをリセットしますか？',
+  'dashboard.confirmReset': 'ネットワークデータ（ブロック・DB）およびインポートしたSeedファイルをリセットしますか？\n\n設定・証明書は保持されます。',
   'dashboard.confirmFullReset': '⚠️ 完全初期化：全ての設定・データ・証明書を削除して初期状態に戻します。\n\nこの操作は取り消せません。続行しますか？',
   'dashboard.importSuccess': 'プリセットを正常にインポートしました。',
   'dashboard.importParseError': 'ファイルの解析に失敗しました: ',

@@ -43,7 +43,7 @@ export const en: TranslationDict = {
   'dashboard.download': 'Download',
   'dashboard.close': 'Close',
   'dashboard.alertNoPassword': 'Please enter the network encryption password.',
-  'dashboard.confirmReset': 'Reset all network data?',
+  'dashboard.confirmReset': 'Reset network data (blocks, DB) and imported seed files?\n\nSettings and certificates will be preserved.',
   'dashboard.confirmFullReset': '⚠️ Full Reset: All settings, data, and certificates will be deleted.\n\nThis action cannot be undone. Continue?',
   'dashboard.importSuccess': 'Preset imported successfully.',
   'dashboard.importParseError': 'Failed to parse file: ',

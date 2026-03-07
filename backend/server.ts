@@ -5484,6 +5484,15 @@ app.post('/api/commands/healthCheck', async (_req, res) => {
 
 app.post('/api/commands/resetData', async (_req, res) => {
   try {
+    // Clear imported seed files so the next Start does not re-install the
+    // old Join seed over whatever bootstrap regenerates.
+    // target/nemesis/seed/ is preserved by symbol-bootstrap resetData and will
+    // be used directly on the next Start when no SEED_DIR is present.
+    if (fs.existsSync(SEED_DIR)) {
+      broadcastLog('[Reset] Removing imported seed files...\n');
+      fs.rmSync(SEED_DIR, { recursive: true, force: true });
+      broadcastLog('[Reset] ✅ Seed files removed\n');
+    }
     runBootstrapCommand('resetData', [], {
       stateWhileRunning: 'stopping',
       stateOnSuccess: 'stopped',
