@@ -94,6 +94,8 @@ export const ja: TranslationDict = {
   'config.fullResetDesc': '— このカテゴリの設定はネメシスブロックまたはconfig-network.propertiesに組み込まれるため、Stop→Startでは反映されません。',
   'config.legendFullReset': 'Full Reset必要',
   'config.legendStopStart': 'その他 = Stop → Start で反映',
+  'config.sidebarGroupRestart': '再起動で反映',
+  'config.sidebarGroupFullReset': 'Full Reset 必要',
   'config.copied': 'コピーしました',
   'config.delete': '削除',
   'config.noNodes': 'ノードが設定されていません。「Add Node」をクリックして開始してください。',

@@ -702,60 +702,88 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     <div className="space-y-4">
       <div className="flex flex-col md:flex-row gap-6">
         {/* ── Sidebar Tabs ── */}
-        <div className="w-full md:w-56 shrink-0 space-y-1.5">
-          {CATEGORIES.map((cat) => {
-            const Icon = ICON_MAP[cat.id] ?? Settings;
-            const isActive = activeTab === cat.id;
-            return (
-              <button
-                key={cat.id}
-                onClick={() => setActiveTab(cat.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-all duration-200 text-sm ${
-                  isActive
-                    ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-[0_0_15px_rgba(99,102,241,0.1)]'
-                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-transparent'
-                }`}
-              >
-                <Icon className={`w-5 h-5 ${isActive ? 'text-indigo-400' : 'text-zinc-500'}`} />
-                {t(`cat.${cat.id}.label`, cat.label)}
-                {cat.id === 'nemesisMosaics' && config.preset === 'bootstrap' && (
-                  <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.nemesisMosaics.length}</span>
-                )}
-                {cat.id === 'nodes' && (
-                  <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.nodes.length}</span>
-                )}
-                {cat.id === 'gateways' && (
-                  <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.gateways.length}</span>
-                )}
-                {cat.id === 'inflation' && (
-                  <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full">{config.inflation.length}</span>
-                )}
-                {cat.requiresFullReset && (
-                  <span className="ml-auto text-[10px] font-semibold bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded" title={t('config.fullResetRequired')}>
-                    Reset
-                  </span>
-                )}
-              </button>
-            );
-          })}
+        <div className="w-full md:w-56 shrink-0">
+
+          {/* 🟢 Group: 再起動のみで反映 */}
+          <div className="mb-2">
+            <div className="px-3 py-1.5 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400/80 shrink-0" />
+              <span className="text-[10px] font-semibold tracking-widest text-emerald-500 uppercase">
+                {t('config.sidebarGroupRestart')}
+              </span>
+            </div>
+            <div className="space-y-1">
+              {CATEGORIES.filter((c) => !c.requiresFullReset).map((cat) => {
+                const Icon = ICON_MAP[cat.id] ?? Settings;
+                const isActive = activeTab === cat.id;
+                return (
+                  <button
+                    key={cat.id}
+                    onClick={() => setActiveTab(cat.id)}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all duration-200 text-sm ${
+                      isActive
+                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-[0_0_15px_rgba(99,102,241,0.1)]'
+                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-transparent'
+                    }`}
+                  >
+                    <Icon className={`w-5 h-5 shrink-0 ${isActive ? 'text-indigo-400' : 'text-zinc-500'}`} />
+                    <span className="truncate">{t(`cat.${cat.id}.label`, cat.label)}</span>
+                    {cat.id === 'nodes' && (
+                      <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full shrink-0">{config.nodes.length}</span>
+                    )}
+                    {cat.id === 'gateways' && (
+                      <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full shrink-0">{config.gateways.length}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="my-2 border-t border-zinc-700/60" />
+
+          {/* 🔴 Group: Full Reset 必要 */}
+          <div className="mb-2">
+            <div className="px-3 py-1.5 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400/80 shrink-0" />
+              <span className="text-[10px] font-semibold tracking-widest text-amber-500 uppercase">
+                {t('config.sidebarGroupFullReset')}
+              </span>
+            </div>
+            <div className="space-y-1">
+              {CATEGORIES.filter((c) => c.requiresFullReset).map((cat) => {
+                const Icon = ICON_MAP[cat.id] ?? Settings;
+                const isActive = activeTab === cat.id;
+                return (
+                  <button
+                    key={cat.id}
+                    onClick={() => setActiveTab(cat.id)}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all duration-200 text-sm ${
+                      isActive
+                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-[0_0_15px_rgba(99,102,241,0.1)]'
+                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-transparent'
+                    }`}
+                  >
+                    <Icon className={`w-5 h-5 shrink-0 ${isActive ? 'text-indigo-400' : 'text-zinc-500'}`} />
+                    <span className="truncate">{t(`cat.${cat.id}.label`, cat.label)}</span>
+                    {cat.id === 'nemesisMosaics' && config.preset === 'bootstrap' && (
+                      <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full shrink-0">{config.nemesisMosaics.length}</span>
+                    )}
+                    {cat.id === 'inflation' && (
+                      <span className="ml-auto text-xs bg-zinc-800 px-2 py-0.5 rounded-full shrink-0">{config.inflation.length}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           {/* YAML Preview toggle */}
-          <div className="pt-3 border-t border-zinc-800 mt-3">
-            {/* Legend */}
-            <div className="px-3 pb-3 space-y-1.5 text-[10px]">
-              <div className="flex items-center gap-1.5 text-amber-400/80">
-                <span className="inline-block w-2 h-2 rounded-full bg-amber-400/60" />
-                <span className="font-medium bg-amber-500/15 px-1 py-0.5 rounded">Reset</span>
-                <span className="text-zinc-500">= {t('config.legendFullReset')}</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-emerald-400/80">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400/60" />
-                <span className="text-zinc-500">{t('config.legendStopStart')}</span>
-              </div>
-            </div>
+          <div className="pt-2 border-t border-zinc-800 mt-1">
             <button
               onClick={() => setShowYaml(!showYaml)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium text-sm transition-all duration-200 ${
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium text-sm transition-all duration-200 ${
                 showYaml
                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                   : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-transparent'

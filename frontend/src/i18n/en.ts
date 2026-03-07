@@ -94,6 +94,8 @@ export const en: TranslationDict = {
   'config.fullResetDesc': '— These settings are baked into the nemesis block or config-network.properties. Stop → Start alone will NOT apply changes.',
   'config.legendFullReset': 'Full Reset required',
   'config.legendStopStart': 'Others = Stop → Start to apply',
+  'config.sidebarGroupRestart': 'Restart to apply',
+  'config.sidebarGroupFullReset': 'Requires Full Reset',
   'config.copied': 'Copied',
   'config.delete': 'Delete',
   'config.noNodes': 'No nodes configured. Click "Add Node" to begin.',
