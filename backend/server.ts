@@ -5687,22 +5687,26 @@ app.post('/api/network/fetch', async (req, res) => {
   try {
     broadcastLog(`[JoinNetwork] Fetching from ${base} ...\n`);
 
-    // Parallel fetch: network/properties, node/info, node/peers
-    const [networkProps, nodeInfo, peers] = await Promise.all([
+    // Parallel fetch: network/properties, node/info, node/peers, network/fees/transaction
+    const [networkProps, nodeInfo, peers, txFees] = await Promise.all([
       fetchJson('/network/properties'),
       fetchJson('/node/info'),
       fetchJson('/node/peers').catch(() => []),
+      fetchJson('/network/fees/transaction').catch(() => ({})),
     ]);
 
     broadcastLog(`[JoinNetwork] network/properties ✓\n`);
     broadcastLog(`[JoinNetwork] node/info ✓  (network: ${nodeInfo.networkIdentifier})\n`);
     broadcastLog(`[JoinNetwork] node/peers ✓  (${Array.isArray(peers) ? peers.length : 0} peers)\n`);
+    const minFee = txFees?.minFeeMultiplier ?? null;
+    if (minFee !== null) broadcastLog(`[JoinNetwork] network/fees/transaction ✓  (minFeeMultiplier: ${minFee})\n`);
 
     res.json({
       success: true,
       networkProperties: networkProps,
       nodeInfo,
       peers: Array.isArray(peers) ? peers : [],
+      minFeeMultiplier: minFee,
     });
   } catch (err: any) {
     broadcastLog(`[JoinNetwork] Error: ${err.message}\n`);

@@ -35,6 +35,7 @@ interface FetchResult {
     networkProperties: Record<string, unknown>;
     nodeInfo: Record<string, unknown>;
     peers: Record<string, unknown>[];
+    minFeeMultiplier: number | null;
   };
 }
 
@@ -159,7 +160,8 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
       const partial = networkPropertiesToConfig(
         data.networkProperties,
         data.nodeInfo,
-        data.peers
+        data.peers,
+        data.minFeeMultiplier ?? null,
       );
 
       setResult({
@@ -168,6 +170,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
           networkProperties: data.networkProperties,
           nodeInfo: data.nodeInfo,
           peers: data.peers,
+          minFeeMultiplier: data.minFeeMultiplier,
         },
       });
     } catch (err: unknown) {
@@ -404,7 +407,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               icon={<Users className="w-4 h-4 text-purple-400" />}
               label={t('join.peersFound')}
               value={String(result.raw.peers.length)}
-              sub={`Nodes: ${(result.partial.nodes ?? []).length} mapped`}
+              sub={`Min Fee: ${result.raw.minFeeMultiplier ?? '—'}`}
             />
           </div>
 
