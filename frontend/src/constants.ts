@@ -3,6 +3,10 @@
 // Supports Catapult V2 (1.0.3.6) and V3 (1.0.3.9)
 // =============================================================================
 
+// Compute today's Unix timestamp (seconds) at module load time.
+// Used as the default epochAdjustment for new networks.
+const _todayEpochSec = Math.floor(Date.now() / 1000);
+
 // ---------------------------------------------------------------------------
 // Catapult version presets (V2 / V3 image sets)
 // ---------------------------------------------------------------------------
@@ -724,11 +728,6 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
 // ---------------------------------------------------------------------------
 // DEFAULT PRESET
 // ---------------------------------------------------------------------------
-
-// Compute today's Unix timestamp (seconds) at module load time.
-// Used as the default epochAdjustment for new networks so the genesis time
-// is close to the actual creation date rather than a hard-coded past value.
-const _todayEpochSec = Math.floor(Date.now() / 1000);
 
 export const DEFAULT_PRESET: PresetConfig = {
   catapultVersion: 'v3', preset: 'bootstrap', assembly: 'dual',
