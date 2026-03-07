@@ -302,7 +302,6 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'networkType', label: 'Network Type', type: 'select', description: 'ネットワークタイプ', options: [{ value: 'mainnet', label: 'mainnet (104)' }, { value: 'testnet', label: 'testnet (152)' }, { value: 'private', label: 'private (120)' }, { value: 'privateTest', label: 'privateTest (168)' }] },
       { key: 'networkIdentifier', label: 'Network Identifier', type: 'number', description: '数値ネットワーク識別子', min: 0, max: 255 },
       { key: 'networkName', label: 'Network Name', type: 'text', description: 'ネットワーク名' },
-      { key: 'friendlyName', label: 'Friendly Name', type: 'text', description: '表示名' },
       { key: 'nemesisGenerationHashSeed', label: 'Generation Hash Seed', type: 'text', description: 'ジェネシスブロックのSHA3-256ハッシュ' },
       { key: 'nemesisSignerPublicKey', label: 'Nemesis Signer Public Key', type: 'text', description: 'ジェネシスブロック署名者の公開鍵' },
       { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法', options: [{ value: 'host', label: 'host' }, { value: 'public-key', label: 'public-key' }] },

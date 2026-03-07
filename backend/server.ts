@@ -620,7 +620,6 @@ app.post('/api/preset', (req, res) => {
       networkType: configData.networkType ?? 'privateTest',
       networkIdentifier: configData.networkIdentifier ?? 168,
       networkName: configData.networkName ?? '',
-      friendlyName: configData.friendlyName ?? '',
     };
     // Persist source node URL for peer discovery on start
     if (configData.sourceNodeUrl) {
