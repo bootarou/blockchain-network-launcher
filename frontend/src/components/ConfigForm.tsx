@@ -556,14 +556,21 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
           </div>
           <div className="space-y-3">
             {config.nodes.map((node, i) => (
-              <ArrayItemEditor<NodeConfig>
-                key={i}
-                item={node}
-                index={i}
-                fields={NODE_FIELDS}
-                onChange={handleNodeChange}
-                onRemove={removeNode}
-              />
+              <div key={i}>
+                {(!node.host || node.host.trim() === '' || node.host === '0.0.0.0') && (
+                  <div className="mb-1 flex items-center gap-2 px-3 py-1.5 bg-amber-900/40 border border-amber-700/60 rounded-lg text-amber-300 text-xs">
+                    <span>⚠️</span>
+                    <span>{t('config.nodeHostRequired')}</span>
+                  </div>
+                )}
+                <ArrayItemEditor<NodeConfig>
+                  item={node}
+                  index={i}
+                  fields={NODE_FIELDS}
+                  onChange={handleNodeChange}
+                  onRemove={removeNode}
+                />
+              </div>
             ))}
             {config.nodes.length === 0 && (
               <p className="text-zinc-600 text-sm italic text-center py-8">{t('config.noNodes')}</p>

@@ -558,7 +558,8 @@ function restVal(v: unknown): unknown {
 export function networkPropertiesToConfig(
   networkProperties: Record<string, unknown>,
   nodeInfo: Record<string, unknown>,
-  peers: Record<string, unknown>[]
+  peers: Record<string, unknown>[],
+  minFeeMultiplier: number | null = null,
 ): Partial<PresetConfig> {
   const np = networkProperties as {
     network?: Record<string, unknown>;
@@ -738,6 +739,13 @@ export function networkPropertiesToConfig(
   // By omitting partial.nodes, DEFAULT_PRESET.nodes (which contains
   // api-node-0 with api/database/harvesting enabled) is preserved during
   // the merge in handleApply().
+
+  // Apply minFeeMultiplier to local node defaults if fetched from /network/fees/transaction
+  // This is a per-node setting, so we store it in nodes[0] via DEFAULT_NODE merge in App.tsx.
+  // We surface it as a top-level key here so it flows into the config correctly.
+  if (minFeeMultiplier !== null) {
+    (partial as Record<string, unknown>)._joinMinFeeMultiplier = minFeeMultiplier;
+  }
 
   // Strip undefined values
   for (const k of Object.keys(partial)) {

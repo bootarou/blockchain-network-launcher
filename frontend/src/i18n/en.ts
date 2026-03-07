@@ -104,6 +104,7 @@ export const en: TranslationDict = {
   'config.gatewayApiNodeNameHint': 'Automatically linked to the node name in the Nodes section. Renaming a node also updates this field.',
   'config.gatewayNoNodes': '— no nodes configured —',
   'config.gatewayNodeMissing': 'node not found',
+  'config.nodeHostRequired': 'Host is not set. Enter the IP address or FQDN reachable from other nodes',
   'config.publicNetworkNotice': 'ℹ️ Public Network (testnet / mainnet)',
   'config.publicNetworkInflation': 'Inflation schedule uses standard network values and cannot be customized.',
   'config.noInflation': 'No inflation entries. Click "Add Entry" to start.',

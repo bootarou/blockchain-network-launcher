@@ -49,9 +49,26 @@ function App() {
     setConfig({ ...DEFAULT_PRESET, ...imported });
   };
 
+  /** Merge helper: if _joinMinFeeMultiplier is present, apply it to nodes[] */
+  const applyJoinDefaults = (imported: PresetConfig): PresetConfig => {
+    const raw = imported as Record<string, unknown>;
+    const minFee = raw._joinMinFeeMultiplier;
+    const base = { ...DEFAULT_PRESET, ...imported };
+    // Remove temporary key
+    delete (base as Record<string, unknown>)._joinMinFeeMultiplier;
+    if (typeof minFee === 'number') {
+      base.nodes = (base.nodes ?? DEFAULT_PRESET.nodes).map((n) => ({
+        ...DEFAULT_NODE,
+        ...n,
+        minFeeMultiplier: minFee,
+      }));
+    }
+    return base;
+  };
+
   /** Import from Join Network — apply and switch to Configuration tab */
   const handleJoinImport = (imported: PresetConfig) => {
-    setConfig({ ...DEFAULT_PRESET, ...imported });
+    setConfig(applyJoinDefaults(imported));
     setActivePanel('config');
   };
 
