@@ -4081,9 +4081,8 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), buildProofIndexDat(nemesisEntityHash));
 
   // --- Patch data/00000/ inside each node directory ---
-  const dataHeader = Buffer.alloc(800);
-  dataHeader.writeBigUInt64LE(BigInt(0), 0);
-  dataHeader.writeBigUInt64LE(BigInt(800), 8);
+  // Catapult block files are named by block height: 00001.dat = genesis block.
+  // No 800-byte offset header – write raw block element data.
 
   const nodesDir = path.join(targetDir, 'nodes');
   if (fs.existsSync(nodesDir)) {
@@ -4102,16 +4101,16 @@ async function installImportedSeed(targetDir: string): Promise<void> {
         if (fs.existsSync(p)) fs.rmSync(p, { force: true });
       }
 
-      // Write block storage files (800-byte header + payload)
-      fs.writeFileSync(path.join(dataDir00, '00000.dat'), Buffer.concat([dataHeader, elementBuf]));
-      fs.writeFileSync(path.join(dataDir00, '00000.stmt'), Buffer.concat([dataHeader, stmtBuf]));
+      // Write block storage files (raw block element, no header prefix)
+      // NOTE: catapult block files are named by block height: block 1 = 00001.dat
+      fs.writeFileSync(path.join(dataDir00, '00001.dat'), elementBuf);
+      fs.writeFileSync(path.join(dataDir00, '00001.stmt'), stmtBuf);
       fs.writeFileSync(path.join(dataDir00, 'hashes.dat'), hashesBuf);
 
       // Optional proof
       const proofSrc = path.join(seedSrc, '00001.proof');
       if (fs.existsSync(proofSrc)) {
-        fs.writeFileSync(path.join(dataDir00, '00000.proof'),
-          Buffer.concat([dataHeader, fs.readFileSync(proofSrc)]));
+        fs.writeFileSync(path.join(dataDir00, '00001.proof'), fs.readFileSync(proofSrc));
       }
       const phSrc = path.join(seedSrc, 'proof.heights.dat');
       if (fs.existsSync(phSrc)) {
@@ -4232,14 +4231,9 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   broadcastLog(`[Nemesis] ✅ Seed rebuilt: 00001.dat=${elementBuf.length}B, hashes.dat=64B\n`);
 
   // --- Also patch data/00000/ inside each node directory ---
-  //   The block storage format: 800-byte offset header + block element data
-  //   symbol-bootstrap 'config' already populated data/ from the (old) seed,
-  //   so we must overwrite data/00000/00000.dat with our new block element.
-  const dataHeader = Buffer.alloc(800);
-  dataHeader.writeBigUInt64LE(BigInt(0), 0);     // slot 0 unused
-  dataHeader.writeBigUInt64LE(BigInt(800), 8);   // offset of block-1 data
-
-  const datBlock = Buffer.concat([dataHeader, elementBuf]);
+  //   Catapult block files are named by block height: 00001.dat = block 1 (genesis).
+  //   We write raw block element data (no 800-byte offset header).
+  const datBlock = elementBuf;  // raw block element, no header
   const datHashes = Buffer.concat([hexToBuffer(meta.hash), hexToBuffer(meta.generationHash)]);
 
   const nodesDataDir = path.join(targetDir, 'nodes');
@@ -4254,7 +4248,6 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
       // Create the full data directory structure if missing
       fs.mkdirSync(dataDir00, { recursive: true });
 
-      const datPath = path.join(dataDir00, '00000.dat');
       const hashPath = path.join(dataDir00, 'hashes.dat');
 
       // ── Wipe stale state that was seeded from the base-preset nemesis ──
@@ -4273,18 +4266,16 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
         if (fs.existsSync(p)) fs.rmSync(p, { force: true });
       }
 
-      fs.writeFileSync(datPath, datBlock);
+      // Write block files: named by block height (block 1 = 00001.dat), no 800-byte header
+      fs.writeFileSync(path.join(dataDir00, '00001.dat'), datBlock);
       fs.writeFileSync(hashPath, datHashes);
 
-      // 00000.stmt – block storage format: 800-byte header + statement payload
-      // The statement for the nemesis block contains receipt data.  We build a
-      // minimal valid statement from the REST /statements API.
+      // 00001.stmt – raw statement payload (no 800-byte header)
       const stmtPayload = serializeNemesisStatements(txStmts, mosaicResolutions);
-      const stmtBuf = Buffer.concat([dataHeader, stmtPayload]);
-      fs.writeFileSync(path.join(dataDir00, '00000.stmt'), stmtBuf);
+      const stmtBuf = stmtPayload;
+      fs.writeFileSync(path.join(dataDir00, '00001.stmt'), stmtBuf);
 
-      // 00000.proof – block storage format proof
-      // Minimal proof entry: version(4) + round(epoch4+point4) + height(8) + hash(32) = 52
+      // 00001.proof – finalization proof entry (no 800-byte header)
       const proofPayload = Buffer.concat([
         writeUint32LE(52),            // entry size
         writeUint32LE(1),             // finalization epoch
@@ -4292,7 +4283,7 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
         writeUint64LE(1),             // height
         hexToBuffer(meta.hash),       // block hash
       ]);
-      fs.writeFileSync(path.join(dataDir00, '00000.proof'), Buffer.concat([dataHeader, proofPayload]));
+      fs.writeFileSync(path.join(dataDir00, '00001.proof'), proofPayload);
 
       // proof.heights.dat (no 800-byte header in this file)
       fs.writeFileSync(path.join(dataDir00, 'proof.heights.dat'),
@@ -5500,6 +5491,42 @@ app.post('/api/commands/start', async (req, res) => {
           }
         } else {
           broadcastLog('[System] Step 4d – No imported seed and no source node URL; using local generation.\n');
+        }
+      }
+
+      // Step 4e: Guarantee genesis block data exists in each node's data/00000/.
+      //   symbol-bootstrap run's container start.sh skips the seed→data copy when
+      //   data/00000/ is non-empty (e.g. stale 00000.dat written by a previous partial
+      //   run).  We explicitly copy nemesis/seed/00000/* → nodes/*/data/00000/ here,
+      //   overwriting any stale files, and also remove stale lock files so catapult
+      //   does not enter broken recovery mode on startup.
+      {
+        const nemSeedDir00 = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+        const nodesBaseDir  = path.join(TARGET_DIR, 'nodes');
+        const seed00001     = path.join(nemSeedDir00, '00001.dat');
+        if (fs.existsSync(seed00001) && fs.existsSync(nodesBaseDir)) {
+          broadcastLog('[System] Step 4e – Installing genesis block to node data directories...\n');
+          const seedFiles = fs.readdirSync(nemSeedDir00);
+          for (const nodeName of fs.readdirSync(nodesBaseDir)) {
+            const nodeDataDir   = path.join(nodesBaseDir, nodeName, 'data');
+            const nodeDataDir00 = path.join(nodeDataDir, '00000');
+            fs.mkdirSync(nodeDataDir00, { recursive: true });
+            // Remove stale lock files (prevents false recovery-mode on startup)
+            for (const lf of ['server.lock', 'broker.lock', 'recovery.lock']) {
+              const lfPath = path.join(nodeDataDir, lf);
+              if (fs.existsSync(lfPath)) {
+                fs.rmSync(lfPath, { force: true });
+                broadcastLog(`[System]   Removed stale lock: ${lf}\n`);
+              }
+            }
+            // Copy all seed files: 00001.dat, 00001.stmt, hashes.dat, proof.heights.dat, etc.
+            for (const f of seedFiles) {
+              fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeDataDir00, f));
+            }
+            broadcastLog(`[System] ✅ ${nodeName}/data/00000/ seeded: ${seedFiles.join(', ')}\n`);
+          }
+        } else {
+          broadcastLog('[System] Step 4e – nemesis/seed/00000/00001.dat not found, skipping\n');
         }
       }
 
