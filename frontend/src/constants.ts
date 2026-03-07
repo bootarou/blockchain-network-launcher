@@ -660,6 +660,18 @@ export const DEFAULT_GATEWAY: GatewayConfig = {
 };
 
 // ---------------------------------------------------------------------------
+// Official Symbol network generation hash seeds
+// These are unique to each genesis block and used to distinguish official
+// mainnet/testnet from bootstrap custom networks that reuse the same
+// networkIdentifier (e.g. a custom network with identifier=152 must NOT
+// be treated as Symbol's official testnet).
+// ---------------------------------------------------------------------------
+export const OFFICIAL_MAINNET_GENERATION_HASH =
+  '57F7DA205008026C776CB6AED843393F04CD458E0AA2D9F1D5F31A402072B2D6';
+export const OFFICIAL_TESTNET_GENERATION_HASH =
+  '49D6E1CE276A85B70EAFE52349AACCA389302E7A9754BCF1221E79494FC665A4';
+
+// ---------------------------------------------------------------------------
 // Preset overrides
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,12 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import type { PresetConfig } from '../constants';
-import { DEFAULT_PRESET, CATAPULT_VERSIONS } from '../constants';
+import {
+  DEFAULT_PRESET,
+  CATAPULT_VERSIONS,
+  OFFICIAL_MAINNET_GENERATION_HASH,
+  OFFICIAL_TESTNET_GENERATION_HASH,
+} from '../constants';
 
 // ─── Tailwind merge helper ──────────────────────────────────────────────────
 
@@ -579,10 +584,21 @@ export function networkPropertiesToConfig(
     }
   }
 
-  // Determine preset name from network identifier
+  // Determine preset name from the genesis generation hash seed.
+  // networkIdentifier alone is ambiguous — a bootstrap custom network can
+  // reuse 152 (testnet address prefix) without being Symbol's official testnet.
+  // The generation hash seed is unique to each genesis block and is the
+  // only reliable way to identify the official networks.
   const ni = Number(nodeInfo.networkIdentifier ?? network.identifier ?? 0);
+  const genHash = String(
+    nodeInfo.networkGenerationHashSeed ?? network.generationHashSeed ?? ''
+  ).toUpperCase();
   const presetFromId =
-    ni === 104 ? 'mainnet' : ni === 152 ? 'testnet' : 'bootstrap';
+    genHash === OFFICIAL_MAINNET_GENERATION_HASH
+      ? 'mainnet'
+      : genHash === OFFICIAL_TESTNET_GENERATION_HASH
+        ? 'testnet'
+        : 'bootstrap';
 
   // Detect catapult version from node server version
   // nodeInfo.version is a packed uint32: 0xMMmmPPBB → major.minor.patch.build
