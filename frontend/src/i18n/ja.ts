@@ -104,6 +104,7 @@ export const ja: TranslationDict = {
   'config.gatewayApiNodeNameHint': 'Nodes セクションのノード名と自動連動します。ノード名を変更するとこちらも自動更新されます。',
   'config.gatewayNoNodes': '— ノードが未設定—',
   'config.gatewayNodeMissing': '存在しないノード',
+  'config.nodeHostRequired': 'Host が未設定です。他ノードから到達できるIPアドレスまたはFQDNを入力してください',
   'config.publicNetworkNotice': 'ℹ️ 公開ネットワーク (testnet / mainnet)',
   'config.publicNetworkInflation': 'インフレスケジュールはネットワーク標準値が自動適用されるため、カスタム設定は無効です。',
   'config.noInflation': 'インフレエントリがありません。「エントリ追加」をクリックして設定を開始してください。',
