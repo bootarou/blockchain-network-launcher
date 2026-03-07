@@ -565,6 +565,7 @@ export function networkPropertiesToConfig(
   nodeInfo: Record<string, unknown>,
   peers: Record<string, unknown>[],
   minFeeMultiplier: number | null = null,
+  mosaicInfo: Record<string, unknown>[] = [],
 ): Partial<PresetConfig> {
   const np = networkProperties as {
     network?: Record<string, unknown>;
@@ -746,6 +747,62 @@ export function networkPropertiesToConfig(
     // From plugins — Transfer
     maxMessageSize: restVal(pluginFlat.maxMessageSize),
   };
+
+  // Build nemesisMosaics from /mosaics REST data (bootstrap custom networks only).
+  // For official mainnet/testnet the preset handles mosaic config internally so
+  // we skip this.  For bootstrap networks the default supply values are wrong
+  // (8998999998000000 / 15000000) and must be replaced with the real values.
+  if (presetFromId === 'bootstrap' && mosaicInfo.length > 0) {
+    // Helper: clean mosaic ID to 16-char uppercase hex
+    const cleanId = (id: unknown): string =>
+      String(id ?? '').replace(/0x/gi, '').replace(/'/g, '').toUpperCase();
+
+    const rawCurrId = cleanId(chain.currencyMosaicId);
+    const rawHarvId = cleanId(chain.harvestingMosaicId);
+
+    // Build map: mosaicId → REST mosaic object
+    const mosaicMap = new Map<string, Record<string, unknown>>();
+    for (const item of mosaicInfo) {
+      const m = (item as Record<string, unknown>).mosaic as Record<string, unknown> | undefined;
+      if (m?.id) mosaicMap.set(String(m.id).toUpperCase(), m);
+    }
+
+    const currMosaic = mosaicMap.get(rawCurrId);
+    const harvMosaic = mosaicMap.get(rawHarvId);
+
+    if (currMosaic || harvMosaic) {
+      const builtMosaics: Record<string, unknown>[] = [];
+
+      // Currency mosaic entry
+      const cm = currMosaic ?? harvMosaic!;
+      const cFlags = Number(cm.flags ?? 2);
+      builtMosaics.push({
+        name: 'currency',
+        divisibility: Number(cm.divisibility ?? 6),
+        duration: Number(cm.duration ?? 0),
+        supply: String(cm.supply ?? '0'),
+        isTransferable: (cFlags & 0x02) !== 0,
+        isSupplyMutable: (cFlags & 0x01) !== 0,
+        isRestrictable: (cFlags & 0x04) !== 0,
+      });
+
+      // Harvest mosaic entry — only when it differs from currency
+      if (harvMosaic && rawHarvId !== rawCurrId) {
+        const hFlags = Number(harvMosaic.flags ?? 6);
+        builtMosaics.push({
+          name: 'harvest',
+          divisibility: Number(harvMosaic.divisibility ?? 3),
+          duration: Number(harvMosaic.duration ?? 0),
+          supply: String(harvMosaic.supply ?? '0'),
+          isTransferable: (hFlags & 0x02) !== 0,
+          isSupplyMutable: (hFlags & 0x01) !== 0,
+          isRestrictable: (hFlags & 0x04) !== 0,
+        });
+      }
+
+      partial.nemesisMosaics = builtMosaics;
+    }
+  }
 
   // NOTE: Do NOT add remote peers as nodes[] entries here.
   // Each entry in nodes[] creates a LOCAL docker container — remote peers

@@ -5701,12 +5701,47 @@ app.post('/api/network/fetch', async (req, res) => {
     const minFee = txFees?.minFeeMultiplier ?? null;
     if (minFee !== null) broadcastLog(`[JoinNetwork] network/fees/transaction ✓  (minFeeMultiplier: ${minFee})\n`);
 
+    // Fetch mosaic details for currency and harvesting mosaics.
+    // Used by the frontend to populate nemesisMosaics with correct
+    // supply / divisibility / flags instead of bootstrap defaults.
+    const cleanMosaicId = (id: unknown): string | null => {
+      if (!id) return null;
+      const s = String(id).replace(/0x/gi, '').replace(/'/g, '').toUpperCase();
+      return /^[0-9A-F]{16}$/.test(s) ? s : null;
+    };
+    const npChain = (networkProps as any)?.chain ?? {};
+    const currId = cleanMosaicId(npChain.currencyMosaicId);
+    const harvId = cleanMosaicId(npChain.harvestingMosaicId);
+    const mosaicIds = [...new Set([currId, harvId].filter((id): id is string => id !== null))];
+
+    let mosaicInfo: Record<string, unknown>[] = [];
+    if (mosaicIds.length > 0) {
+      try {
+        const ctrl = new AbortController();
+        const t2 = setTimeout(() => ctrl.abort(), 10000);
+        const mosaicRes = await fetch(`${base}/mosaics`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mosaicIds }),
+          signal: ctrl.signal,
+        });
+        clearTimeout(t2);
+        if (mosaicRes.ok) {
+          mosaicInfo = await mosaicRes.json();
+          broadcastLog(`[JoinNetwork] /mosaics ✓  (${mosaicInfo.length} mosaic entries)\n`);
+        }
+      } catch {
+        broadcastLog(`[JoinNetwork] /mosaics fetch skipped (non-critical)\n`);
+      }
+    }
+
     res.json({
       success: true,
       networkProperties: networkProps,
       nodeInfo,
       peers: Array.isArray(peers) ? peers : [],
       minFeeMultiplier: minFee,
+      mosaicInfo,
     });
   } catch (err: any) {
     broadcastLog(`[JoinNetwork] Error: ${err.message}\n`);

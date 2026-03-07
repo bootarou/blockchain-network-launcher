@@ -36,6 +36,7 @@ interface FetchResult {
     nodeInfo: Record<string, unknown>;
     peers: Record<string, unknown>[];
     minFeeMultiplier: number | null;
+    mosaicInfo: Record<string, unknown>[];
   };
 }
 
@@ -162,6 +163,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
         data.nodeInfo,
         data.peers,
         data.minFeeMultiplier ?? null,
+        data.mosaicInfo ?? [],
       );
 
       setResult({
@@ -171,6 +173,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
           nodeInfo: data.nodeInfo,
           peers: data.peers,
           minFeeMultiplier: data.minFeeMultiplier,
+          mosaicInfo: data.mosaicInfo ?? [],
         },
       });
     } catch (err: unknown) {
