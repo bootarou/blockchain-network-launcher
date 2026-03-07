@@ -2044,15 +2044,35 @@ app.post('/api/images/import', (req, res) => {
 function resolveBootstrapTemplateDir(): string {
   const { execSync } = require('child_process') as typeof import('child_process');
 
-  // Strategy 1: find the template file directly (most reliable across any install)
+  // Strategy 0: require.resolve — most reliable, works regardless of install prefix
+  // Resolves the package.json of symbol-bootstrap, then navigates to config/node/resources
+  try {
+    const pkgJson = require.resolve('symbol-bootstrap/package.json');
+    const pkgRoot = path.dirname(pkgJson);
+    const candidate = path.join(pkgRoot, 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) {
+      broadcastLog(`[Pre-Patch] Template dir (require.resolve): ${candidate}\n`);
+      return candidate;
+    }
+    broadcastLog(`[Pre-Patch] require.resolve found pkg at ${pkgRoot} but config/ not there\n`);
+    // List what IS in the package root for diagnostics
+    try {
+      const entries = fs.readdirSync(pkgRoot).join(', ');
+      broadcastLog(`[Pre-Patch] Package root contents: ${entries}\n`);
+    } catch { /* ignore */ }
+  } catch (e: any) {
+    broadcastLog(`[Pre-Patch] require.resolve failed: ${e.message}\n`);
+  }
+
+  // Strategy 1: find the template file directly (covers any install layout)
   try {
     const found = execSync(
-      'find /usr /home /root /opt -name "config-node.properties.mustache" 2>/dev/null | head -1',
-      { timeout: 10_000, stdio: 'pipe' }
+      'find / -path /proc -prune -o -path /sys -prune -o -name "config-node.properties.mustache" -print 2>/dev/null | head -1',
+      { timeout: 15_000, stdio: 'pipe' }
     ).toString().trim();
     if (found) {
       const dir = path.dirname(found);
-      broadcastLog(`[Pre-Patch] Template dir (find): ${dir}\n`);
+      broadcastLog(`[Pre-Patch] Template dir (find /): ${dir}\n`);
       return dir;
     }
   } catch { /* fall through */ }
@@ -5328,7 +5348,10 @@ app.post('/api/commands/start', async (req, res) => {
       //   Instead, we stash the restored identity files, clear TARGET_DIR
       //   so config sees an empty directory, then restore identity files
       //   after config finishes.
-      const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000'));
+      // Check for the actual nemesis block file, not just the directory.
+      // An empty data/00000/ dir from a previous failed run must NOT trigger --upgrade,
+      // because --upgrade skips nemgen → the node has no genesis block → crash.
+      const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
       const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
       const targetHasContent = fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length > 0;
       const needsReset = !generatedPresetExists && !dataExists && targetHasContent;
