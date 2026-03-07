@@ -335,7 +335,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     let updatedGateways = config.gateways;
     if (key === 'name' && oldName && value !== oldName) {
       updatedGateways = config.gateways.map((g) =>
-        g.apiNodeName === oldName ? { ...g, apiNodeName: String(value) } : g,
+        g.apiNodeName === oldName ? { ...g, apiNodeName: String(value), host: String(value) } : g,
       );
     }
     onChange({ ...config, nodes: updated, gateways: updatedGateways });
@@ -353,14 +353,20 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
 
   // Gateway helpers
   const handleGatewayChange = (index: number, key: string, value: unknown) => {
-    const updated = config.gateways.map((g, i) => (i === index ? { ...g, [key]: value } : g));
+    const updated = config.gateways.map((g, i) => {
+      if (i !== index) return g;
+      // apiNodeName is the Docker service name = host in rest.json: keep in sync
+      if (key === 'apiNodeName') return { ...g, apiNodeName: String(value), host: String(value) };
+      return { ...g, [key]: value };
+    });
     onChange({ ...config, gateways: updated });
   };
   const addGateway = () => {
     const idx = config.gateways.length;
+    const nodeName = config.nodes[0]?.name ?? 'api-node-0';
     onChange({
       ...config,
-      gateways: [...config.gateways, { ...DEFAULT_GATEWAY, apiNodeName: config.nodes[0]?.name ?? 'api-node-0', databaseHost: `db-${idx}` }],
+      gateways: [...config.gateways, { ...DEFAULT_GATEWAY, apiNodeName: nodeName, host: nodeName, databaseHost: `db-${idx}` }],
     });
   };
   const removeGateway = (index: number) => {

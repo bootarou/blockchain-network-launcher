@@ -581,7 +581,7 @@ export const NODE_FIELDS: FieldMeta[] = [
 
 export const GATEWAY_FIELDS: FieldMeta[] = [
   { key: 'apiNodeName', label: 'API Node Name', type: 'text', description: '接続先APIノード名' },
-  { key: 'host', label: 'Host', type: 'text', description: 'ホスト名' },
+  { key: 'host', label: 'Host', type: 'text', description: 'Dockerネットワーク内の接続先ノード名（コンテナサービス名 = apiNodeName と同値）。外部公開アドレス不可' },
   { key: 'port', label: 'Port', type: 'number', description: 'ポート', min: 1, max: 65535 },
   { key: 'databaseHost', label: 'DB Host', type: 'text', description: 'MongoDBホスト' },
   { key: 'throttlingBurst', label: 'Throttle Burst', type: 'number', description: 'バースト上限', min: 1 },
@@ -652,7 +652,7 @@ export const DEFAULT_NODE: NodeConfig = {
 
 export const DEFAULT_GATEWAY: GatewayConfig = {
   apiNodeName: 'api-node-0',
-  host: 'localhost',
+  host: 'api-node-0',
   port: 3000,
   databaseHost: 'db',
   throttlingBurst: 80,
@@ -808,7 +808,7 @@ export const DEFAULT_PRESET: PresetConfig = {
     maxTrackedNodes: 5000, trustedHosts: '127.0.0.1', localNetworks: '127.0.0.1',
   }],
   gateways: [{
-    apiNodeName: 'api-node-0', host: 'localhost', port: 3000, databaseHost: 'db',
+    apiNodeName: 'api-node-0', host: 'api-node-0', port: 3000, databaseHost: 'db',
     throttlingBurst: 80, throttlingRate: 60,
   }],
 
