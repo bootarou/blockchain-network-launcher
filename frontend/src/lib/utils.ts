@@ -566,6 +566,7 @@ export function networkPropertiesToConfig(
   peers: Record<string, unknown>[],
   minFeeMultiplier: number | null = null,
   mosaicInfo: Record<string, unknown>[] = [],
+  mosaicNames: { mosaicId: string; names: string[] }[] = [],
 ): Partial<PresetConfig> {
   const np = networkProperties as {
     network?: Record<string, unknown>;
@@ -767,6 +768,30 @@ export function networkPropertiesToConfig(
       if (m?.id) mosaicMap.set(String(m.id).toUpperCase(), m);
     }
 
+    // Build map: mosaicId → first namespace alias (e.g. "cat.currency")
+    // REST POST /mosaics/names returns [{mosaicId, names:["cat.currency"]}, ...]
+    const nameAliasMap = new Map<string, string>();
+    for (const entry of mosaicNames) {
+      const id = String(entry.mosaicId ?? '').toUpperCase();
+      const alias = entry.names?.[0] ?? '';
+      if (id && alias) nameAliasMap.set(id, alias);
+    }
+
+    // Derive baseNamespace from the currency mosaic alias.
+    // e.g. "cat.currency" → rootNs="cat", leafName="currency"
+    const currAlias = nameAliasMap.get(rawCurrId) ?? nameAliasMap.get(rawHarvId) ?? '';
+    if (currAlias) {
+      const parts = currAlias.split('.');
+      const rootNs = parts[0];
+      if (rootNs) partial.baseNamespace = rootNs;
+    }
+
+    const leafName = (alias: string): string => {
+      if (!alias) return '';
+      const parts = alias.split('.');
+      return parts[parts.length - 1];
+    };
+
     const currMosaic = mosaicMap.get(rawCurrId);
     const harvMosaic = mosaicMap.get(rawHarvId);
 
@@ -776,8 +801,10 @@ export function networkPropertiesToConfig(
       // Currency mosaic entry
       const cm = currMosaic ?? harvMosaic!;
       const cFlags = Number(cm.flags ?? 2);
+      // Use alias leaf name if available, otherwise fall back to 'currency'
+      const currName = leafName(nameAliasMap.get(rawCurrId) ?? '') || 'currency';
       builtMosaics.push({
-        name: 'currency',
+        name: currName,
         divisibility: Number(cm.divisibility ?? 6),
         duration: Number(cm.duration ?? 0),
         supply: String(cm.supply ?? '0'),
@@ -789,8 +816,9 @@ export function networkPropertiesToConfig(
       // Harvest mosaic entry — only when it differs from currency
       if (harvMosaic && rawHarvId !== rawCurrId) {
         const hFlags = Number(harvMosaic.flags ?? 6);
+        const harvName = leafName(nameAliasMap.get(rawHarvId) ?? '') || 'harvest';
         builtMosaics.push({
-          name: 'harvest',
+          name: harvName,
           divisibility: Number(harvMosaic.divisibility ?? 3),
           duration: Number(harvMosaic.duration ?? 0),
           supply: String(harvMosaic.supply ?? '0'),

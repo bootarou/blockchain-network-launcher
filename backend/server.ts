@@ -5715,20 +5715,35 @@ app.post('/api/network/fetch', async (req, res) => {
     const mosaicIds = [...new Set([currId, harvId].filter((id): id is string => id !== null))];
 
     let mosaicInfo: Record<string, unknown>[] = [];
+    let mosaicNames: { mosaicId: string; names: string[] }[] = [];
     if (mosaicIds.length > 0) {
       try {
         const ctrl = new AbortController();
         const t2 = setTimeout(() => ctrl.abort(), 10000);
-        const mosaicRes = await fetch(`${base}/mosaics`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mosaicIds }),
-          signal: ctrl.signal,
-        });
+        const [mosaicRes, namesRes] = await Promise.all([
+          fetch(`${base}/mosaics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mosaicIds }),
+            signal: ctrl.signal,
+          }),
+          fetch(`${base}/mosaics/names`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mosaicIds }),
+            signal: ctrl.signal,
+          }).catch(() => null),
+        ]);
         clearTimeout(t2);
         if (mosaicRes.ok) {
           mosaicInfo = await mosaicRes.json();
           broadcastLog(`[JoinNetwork] /mosaics ✓  (${mosaicInfo.length} mosaic entries)\n`);
+        }
+        if (namesRes?.ok) {
+          const raw = await namesRes.json();
+          // REST returns { mosaicNames: [...] } or directly an array
+          mosaicNames = Array.isArray(raw) ? raw : (raw?.mosaicNames ?? []);
+          broadcastLog(`[JoinNetwork] /mosaics/names ✓  (${mosaicNames.length} aliases)\n`);
         }
       } catch {
         broadcastLog(`[JoinNetwork] /mosaics fetch skipped (non-critical)\n`);
@@ -5742,6 +5757,7 @@ app.post('/api/network/fetch', async (req, res) => {
       peers: Array.isArray(peers) ? peers : [],
       minFeeMultiplier: minFee,
       mosaicInfo,
+      mosaicNames,
     });
   } catch (err: any) {
     broadcastLog(`[JoinNetwork] Error: ${err.message}\n`);

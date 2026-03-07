@@ -37,6 +37,7 @@ interface FetchResult {
     peers: Record<string, unknown>[];
     minFeeMultiplier: number | null;
     mosaicInfo: Record<string, unknown>[];
+    mosaicNames: { mosaicId: string; names: string[] }[];
   };
 }
 
@@ -164,6 +165,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
         data.peers,
         data.minFeeMultiplier ?? null,
         data.mosaicInfo ?? [],
+        data.mosaicNames ?? [],
       );
 
       setResult({
@@ -174,6 +176,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
           peers: data.peers,
           minFeeMultiplier: data.minFeeMultiplier,
           mosaicInfo: data.mosaicInfo ?? [],
+          mosaicNames: data.mosaicNames ?? [],
         },
       });
     } catch (err: unknown) {
