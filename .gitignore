@@ -20,7 +20,14 @@ verify_type.py
 debug_wrapper.sh
 body.json
 test-body.json
+test_start.json
+tmp-mids.json
 shared/check_txs*.py
+shared/check_mosaic_id.py
+shared/compute_mosaic_from_nonce.js
+shared/compute_mosaic_id.py
+shared/compute_ns_id.js
+shared/parse_with_catbuffer.js
 
 # User-specific preset & runtime data
 shared/custom-preset.yml
