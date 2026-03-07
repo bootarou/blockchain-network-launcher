@@ -309,8 +309,16 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
 
   // Node helpers
   const handleNodeChange = (index: number, key: string, value: unknown) => {
+    const oldName = config.nodes[index]?.name;
     const updated = config.nodes.map((n, i) => (i === index ? { ...n, [key]: value } : n));
-    onChange({ ...config, nodes: updated });
+    // When a node is renamed, auto-update any gateways that referenced the old name
+    let updatedGateways = config.gateways;
+    if (key === 'name' && oldName && value !== oldName) {
+      updatedGateways = config.gateways.map((g) =>
+        g.apiNodeName === oldName ? { ...g, apiNodeName: String(value) } : g,
+      );
+    }
+    onChange({ ...config, nodes: updated, gateways: updatedGateways });
   };
   const addNode = () => {
     const idx = config.nodes.length;
@@ -546,6 +554,9 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     }
 
     if (activeTab === 'gateways') {
+      const gwInputBase =
+        'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
+      const nodeNames = config.nodes.map((n) => n.name).filter(Boolean);
       return (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -562,14 +573,55 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
           </div>
           <div className="space-y-3">
             {config.gateways.map((gw, i) => (
-              <ArrayItemEditor<GatewayConfig>
-                key={i}
-                item={gw}
-                index={i}
-                fields={GATEWAY_FIELDS}
-                onChange={handleGatewayChange}
-                onRemove={removeGateway}
-              />
+              <div key={i} className="border border-zinc-700 rounded-xl overflow-hidden">
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-3 bg-zinc-800/60">
+                  <span className="text-sm font-medium text-zinc-200">
+                    {gw.apiNodeName || `gateway-${i}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeGateway(i)}
+                    className="p-1 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="p-4 space-y-3 bg-zinc-900/50">
+                  {/* API Node Name — select from existing nodes (read-only source) */}
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-1">
+                      {t('config.gatewayApiNodeName')}
+                    </label>
+                    <select
+                      value={gw.apiNodeName}
+                      onChange={(e) => handleGatewayChange(i, 'apiNodeName', e.target.value)}
+                      className={gwInputBase}
+                    >
+                      {nodeNames.length === 0 && (
+                        <option value="">{t('config.gatewayNoNodes')}</option>
+                      )}
+                      {nodeNames.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                      {/* Keep current value even if node was removed */}
+                      {gw.apiNodeName && !nodeNames.includes(gw.apiNodeName) && (
+                        <option value={gw.apiNodeName}>⚠️ {gw.apiNodeName} ({t('config.gatewayNodeMissing')})</option>
+                      )}
+                    </select>
+                    <p className="mt-1 text-xs text-zinc-500">{t('config.gatewayApiNodeNameHint')}</p>
+                  </div>
+                  {/* Remaining gateway fields */}
+                  {GATEWAY_FIELDS.filter((f) => f.key !== 'apiNodeName').map((f) => (
+                    <FieldRenderer
+                      key={f.key}
+                      field={f}
+                      value={gw[f.key]}
+                      onChange={(_key, val) => handleGatewayChange(i, f.key, val)}
+                    />
+                  ))}
+                </div>
+              </div>
             ))}
             {config.gateways.length === 0 && (
               <p className="text-zinc-600 text-sm italic text-center py-8">{t('config.noGateways')}</p>
