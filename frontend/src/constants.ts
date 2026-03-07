@@ -299,8 +299,7 @@ export const CATEGORIES: CategoryMeta[] = [
     fields: [
       { key: 'preset', label: 'Base Preset', type: 'select', description: 'symbol-bootstrap のベーステンプレート', options: [{ value: 'bootstrap', label: 'bootstrap (local dev)' }, { value: 'testnet', label: 'testnet' }, { value: 'mainnet', label: 'mainnet' }] },
       { key: 'assembly', label: 'Assembly', type: 'select', description: 'ノードアセンブリタイプ', options: [{ value: 'dual', label: 'dual (Peer + API)' }, { value: 'peer', label: 'peer' }, { value: 'api', label: 'api' }, { value: 'demo', label: 'demo' }, { value: 'multinode', label: 'multinode' }] },
-      { key: 'networkType', label: 'Network Type', type: 'select', description: 'ネットワークタイプ', options: [{ value: 'mainnet', label: 'mainnet (104)' }, { value: 'testnet', label: 'testnet (152)' }, { value: 'private', label: 'private (120)' }, { value: 'privateTest', label: 'privateTest (168)' }] },
-      { key: 'networkIdentifier', label: 'Network Identifier', type: 'number', description: '数値ネットワーク識別子', min: 0, max: 255 },
+      { key: 'networkType', label: 'Network Type', type: 'select', description: 'networkType（テキスト）と networkIdentifier（数値）は1対1対応。選択変更すると数値IDが自動設定される。アドレス生成のネットワークバイトになる。', options: [{ value: 'mainnet', label: 'mainnet — 104' }, { value: 'testnet', label: 'testnet — 152' }, { value: 'private', label: 'private — 120' }, { value: 'privateTest', label: 'privateTest — 168' }] },
       { key: 'networkName', label: 'Network Name', type: 'text', description: 'ネットワーク名' },
       { key: 'nemesisGenerationHashSeed', label: 'Generation Hash Seed', type: 'text', description: 'ジェネシスブロックのSHA3-256ハッシュ' },
       { key: 'nemesisSignerPublicKey', label: 'Nemesis Signer Public Key', type: 'text', description: 'ジェネシスブロック署名者の公開鍵' },

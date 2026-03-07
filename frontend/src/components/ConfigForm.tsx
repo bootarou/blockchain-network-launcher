@@ -293,6 +293,17 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
         return;
       }
     }
+    // networkType and networkIdentifier are 1-to-1: auto-sync the numeric ID
+    if (key === 'networkType') {
+      const NETWORK_TYPE_TO_ID: Record<string, number> = {
+        mainnet: 104, testnet: 152, private: 120, privateTest: 168,
+      };
+      const id = NETWORK_TYPE_TO_ID[value as string];
+      if (id !== undefined) {
+        onChange({ ...config, networkType: value as string, networkIdentifier: id });
+        return;
+      }
+    }
     onChange({ ...config, [key]: value });
   };
 
