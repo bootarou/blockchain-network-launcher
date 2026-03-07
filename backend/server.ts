@@ -5727,7 +5727,7 @@ app.post('/api/network/fetch', async (req, res) => {
             body: JSON.stringify({ mosaicIds }),
             signal: ctrl.signal,
           }),
-          fetch(`${base}/mosaics/names`, {
+          fetch(`${base}/namespaces/mosaic/names`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mosaicIds }),
