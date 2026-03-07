@@ -2041,12 +2041,54 @@ app.post('/api/images/import', (req, res) => {
  * inside `symbol-bootstrap config`) sees all required properties.
  * This must be called BEFORE `symbol-bootstrap config`.
  */
+function resolveBootstrapTemplateDir(): string {
+  // Prefer the location resolved from the actual binary so we patch the right
+  // template even if symbol-bootstrap is installed under a non-standard prefix.
+  try {
+    const { execSync } = require('child_process');
+    // `npm root -g` returns the global node_modules directory
+    const npmRoot = execSync('npm root -g', { timeout: 5000, stdio: 'pipe' })
+      .toString().trim();
+    const candidate = path.join(npmRoot, 'symbol-bootstrap', 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) {
+      broadcastLog(`[Pre-Patch] Template dir (npm root -g): ${candidate}\n`);
+      return candidate;
+    }
+  } catch { /* fall through */ }
+
+  // Also try: resolve from the `symbol-bootstrap` binary symlink itself
+  try {
+    const { execSync } = require('child_process');
+    const binPath = execSync('which symbol-bootstrap 2>/dev/null || true', { timeout: 5000, stdio: 'pipe' })
+      .toString().trim();
+    if (binPath) {
+      // binary → ../../lib/node_modules/symbol-bootstrap/... (typical structure)
+      const realBin = fs.realpathSync(binPath);
+      const pkgRoot = path.resolve(path.dirname(realBin), '..', '..', 'lib', 'node_modules', 'symbol-bootstrap');
+      const candidate = path.join(pkgRoot, 'config', 'node', 'resources');
+      if (fs.existsSync(candidate)) {
+        broadcastLog(`[Pre-Patch] Template dir (which): ${candidate}\n`);
+        return candidate;
+      }
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: well-known default
+  const fallback = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources';
+  broadcastLog(`[Pre-Patch] Template dir (fallback): ${fallback}\n`);
+  return fallback;
+}
+
 function patchMustacheTemplates(version: CatapultVersionDef) {
-  const templateDir = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources';
+  const templateDir = resolveBootstrapTemplateDir();
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${version.configPatches.length}\n`);
 
   for (const patch of version.configPatches) {
     const templatePath = path.join(templateDir, patch.file + '.mustache');
-    if (!fs.existsSync(templatePath)) continue;
+    if (!fs.existsSync(templatePath)) {
+      broadcastLog(`[Pre-Patch] ⚠️  Template not found: ${templatePath}\n`);
+      continue;
+    }
 
     let content = fs.readFileSync(templatePath, 'utf-8');
     let patched = false;
@@ -2092,7 +2134,15 @@ function patchMustacheTemplates(version: CatapultVersionDef) {
 
     if (patched) {
       fs.writeFileSync(templatePath, content, 'utf-8');
-      broadcastLog(`[Pre-Patch] Patched mustache template: ${patch.file}.mustache (${patch.section})\n`);
+      broadcastLog(`[Pre-Patch] ✅ Patched mustache template: ${patch.file}.mustache (${patch.section})\n`);
+      // Verify the patch was written correctly
+      const verify = fs.readFileSync(templatePath, 'utf-8');
+      for (const key of Object.keys(patch.props)) {
+        const ok = new RegExp(`^\\s*${key}\\s*=`, 'm').test(verify);
+        broadcastLog(`[Pre-Patch]    ${key}: ${ok ? '✅ present' : '❌ MISSING'}\n`);
+      }
+    } else {
+      broadcastLog(`[Pre-Patch] ✅ ${patch.file}.mustache already has all required keys\n`);
     }
   }
 }
@@ -5186,6 +5236,17 @@ app.post('/api/commands/start', async (req, res) => {
     }
 
     broadcastLog(`[System] Base preset: ${basePreset}, Assembly: ${assembly}\n`);
+
+    // ---------------------------------------------------------------
+    // Diagnostic: log TARGET_DIR and verify it is consistent
+    // ---------------------------------------------------------------
+    broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
+    broadcastLog(`[System] SHARED_DIR = ${SHARED_DIR}\n`);
+    broadcastLog(`[System] TARGET_DIR exists: ${fs.existsSync(TARGET_DIR)}\n`);
+    {
+      const targetEnv = process.env.TARGET_DIR ?? '(not set)';
+      broadcastLog(`[System] TARGET_DIR env var = ${targetEnv}\n`);
+    }
 
     // ---------------------------------------------------------------
     // We split "start" into  config → patch → compose → run
