@@ -667,12 +667,14 @@ app.get('/api/preset', (req, res) => {
         } catch { /* ignore corrupt meta */ }
       }
 
-      // ── Authoritative networkIdentifier / networkType ──────────────────
-      // The custom-preset.yml may not contain networkType/networkIdentifier
-      // (they weren't always persisted there), and .ui-meta.json stores the
-      // value the USER chose at config time — which may differ from what
-      // symbol-bootstrap actually wrote into config-network.properties.
-      // Always read the actual value from the generated config when available.
+      // ── Authoritative values from generated config-network.properties ──
+      // custom-preset.yml / .ui-meta.json store the values the USER entered at
+      // config time, which may differ from what symbol-bootstrap actually wrote
+      // during nemesis generation.  Fields like generationHashSeed and
+      // networkIdentifier are computed / chosen by bootstrap and MUST be read
+      // from the generated config to avoid showing stale / wrong values.
+      // If the user saves the preset while stale values are shown, they would
+      // overwrite the correct settings and break the network on next start.
       const generatedConfigPath = path.join(TARGET_DIR, 'nodes');
       if (fs.existsSync(generatedConfigPath)) {
         const nodeDirs = fs.readdirSync(generatedConfigPath);
@@ -680,26 +682,41 @@ app.get('/api/preset', (req, res) => {
           const cfgPath = path.join(generatedConfigPath, nodeDir, 'server-config', 'resources', 'config-network.properties');
           if (!fs.existsSync(cfgPath)) continue;
           const cfgContent = fs.readFileSync(cfgPath, 'utf-8');
-          // Parse: identifier = testnet|mainnet|private|privateTest|<hex>
+
+          // networkIdentifier / networkType
+          // Bootstrap writes the symbolic name (testnet, mainnet, private, privateTest)
           const idMatch = cfgContent.match(/^identifier\s*=\s*(\S+)/m);
           if (idMatch) {
             const rawId = idMatch[1].trim();
-            // Bootstrap writes the symbolic name (testnet, mainnet, private, privateTest)
-            // Map to numeric networkIdentifier used by Symbol REST / catapult
             const NAME_TO_ID: Record<string, number> = {
-              mainnet: 104, testnet: 152,
-              private: 120, privateTest: 168,
+              mainnet: 104, testnet: 152, private: 120, privateTest: 168,
             };
             if (NAME_TO_ID[rawId] !== undefined) {
               flat.networkIdentifier = NAME_TO_ID[rawId];
               flat.networkType = rawId;
             } else if (/^[0-9A-Fa-f]+$/.test(rawId)) {
-              // Hex value
               flat.networkIdentifier = parseInt(rawId, 16);
             } else if (/^\d+$/.test(rawId)) {
               flat.networkIdentifier = parseInt(rawId, 10);
             }
           }
+
+          // generationHashSeed — bootstrap rewrites this during nemesis generation.
+          // The value in custom-preset.yml (nemesisGenerationHashSeed) is the
+          // SEED used as INPUT to nemgen, not the final hash in the nemesis block.
+          // The actual value that nodes use to verify blocks is generationHashSeed
+          // in config-network.properties.
+          const ghMatch = cfgContent.match(/^generationHashSeed\s*=\s*(\S+)/m);
+          if (ghMatch) {
+            flat.nemesisGenerationHashSeed = ghMatch[1].trim();
+          }
+
+          // nemesisSignerPublicKey — may also differ after bootstrap processing
+          const nspkMatch = cfgContent.match(/^nemesisSignerPublicKey\s*=\s*(\S+)/m);
+          if (nspkMatch) {
+            flat.nemesisSignerPublicKey = nspkMatch[1].trim();
+          }
+
           break; // Only need one node
         }
       }
