@@ -2251,7 +2251,26 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
 
 /** Resolve which version def to use from the custom-preset YAML */
 function resolveVersion(): CatapultVersionDef {
-  // Try reading catapultVersion from ui-meta
+  // Primary: use symbolServerImage from the saved custom-preset.yml.
+  // This is always accurate — it is set from the actual image tag chosen
+  // during Join or Config, and does not depend on nodeInfo.version parsing.
+  try {
+    if (fs.existsSync(PRESET_PATH)) {
+      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+      const img = String(doc.symbolServerImage ?? '');
+      broadcastLog(`[resolveVersion] custom-preset symbolServerImage=${img}\n`);
+      for (const ver of CATAPULT_VERSIONS) {
+        const tag = ver.serverImage.split(':')[1];
+        if (tag && img.includes(tag)) {
+          broadcastLog(`[resolveVersion] Matched from symbolServerImage: ${ver.id} (tag=${tag})\n`);
+          return ver;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Secondary: catapultVersion field in ui-meta.json
+  // (can be stale/incorrect if Join detected version as v2 when node.version=0)
   try {
     if (fs.existsSync(UI_META_PATH)) {
       const meta = parseJsonFile(UI_META_PATH);
@@ -2260,22 +2279,6 @@ function resolveVersion(): CatapultVersionDef {
       if (ver) {
         broadcastLog(`[resolveVersion] Matched from ui-meta: ${ver.id}\n`);
         return ver;
-      }
-    }
-  } catch { /* ignore */ }
-
-  // Fallback: try to match by symbolServerImage in the preset YAML
-  try {
-    if (fs.existsSync(PRESET_PATH)) {
-      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-      const img = String(doc.symbolServerImage ?? '');
-      broadcastLog(`[resolveVersion] Fallback: YAML symbolServerImage=${img}\n`);
-      for (const ver of CATAPULT_VERSIONS) {
-        const tag = ver.serverImage.split(':')[1];
-        if (img.includes(tag)) {
-          broadcastLog(`[resolveVersion] Matched from YAML: ${ver.id} (tag=${tag})\n`);
-          return ver;
-        }
       }
     }
   } catch { /* ignore */ }
