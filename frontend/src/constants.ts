@@ -303,8 +303,8 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'networkName', label: 'Network Name', type: 'text', description: 'ネットワーク名' },
       { key: 'nemesisGenerationHashSeed', label: 'Generation Hash Seed', type: 'text', description: 'ジェネシスブロックのSHA3-256ハッシュ' },
       { key: 'nemesisSignerPublicKey', label: 'Nemesis Signer Public Key', type: 'text', description: 'ジェネシスブロック署名者の公開鍵' },
-      { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法', options: [{ value: 'host', label: 'host' }, { value: 'public-key', label: 'public-key' }] },
-      { key: 'epochAdjustment', label: 'Epoch Adjustment', type: 'text', description: 'Unix epochからの秒数', placeholder: '1573430400s' },
+      { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法。public-key: 公開鍵で識別（同一サーバー上の複数ノードや動的IPに対応）。host: IPアドレスで識別（固定IP・シンプルな構成向け）', options: [{ value: 'public-key', label: 'public-key' }, { value: 'host', label: 'host' }] },
+      { key: 'epochAdjustment', label: 'Epoch Adjustment', type: 'text', description: 'Unix epochからの秒数（末尾に s を付ける）。新規ネットワークは作成時刻に近い値を推奨', placeholder: `${_todayEpochSec}s` },
       { key: 'currencyMosaicId', label: 'Currency Mosaic ID', type: 'text', description: '基軸通貨のモザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
       { key: 'harvestingMosaicId', label: 'Harvesting Mosaic ID', type: 'text', description: 'ハーベスト用モザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
       { key: 'privateKeySecurityMode', label: 'Private Key Security', type: 'select', description: '秘密鍵保管モード', options: [{ value: 'PROMPT_MAIN', label: 'PROMPT_MAIN' }, { value: 'PROMPT_MAIN_TRANSPORT', label: 'PROMPT_MAIN_TRANSPORT' }, { value: 'ENCRYPT', label: 'ENCRYPT' }] },
@@ -725,13 +725,18 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
 // DEFAULT PRESET
 // ---------------------------------------------------------------------------
 
+// Compute today's Unix timestamp (seconds) at module load time.
+// Used as the default epochAdjustment for new networks so the genesis time
+// is close to the actual creation date rather than a hard-coded past value.
+const _todayEpochSec = Math.floor(Date.now() / 1000);
+
 export const DEFAULT_PRESET: PresetConfig = {
   catapultVersion: 'v3', preset: 'bootstrap', assembly: 'dual',
   networkType: 'privateTest', networkIdentifier: 168,
   networkName: 'custom-symbol-network', friendlyName: 'custom-network',
   sourceNodeUrl: '', nemesisGenerationHashSeed: '', nemesisSignerPublicKey: '',
-  nodeEqualityStrategy: 'host',
-  epochAdjustment: '1573430400s',
+  nodeEqualityStrategy: 'public-key',
+  epochAdjustment: `${_todayEpochSec}s`,
   currencyMosaicId: '', harvestingMosaicId: '',
   privateKeySecurityMode: 'ENCRYPT',
 
@@ -780,7 +785,7 @@ export const DEFAULT_PRESET: PresetConfig = {
 
   maxNameSize: 64, maxNamespacesPerAccount: 25, maxNamespaceDepth: 3, maxChildNamespaces: 256,
   minNamespaceDuration: '1m', maxNamespaceDuration: '365d', namespaceGracePeriodDuration: '30d',
-  reservedRootNamespaceNames: 'symbol, symbl, xym, xem, nem, user, account, org, com, biz, net, edu, mil, gov, info',
+  reservedRootNamespaceNames: 'symbol, symbl, xym, xem, nem, user, account, org, com, biz, net, edu, mil, gov, info, cat',
   namespaceRentalFeeSinkAddress: '', namespaceRentalFeeSinkAddressV1: '',
   rootNamespaceRentalFeePerBlock: '1', childNamespaceRentalFee: '100',
 

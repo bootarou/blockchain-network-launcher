@@ -293,6 +293,26 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
         return;
       }
     }
+    // baseNamespace: keep reservedRootNamespaceNames in sync
+    if (key === 'baseNamespace') {
+      const oldBase = (config.baseNamespace ?? '').trim().toLowerCase();
+      const newBase = (value as string ?? '').trim().toLowerCase();
+      const reserved = (config.reservedRootNamespaceNames ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      // Remove old value, then add new value (avoid duplicates)
+      const withoutOld = oldBase ? reserved.filter((n) => n !== oldBase) : reserved;
+      const withNew = newBase && !withoutOld.includes(newBase)
+        ? [...withoutOld, newBase]
+        : withoutOld;
+      onChange({
+        ...config,
+        baseNamespace: value as string,
+        reservedRootNamespaceNames: withNew.join(', '),
+      });
+      return;
+    }
     // networkType and networkIdentifier are 1-to-1: auto-sync the numeric ID
     if (key === 'networkType') {
       const NETWORK_TYPE_TO_ID: Record<string, number> = {
