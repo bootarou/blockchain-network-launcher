@@ -2042,12 +2042,24 @@ app.post('/api/images/import', (req, res) => {
  * This must be called BEFORE `symbol-bootstrap config`.
  */
 function resolveBootstrapTemplateDir(): string {
-  // Prefer the location resolved from the actual binary so we patch the right
-  // template even if symbol-bootstrap is installed under a non-standard prefix.
+  const { execSync } = require('child_process') as typeof import('child_process');
+
+  // Strategy 1: find the template file directly (most reliable across any install)
   try {
-    const { execSync } = require('child_process');
-    // `npm root -g` returns the global node_modules directory
-    const npmRoot = execSync('npm root -g', { timeout: 5000, stdio: 'pipe' })
+    const found = execSync(
+      'find /usr /home /root /opt -name "config-node.properties.mustache" 2>/dev/null | head -1',
+      { timeout: 10_000, stdio: 'pipe' }
+    ).toString().trim();
+    if (found) {
+      const dir = path.dirname(found);
+      broadcastLog(`[Pre-Patch] Template dir (find): ${dir}\n`);
+      return dir;
+    }
+  } catch { /* fall through */ }
+
+  // Strategy 2: npm root -g
+  try {
+    const npmRoot = execSync('npm root -g', { timeout: 5_000, stdio: 'pipe' })
       .toString().trim();
     const candidate = path.join(npmRoot, 'symbol-bootstrap', 'config', 'node', 'resources');
     if (fs.existsSync(candidate)) {
@@ -2056,13 +2068,11 @@ function resolveBootstrapTemplateDir(): string {
     }
   } catch { /* fall through */ }
 
-  // Also try: resolve from the `symbol-bootstrap` binary symlink itself
+  // Strategy 3: resolve from `which symbol-bootstrap` binary location
   try {
-    const { execSync } = require('child_process');
-    const binPath = execSync('which symbol-bootstrap 2>/dev/null || true', { timeout: 5000, stdio: 'pipe' })
+    const binPath = execSync('which symbol-bootstrap 2>/dev/null || true', { timeout: 5_000, stdio: 'pipe' })
       .toString().trim();
     if (binPath) {
-      // binary → ../../lib/node_modules/symbol-bootstrap/... (typical structure)
       const realBin = fs.realpathSync(binPath);
       const pkgRoot = path.resolve(path.dirname(realBin), '..', '..', 'lib', 'node_modules', 'symbol-bootstrap');
       const candidate = path.join(pkgRoot, 'config', 'node', 'resources');
@@ -5273,6 +5283,19 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 0c: Pre-patch mustache templates so nemgen sees all required props
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
       patchMustacheTemplates(version);
+
+      // Step 0c2: Emergency fallback — if the mustache template was not found
+      // (e.g. different bootstrap install layout on join PC), directly patch
+      // any already-generated config-node.properties files that may exist in
+      // the target dir from a previous partial run.  This handles the case
+      // where config was run previously and left nodes/ behind without maxLogFiles.
+      if (version.configPatches.length > 0) {
+        const nodesDir = path.join(TARGET_DIR, 'nodes');
+        if (fs.existsSync(nodesDir)) {
+          broadcastLog('[System] Step 0c2 – Patching any pre-existing config files (pre-nemgen)...\n');
+          patchGeneratedConfigs(TARGET_DIR, version);
+        }
+      }
 
       // Step 0d: Single-currency mode — patch mustache template so that
       // harvestingMosaicId outputs currencyMosaicId.  This ensures nemgen
