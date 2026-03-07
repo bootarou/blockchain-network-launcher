@@ -319,6 +319,12 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
   if (flat.nemesisSignerPublicKey) networkProps.nemesisSignerPublicKey = flat.nemesisSignerPublicKey;
   if (flat.nodeEqualityStrategy) networkProps.nodeEqualityStrategy = flat.nodeEqualityStrategy;
   if (flat.epochAdjustment) networkProps.epochAdjustment = flat.epochAdjustment;
+  // networkType / networkIdentifier: write into networkProperties so that
+  // bootstrapPresetToFlat() can read them back on next load, and also
+  // promote to top-level below so mustache templates pick them up.
+  if (flat.networkType) networkProps.networkType = flat.networkType;
+  if (flat.networkIdentifier !== undefined && flat.networkIdentifier !== null && flat.networkIdentifier !== '')
+    networkProps.networkIdentifier = flat.networkIdentifier;
 
   // Chain sub-section
   const chain: Record<string, unknown> = {};
@@ -652,11 +658,50 @@ app.get('/api/preset', (req, res) => {
       }
 
       // Merge in UI metadata (preset, assembly, etc.)
+      // Note: meta is merged FIRST so that flat (from custom-preset.yml) takes
+      // precedence for any keys that exist in both.
       if (fs.existsSync(UI_META_PATH)) {
         try {
           const meta = parseJsonFile(UI_META_PATH);
           flat = { ...meta, ...flat };
         } catch { /* ignore corrupt meta */ }
+      }
+
+      // ── Authoritative networkIdentifier / networkType ──────────────────
+      // The custom-preset.yml may not contain networkType/networkIdentifier
+      // (they weren't always persisted there), and .ui-meta.json stores the
+      // value the USER chose at config time — which may differ from what
+      // symbol-bootstrap actually wrote into config-network.properties.
+      // Always read the actual value from the generated config when available.
+      const generatedConfigPath = path.join(TARGET_DIR, 'nodes');
+      if (fs.existsSync(generatedConfigPath)) {
+        const nodeDirs = fs.readdirSync(generatedConfigPath);
+        for (const nodeDir of nodeDirs) {
+          const cfgPath = path.join(generatedConfigPath, nodeDir, 'server-config', 'resources', 'config-network.properties');
+          if (!fs.existsSync(cfgPath)) continue;
+          const cfgContent = fs.readFileSync(cfgPath, 'utf-8');
+          // Parse: identifier = testnet|mainnet|private|privateTest|<hex>
+          const idMatch = cfgContent.match(/^identifier\s*=\s*(\S+)/m);
+          if (idMatch) {
+            const rawId = idMatch[1].trim();
+            // Bootstrap writes the symbolic name (testnet, mainnet, private, privateTest)
+            // Map to numeric networkIdentifier used by Symbol REST / catapult
+            const NAME_TO_ID: Record<string, number> = {
+              mainnet: 104, testnet: 152,
+              private: 120, privateTest: 168,
+            };
+            if (NAME_TO_ID[rawId] !== undefined) {
+              flat.networkIdentifier = NAME_TO_ID[rawId];
+              flat.networkType = rawId;
+            } else if (/^[0-9A-Fa-f]+$/.test(rawId)) {
+              // Hex value
+              flat.networkIdentifier = parseInt(rawId, 16);
+            } else if (/^\d+$/.test(rawId)) {
+              flat.networkIdentifier = parseInt(rawId, 10);
+            }
+          }
+          break; // Only need one node
+        }
       }
 
       res.json(flat);
@@ -2604,6 +2649,40 @@ function normalizePresetTopLevelOverrides(presetPath: string): void {
       broadcastLog(`[Preset] ✅ Promoted ${promoted} networkProperties.chain/plugin keys to top level\n`);
     } else {
       broadcastLog('[Preset] No chain/plugin keys needed promotion\n');
+    }
+
+    // ── Also promote networkType / networkIdentifier from ui-meta ──────────
+    // symbol-bootstrap bootstrap preset defaults to networkType: 152 (testnet).
+    // If the user chose a different type (e.g. private/privateTest) it must be
+    // written to the preset top-level so bootstrap config uses the right value.
+    try {
+      if (fs.existsSync(UI_META_PATH)) {
+        const meta = parseJsonFile(UI_META_PATH);
+        // Map networkType string → symbol-bootstrap network name
+        // symbol-bootstrap recognises: testnet, mainnet, private, privateTest
+        const NI_TO_BOOTSTRAP: Record<number, string> = {
+          104: 'mainnet', 152: 'testnet', 120: 'private', 168: 'privateTest',
+        };
+        const ID_TO_BOOTSTRAP: Record<string, string> = {
+          mainnet: 'mainnet', testnet: 'testnet',
+          private: 'private', privateTest: 'privateTest',
+        };
+        let bootstrapNetworkName: string | null = null;
+        if (meta.networkType && ID_TO_BOOTSTRAP[meta.networkType as string]) {
+          bootstrapNetworkName = ID_TO_BOOTSTRAP[meta.networkType as string];
+        } else if (meta.networkIdentifier !== undefined) {
+          bootstrapNetworkName = NI_TO_BOOTSTRAP[Number(meta.networkIdentifier)] ?? null;
+        }
+        if (bootstrapNetworkName) {
+          // Read + re-write with networkIdentifier promoted
+          const docCur = yaml.load(fs.readFileSync(presetPath, 'utf-8')) as Record<string, unknown>;
+          docCur.networkIdentifier = bootstrapNetworkName;
+          fs.writeFileSync(presetPath, yaml.dump(docCur, { lineWidth: 120, noRefs: true }), 'utf-8');
+          broadcastLog(`[Preset] ✅ Promoted networkIdentifier = ${bootstrapNetworkName} to top level\n`);
+        }
+      }
+    } catch (e: any) {
+      broadcastLog(`[Preset] ⚠️  Could not promote networkIdentifier: ${e.message}\n`);
     }
   } catch (e: any) {
     broadcastLog(`[Preset] ⚠️  normalizePresetTopLevelOverrides failed: ${e.message}\n`);
