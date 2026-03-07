@@ -761,11 +761,17 @@ export function networkPropertiesToConfig(
     const rawCurrId = cleanId(chain.currencyMosaicId);
     const rawHarvId = cleanId(chain.harvestingMosaicId);
 
-    // Build map: mosaicId → REST mosaic object
+    // Build map: mosaicId → REST mosaic object.
+    // Only include mosaics with startHeight === 1 (nemesis block).
+    // In a live network /mosaics returns many entries; only block-1 mosaics
+    // are the original nemesis mosaics (currency / harvest).
     const mosaicMap = new Map<string, Record<string, unknown>>();
     for (const item of mosaicInfo) {
       const m = (item as Record<string, unknown>).mosaic as Record<string, unknown> | undefined;
-      if (m?.id) mosaicMap.set(String(m.id).toUpperCase(), m);
+      if (!m?.id) continue;
+      const sh = Number(m.startHeight ?? 0);
+      if (sh !== 1) continue; // skip non-nemesis mosaics
+      mosaicMap.set(String(m.id).toUpperCase(), m);
     }
 
     // Build map: mosaicId → first namespace alias (e.g. "cat.currency")
