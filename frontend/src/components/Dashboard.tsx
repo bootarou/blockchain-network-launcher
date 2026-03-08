@@ -12,8 +12,6 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
-  AlertTriangle,
-  Save,
   HardDrive,
   FolderOpen,
   Info,
@@ -175,17 +173,6 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
       setCmdStatus((s) => ({ ...s, [cmd]: 'error' }));
     } finally {
       if (isModal) setActiveModal(null);
-    }
-  };
-
-  const handleSave = async () => {
-    try {
-      setCmdStatus((s) => ({ ...s, save: 'running' }));
-      await api.savePreset(config);
-      setCmdStatus((s) => ({ ...s, save: 'success' }));
-      setTimeout(() => setCmdStatus((s) => ({ ...s, save: 'idle' })), 3000);
-    } catch {
-      setCmdStatus((s) => ({ ...s, save: 'error' }));
     }
   };
 
@@ -525,16 +512,6 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
 
         {/* Command buttons */}
         <div className="flex flex-wrap gap-3">
-          <button
-            onClick={handleSave}
-            disabled={cmdStatus.save === 'running'}
-            className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
-          >
-            <Save className="w-4 h-4" />
-            {t('dashboard.save')}
-            <StatusIcon cmd="save" />
-          </button>
-
           {nodeStopped && (
           <button
             onClick={handleStart}
