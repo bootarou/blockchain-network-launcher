@@ -6083,6 +6083,33 @@ app.post('/api/commands/start', async (req, res) => {
         stateOnSuccess: 'running',
       });
 
+      // Step 5b: Re-apply rest-gateway hostname patch + force-recreate.
+      //
+      //   symbol-bootstrap run may internally re-invoke `compose` before
+      //   calling docker compose up, regenerating docker-compose.yml and
+      //   overwriting the Step 4b patches.  We re-apply patchRestGatewayHostname
+      //   here (after run) and force-recreate only the rest-gateway container
+      //   so it starts WITHOUT hostname: api-node-0 and WITHOUT the
+      //   self-referential /etc/hosts entry that causes ECONNREFUSED 7900.
+      {
+        broadcastLog('[System] Step 5b – Re-applying rest-gateway hostname patch...\n');
+        const composePath5b = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        patchRestGatewayHostname(TARGET_DIR);
+        if (fs.existsSync(composePath5b)) {
+          try {
+            const { execSync: execSync5b } = await import('child_process');
+            const out5b = execSync5b(
+              `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
+              { timeout: 60_000, stdio: 'pipe' },
+            ).toString().trim();
+            if (out5b) broadcastLog(`[System] Step 5b – ${out5b.slice(0, 300)}\n`);
+            broadcastLog('[System] Step 5b – rest-gateway recreated without hostname: api-node-0 ✓\n');
+          } catch (e: any) {
+            broadcastLog(`[System] Step 5b – Warning: force-recreate rest-gateway failed: ${e.message}\n`);
+          }
+        }
+      }
+
       // Step 6: Wait for node health
       //   symbol-manager and rest-gateway are on different Docker networks.
       //   Join the docker_default network so we can reach rest-gateway at
