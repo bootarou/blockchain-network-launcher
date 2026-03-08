@@ -5813,35 +5813,22 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog(`[Cleanup] Step 4g – Lock cleanup warning (non-fatal): ${e.message}\n`);
       }
 
-      // Step 4h: Clear MongoDB databases/ when block data already exists (--upgrade mode).
+      // NOTE: databases/ is intentionally NOT cleared here automatically.
       //
-      //   Problem: After compose down + config change + compose up, MongoDB starts
-      //   fresh (databases/ is empty or inconsistent) while data/ still has blocks
-      //   from the previous run.  The broker then tries to write block N to MongoDB
-      //   at height 0 → crash: "cannot save block with height N when storage height is 0".
+      //   Step 4g above does a clean "docker compose down" which gives MongoDB a
+      //   proper SIGTERM shutdown.  MongoDB flushes its WiredTiger journal correctly
+      //   on clean shutdown, so the database state is consistent and can be resumed
+      //   on the next docker compose up without any manual intervention.
       //
-      //   Root cause: compose down stops MongoDB cleanly, but MongoDB's journal/WiredTiger
-      //   files can become inconsistent if the previous session ended abruptly (OOM,
-      //   SIGKILL, image upgrade).  On restart MongoDB initializes fresh instead of
-      //   resuming, resulting in height 0 while data/ has blocks.
+      //   Clearing databases/ when block data already exists causes catapult.recovery
+      //   to rebuild MongoDB from scratch.  The recovery binary can crash (SIGABRT /
+      //   core dump) when it encounters an empty MongoDB with existing block files in
+      //   certain code paths, leaving recovery.lock behind and preventing subsequent
+      //   starts.
       //
-      //   Fix: always clear databases/ when data/ has blocks.  catapult-recovery is
-      //   designed for exactly this: it rebuilds the MongoDB state from the block files
-      //   in data/.  The rebuild is automatic and happens before the broker starts.
-      //   Block data (data/) is preserved — no P2P re-sync required.
-      if (dataExists) {
-        const dbDir4h = path.join(TARGET_DIR, 'databases');
-        if (fs.existsSync(dbDir4h)) {
-          try {
-            fs.rmSync(dbDir4h, { recursive: true, force: true });
-            broadcastLog('[Cleanup] Step 4h – Cleared databases/ → MongoDB will be rebuilt from block files by recovery.\n');
-          } catch (e: any) {
-            broadcastLog(`[Cleanup] Step 4h – databases/ cleanup warning (non-fatal): ${e.message}\n`);
-          }
-        } else {
-          broadcastLog('[Cleanup] Step 4h – databases/ not found, skipping.\n');
-        }
-      }
+      //   If you need to force a MongoDB rebuild (e.g. genuine data corruption), use
+      //   the "Clear Locks" button in the Dashboard, which performs an explicit
+      //   compose down + lock deletion + databases/ removal as a deliberate operation.
 
       // Step 5: symbol-bootstrap run (docker-compose up -d)
       broadcastLog('[System] Step 5/6 – Starting docker containers...\n');
