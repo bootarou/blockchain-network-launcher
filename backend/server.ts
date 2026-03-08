@@ -3073,6 +3073,45 @@ function backfillMosaicIds(targetDir: string): void {
       }
     }
 
+    // ── Patch generationHashSeed in config-network.properties ──────────────
+    // After symbol-bootstrap config (especially with --upgrade), config-network.properties
+    // may still hold an old genesis hash from a previous bootstrap run.  When the user
+    // applied a Join-Network config the correct hash is already in np.nemesisGenerationHashSeed.
+    // We enforce it here so the catapult server always boots with the right hash.
+    //
+    // This is safe for own-network nodes too: backfillMosaicIds just set
+    // np.nemesisGenerationHashSeed = bootstrap-generated hash (same value that's
+    // already in config-network.properties), so the patch is idempotent.
+    const targetGenHash = (np.nemesisGenerationHashSeed as string | undefined)?.trim()?.toUpperCase();
+    if (targetGenHash) {
+      const patchGenHashFile = (cfgPath: string): void => {
+        if (!fs.existsSync(cfgPath)) return;
+        let cfgContent = fs.readFileSync(cfgPath, 'utf-8');
+        const m = cfgContent.match(/^generationHashSeed\s*=\s*(\S+)/m);
+        if (!m) return;
+        const existing = m[1].trim().toUpperCase();
+        if (existing === targetGenHash) return;   // already correct — no-op
+        cfgContent = cfgContent.replace(
+          /^(generationHashSeed\s*=\s*)\S+/m,
+          `$1${targetGenHash}`,
+        );
+        fs.writeFileSync(cfgPath, cfgContent, 'utf-8');
+        broadcastLog(`[GenerationHash] Corrected generationHashSeed: ${existing} → ${targetGenHash}\n`);
+      };
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        for (const configDir of ['server-config', 'broker-config']) {
+          patchGenHashFile(path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties'));
+        }
+      }
+      // gateways/ may not exist yet (created in Step 4 compose), but patch if present
+      const gwDirForHash = path.join(targetDir, 'gateways');
+      if (fs.existsSync(gwDirForHash)) {
+        for (const gwName of fs.readdirSync(gwDirForHash)) {
+          patchGenHashFile(path.join(gwDirForHash, gwName, 'api-node-config', 'config-network.properties'));
+        }
+      }
+    }
+
     fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
     broadcastLog('[MosaicID] ✅ Backfilled MosaicIDs and network properties to custom-preset.yml\n');
   } catch (e: any) {
@@ -3700,8 +3739,14 @@ function patchLocalNetworks(targetDir: string) {
           changed = true;
         }
 
-        // Ensure the prefix is present
-        if (!val.includes(prefix)) {
+        // Ensure the prefix is present — but ONLY for trustedHosts.
+        // Do NOT add the Docker subnet to localNetworks: catapult treats every
+        // connection arriving from a localNetworks subnet as "@_local_" (the node's
+        // own identity), so external peers that come through Docker NAT
+        // (172.20.0.1 → container) are misclassified as the local node and
+        // rejected with "in use identity key".  trustedHosts alone is sufficient
+        // for the REST gateway to connect without a full auth handshake.
+        if (key === 'trustedHosts' && !val.includes(prefix)) {
           val = val ? `${val}, ${prefix}` : prefix;
           changed = true;
         }
@@ -5527,6 +5572,53 @@ app.post('/api/commands/start', async (req, res) => {
           }
         } else {
           broadcastLog('[System] Step 4e – nemesis/seed/00000/00001.dat not found, skipping\n');
+        }
+      }
+
+      // Step 4f: Re-apply generationHashSeed from custom-preset.yml to all
+      //   config-network.properties files (nodes + gateways).
+      //   At this point gateways/ already exists (created by Step 4 compose).
+      //   This is the final safety net for join-PC scenarios where a previous
+      //   bootstrap run generated a different genesis hash:
+      //     • Step 1b already patched nodes/ (before compose)
+      //     • Step 4c patched both nodes/ and gateways/ via fetchAndWritePeerFiles
+      //       (only when sourceUrl was reachable at start time)
+      //     • This step guarantees gateways/ are correct even if Step 4c failed
+      //       or sourceUrl was not set, by reading directly from custom-preset.yml.
+      {
+        try {
+          const presetDocForHash = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          const npForHash = presetDocForHash?.networkProperties as Record<string, unknown> | undefined;
+          const hashForStep4f = (npForHash?.nemesisGenerationHashSeed as string | undefined)?.trim()?.toUpperCase();
+          if (hashForStep4f) {
+            const patchHash4f = (cfgPath: string): void => {
+              if (!fs.existsSync(cfgPath)) return;
+              let c = fs.readFileSync(cfgPath, 'utf-8');
+              const m4f = c.match(/^generationHashSeed\s*=\s*(\S+)/m);
+              if (!m4f) return;
+              const cur4f = m4f[1].trim().toUpperCase();
+              if (cur4f === hashForStep4f) return;
+              c = c.replace(/^(generationHashSeed\s*=\s*)\S+/m, `$1${hashForStep4f}`);
+              fs.writeFileSync(cfgPath, c, 'utf-8');
+              broadcastLog(`[GenerationHash] Step 4f patched ${path.relative(TARGET_DIR, cfgPath)}: ${cur4f} → ${hashForStep4f}\n`);
+            };
+            const nodesDir4f = path.join(TARGET_DIR, 'nodes');
+            if (fs.existsSync(nodesDir4f)) {
+              for (const nn of fs.readdirSync(nodesDir4f)) {
+                for (const cd of ['server-config', 'broker-config']) {
+                  patchHash4f(path.join(nodesDir4f, nn, cd, 'resources', 'config-network.properties'));
+                }
+              }
+            }
+            const gwDir4f = path.join(TARGET_DIR, 'gateways');
+            if (fs.existsSync(gwDir4f)) {
+              for (const gw of fs.readdirSync(gwDir4f)) {
+                patchHash4f(path.join(gwDir4f, gw, 'api-node-config', 'config-network.properties'));
+              }
+            }
+          }
+        } catch (e: any) {
+          broadcastLog(`[GenerationHash] Step 4f warning: ${e.message}\n`);
         }
       }
 
