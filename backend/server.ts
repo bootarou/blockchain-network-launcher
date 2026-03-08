@@ -5756,13 +5756,38 @@ app.post('/api/commands/start', async (req, res) => {
         }
       }
 
-      // Step 4g: Remove stale lock files that prevent node recovery from starting.
+      // Step 4g: Stop existing node containers, then remove stale lock files.
+      //
+      //   Race condition without this step:
+      //     Docker's "restart: unless-stopped" policy keeps the broker/server
+      //     containers looping.  If we only delete the lock files (without
+      //     stopping the containers first), the restarting container may
+      //     re-create the lock between our deletion and docker compose up.
+      //     The next docker compose up then finds a fresh lock → crash.
+      //
+      //   Fix: stop all node containers first (docker compose down), THEN
+      //   delete any residual lock files, THEN docker compose up (Step 5).
+      //
       //   If a previous run was killed (SIGKILL, OOM, power loss, etc.) the
       //   lock files are not cleaned up.  On the next start catapult-recovery
       //   detects the existing lock and crashes with:
       //     "could not acquire instance lock ./data/recovery.lock"
-      //   We proactively delete all *.lock files under nodes/*/data/ before
-      //   docker compose up so the node always starts cleanly.
+      {
+        const composePath4g = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        if (fs.existsSync(composePath4g)) {
+          broadcastLog('[System] Step 4g – Stopping existing node containers before lock cleanup...\n');
+          try {
+            const { execSync } = await import('child_process');
+            execSync(`docker compose -f "${composePath4g}" down --remove-orphans 2>/dev/null || true`, {
+              timeout: 90_000,
+              stdio: 'pipe',
+            });
+            broadcastLog('[System] Step 4g – Node containers stopped.\n');
+          } catch (e: any) {
+            broadcastLog(`[Cleanup] Step 4g – compose down warning (non-fatal): ${e.message}\n`);
+          }
+        }
+      }
       try {
         const nodesDir4g = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDir4g)) {
