@@ -3694,13 +3694,15 @@ async function mergeManualPeerUrlsIntoPeerFiles(targetDir: string, manualUrls: s
   }
 
   const existing = readExistingPeers(targetDir);
+  // NOTE: fetched entries come FIRST so that a changed key for the same
+  //       endpoint (peer rebuilt with new keypair) overwrites the stale entry.
   const mergedP2p = dedupePeerEntries([
-    ...existing.p2p,
     ...fetched.filter((p) => p.metadata.roles.includes('Peer')),
+    ...existing.p2p,
   ]);
   const mergedApi = dedupePeerEntries([
-    ...existing.api,
     ...fetched.filter((p) => p.metadata.roles.includes('Api')),
+    ...existing.api,
   ]);
 
   writePeerFiles(
@@ -3709,6 +3711,85 @@ async function mergeManualPeerUrlsIntoPeerFiles(targetDir: string, manualUrls: s
     mergedApi,
     'this file contains a list of peers — auto-generated from source/manual peers',
   );
+}
+
+/**
+ * For each peer in the generated peers-p2p.json / peers-api.json, try to
+ * fetch their live public key from their REST endpoint (port 3000) and
+ * update the file if the key has changed.
+ *
+ * This handles the common case where a peer was rebuilt (docker compose
+ * build --no-cache + new symbol-bootstrap run) and got a new node keypair,
+ * while the local peers-p2p.json still holds the old key → Verify_Error.
+ *
+ * Non-fatal: if a peer's REST is unreachable the existing key is kept.
+ */
+async function refreshLivePeerKeys(targetDir: string): Promise<void> {
+  const existing = readExistingPeers(targetDir);
+  const allPeers = dedupePeerEntries([...existing.p2p, ...existing.api]);
+
+  if (allPeers.length === 0) return;
+
+  broadcastLog(`[Peers] 🔑 Refreshing live public keys for ${allPeers.length} configured peer(s)...\n`);
+
+  let anyUpdated = false;
+  const keyUpdates = new Map<string, string>(); // oldKey → newKey
+
+  for (const peer of allPeers) {
+    const host = peer.endpoint.host;
+    if (!host) continue;
+
+    const restUrl = `http://${host}:3000`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+
+    try {
+      const r = await fetch(`${restUrl}/node/info`, { signal: controller.signal });
+      if (!r.ok) {
+        broadcastLog(`[Peers] ⚠️  ${restUrl}/node/info → HTTP ${r.status}, keeping existing key\n`);
+        continue;
+      }
+      const nodeInfo = await r.json() as Record<string, any>;
+      const liveKey = String(nodeInfo.publicKey ?? '').toUpperCase();
+      const existingKey = (peer.publicKey ?? '').toUpperCase();
+
+      if (!liveKey) continue;
+
+      if (liveKey !== existingKey) {
+        broadcastLog(
+          `[Peers] 🔄 ${host}: key changed ${existingKey.slice(0, 8)}... → ${liveKey.slice(0, 8)}...\n`,
+        );
+        keyUpdates.set(existingKey, liveKey);
+        anyUpdated = true;
+      } else {
+        broadcastLog(`[Peers] ✓  ${host}: key unchanged\n`);
+      }
+    } catch (e: any) {
+      broadcastLog(`[Peers] ⚠️  ${restUrl} unreachable (${e.message}) — keeping existing key\n`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (!anyUpdated) {
+    broadcastLog('[Peers] ✅ All peer keys are up-to-date\n');
+    return;
+  }
+
+  const applyUpdates = (peers: PeerEntry[]): PeerEntry[] =>
+    peers.map((p) => ({
+      ...p,
+      publicKey: keyUpdates.get((p.publicKey ?? '').toUpperCase()) ?? p.publicKey,
+    }));
+
+  writePeerFiles(
+    targetDir,
+    applyUpdates(existing.p2p),
+    applyUpdates(existing.api),
+    'this file contains a list of peers — keys refreshed from live nodes',
+  );
+
+  broadcastLog(`[Peers] ✅ Peer key refresh complete — ${keyUpdates.size} key(s) updated\n`);
 }
 
 /**
@@ -5843,6 +5924,20 @@ app.post('/api/commands/start', async (req, res) => {
         }
       } catch (e: any) {
         broadcastLog(`[Peers] ⚠️  Peer fetch failed (non-fatal): ${e.message}\n`);
+      }
+
+      // Step 4c3: Refresh live peer public keys.
+      //   symbol-bootstrap config regenerates peers-p2p.json with keys stored
+      //   in its internal network config.  If a peer was rebuilt (new keypair),
+      //   the stored key is stale → Verify_Error on every P2P connection.
+      //   This step fetches each peer's actual public key via their REST API
+      //   (port 3000) and patches peers-p2p.json if the key has changed.
+      //   Runs for ALL nodes (not just join-nodes) and is non-fatal.
+      try {
+        broadcastLog('[System] Step 4c3 – Refreshing live peer public keys...\n');
+        await refreshLivePeerKeys(TARGET_DIR);
+      } catch (e: any) {
+        broadcastLog(`[Peers] ⚠️  Peer key refresh failed (non-fatal): ${e.message}\n`);
       }
 
       // Step 4c2: Patch config-node.properties so that the Docker subnet is
