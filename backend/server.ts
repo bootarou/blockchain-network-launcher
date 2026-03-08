@@ -2809,7 +2809,7 @@ function patchStopGracePeriod(targetDir: string): void {
           }
         }
         if (!alreadyPatched) {
-          patchedLines.push(`${serviceIndent}  stop_grace_period: 120s`);
+          patchedLines.push(`${serviceIndent}    stop_grace_period: 120s`);
           patchedCount++;
           broadcastLog(`[Patch] Added stop_grace_period: 120s to service: ${currentService}\n`);
         }
