@@ -2868,6 +2868,75 @@ function patchStopGracePeriod(targetDir: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Fix rest.json apiNode.host when symbol-bootstrap hardcodes a Docker IP.
+//
+// symbol-bootstrap writes the api-node-0 container IP (e.g. 172.20.0.25) into
+// gateways/rest-gateway/rest.json at `apiNode.host` during `config`.  After a
+// Full Reset Docker IPAM may assign that same IP to rest-gateway itself, so
+// rest-gateway ends up connecting to its own port 7900 → ECONNREFUSED.
+//
+// Fix: replace any non-hostname value (IP address or wrong hostname) with the
+// stable container name "api-node-0" so Docker DNS always resolves correctly.
+// ---------------------------------------------------------------------------
+function patchRestJsonApiNodeHost(targetDir: string): void {
+  const gatewaysDir = path.join(targetDir, 'gateways');
+  if (!fs.existsSync(gatewaysDir)) {
+    broadcastLog('[Patch] gateways/ not found, skipping rest.json apiNode.host patch\n');
+    return;
+  }
+
+  // Walk every sub-directory under gateways/ and patch all rest.json files.
+  // (symbol-bootstrap may generate multiple gateway dirs in future.)
+  let patchedCount = 0;
+  try {
+    for (const gwName of fs.readdirSync(gatewaysDir)) {
+      // Check both known locations: direct and userconfig/resources
+      const candidates = [
+        path.join(gatewaysDir, gwName, 'rest.json'),
+        path.join(gatewaysDir, gwName, 'userconfig', 'resources', 'rest.json'),
+      ];
+      for (const restJsonPath of candidates) {
+        if (!fs.existsSync(restJsonPath)) continue;
+        try {
+          const raw = fs.readFileSync(restJsonPath, 'utf-8');
+          const obj = JSON.parse(raw);
+          const current: string = obj?.apiNode?.host ?? '';
+          broadcastLog(`[Patch] rest.json (${gwName}) apiNode.host = "${current}"\n`);
+
+          // Only patch if the host looks like an IP address (not already a hostname)
+          const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(current.trim());
+          const isWrongHost = current.trim() !== '' && current.trim() !== 'api-node-0';
+
+          if (isIp) {
+            obj.apiNode.host = 'api-node-0';
+            fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host ${current} → api-node-0 ✓\n`);
+            patchedCount++;
+          } else if (isWrongHost) {
+            // Unexpected hostname — patch defensively
+            obj.apiNode.host = 'api-node-0';
+            fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host "${current}" → api-node-0 (unexpected value, patched) ✓\n`);
+            patchedCount++;
+          } else {
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host already correct (skipped)\n`);
+          }
+        } catch (e: any) {
+          broadcastLog(`[Patch] Warning: could not patch ${restJsonPath}: ${e.message}\n`);
+        }
+      }
+    }
+    if (patchedCount === 0) {
+      broadcastLog('[Patch] rest.json apiNode.host: all gateways already correct\n');
+    } else {
+      broadcastLog(`[Patch] rest.json apiNode.host: patched ${patchedCount} file(s) ✓\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] Warning: rest.json patch failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Promote networkProperties.chain.* / plugin.* values to the document root
 // of custom-preset.yml.
 //
@@ -5752,6 +5821,7 @@ app.post('/api/commands/start', async (req, res) => {
       forceCorrectDockerComposeImages(TARGET_DIR);
       patchRestGatewayHostname(TARGET_DIR);
       patchStopGracePeriod(TARGET_DIR);
+      patchRestJsonApiNodeHost(TARGET_DIR);
 
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
