@@ -3792,22 +3792,32 @@ function patchLocalNetworks(targetDir: string) {
 
         let val = match[2].trim();
 
-        // Replace any existing CIDR notation with prefix notation
-        if (val.includes(subnet)) {
-          val = val.replace(subnet, prefix);
-          changed = true;
-        }
-
-        // Ensure the prefix is present — but ONLY for trustedHosts.
-        // Do NOT add the Docker subnet to localNetworks: catapult treats every
-        // connection arriving from a localNetworks subnet as "@_local_" (the node's
-        // own identity), so external peers that come through Docker NAT
-        // (172.20.0.1 → container) are misclassified as the local node and
-        // rejected with "in use identity key".  trustedHosts alone is sufficient
-        // for the REST gateway to connect without a full auth handshake.
-        if (key === 'trustedHosts' && !val.includes(prefix)) {
-          val = val ? `${val}, ${prefix}` : prefix;
-          changed = true;
+        if (key === 'localNetworks') {
+          // localNetworks must NOT contain the Docker subnet prefix.
+          // Catapult treats every connection from a localNetworks range as
+          // "@_local_" (the node itself).  External peers arriving through
+          // Docker NAT (172.20.0.1) would be misclassified and rejected with
+          // "in use identity key".  Remove any previously-added prefix here.
+          // Also remove CIDR form in case an old run wrote that.
+          let newVal = val
+            .split(',')
+            .map(s => s.trim())
+            .filter(s => s !== prefix && s !== subnet && s !== '')
+            .join(', ');
+          if (newVal !== val) {
+            val = newVal;
+            changed = true;
+          }
+        } else {
+          // trustedHosts: replace CIDR notation → prefix, then ensure prefix present
+          if (val.includes(subnet)) {
+            val = val.replace(subnet, prefix);
+            changed = true;
+          }
+          if (!val.includes(prefix)) {
+            val = val ? `${val}, ${prefix}` : prefix;
+            changed = true;
+          }
         }
 
         if (changed) {
