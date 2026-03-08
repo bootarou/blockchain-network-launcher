@@ -2712,6 +2712,57 @@ function forceCorrectDockerComposeImages(targetDir: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Remove hostname: api-node-0 from the rest-gateway service in docker-compose.yml.
+//
+// When symbol-bootstrap generates docker-compose.yml for a join-network node,
+// it assigns `hostname: api-node-0` to the rest-gateway service.  Docker then
+// writes "<rest-gateway-ip>  api-node-0" into the container's /etc/hosts, which
+// takes priority over Docker DNS.  As a result rest-gateway resolves "api-node-0"
+// to its OWN IP (172.20.0.25) instead of the real api-node-0 (172.20.0.4), and
+// every connection attempt fails with ECONNREFUSED.
+//
+// Fix: remove the hostname line so Docker DNS correctly resolves api-node-0.
+// ---------------------------------------------------------------------------
+function patchRestGatewayHostname(targetDir: string): void {
+  const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  try {
+    const content = fs.readFileSync(composePath, 'utf-8');
+    const lines = content.split('\n');
+    let inRestGateway = false;
+    const patchedLines: string[] = [];
+    let patched = false;
+
+    for (const line of lines) {
+      // Detect top-level service block transitions (4-space indent service names)
+      const serviceMatch = line.match(/^(\s{4})([\w-]+):\s*$/);
+      if (serviceMatch) {
+        inRestGateway = (serviceMatch[2] === 'rest-gateway');
+      }
+
+      // Skip `hostname: api-node-0` inside the rest-gateway service block
+      if (inRestGateway && /^\s+hostname:\s+api-node-0\s*$/.test(line)) {
+        broadcastLog(`[Patch] Removing hostname: api-node-0 from rest-gateway (prevents self-referential /etc/hosts)\n`);
+        patched = true;
+        continue;
+      }
+
+      patchedLines.push(line);
+    }
+
+    if (patched) {
+      fs.writeFileSync(composePath, patchedLines.join('\n'), 'utf-8');
+      broadcastLog(`[Patch] rest-gateway hostname patch applied ✓\n`);
+    } else {
+      broadcastLog(`[Patch] rest-gateway: hostname: api-node-0 not present (skipped)\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] Warning: could not patch rest-gateway hostname: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Promote networkProperties.chain.* / plugin.* values to the document root
 // of custom-preset.yml.
 //
@@ -5594,6 +5645,7 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 4b: ALWAYS force-patch docker-compose.yml images to match custom-preset.yml
       broadcastLog('[System] Step 4b – Patching docker-compose.yml images...\n');
       forceCorrectDockerComposeImages(TARGET_DIR);
+      patchRestGatewayHostname(TARGET_DIR);
 
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
