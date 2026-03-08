@@ -2763,6 +2763,71 @@ function patchRestGatewayHostname(targetDir: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Add stop_grace_period: 120s to api-node-0 and api-node-0-broker services in
+// docker-compose.yml.  symbol-bootstrap generates no stop_grace_period, so
+// Docker uses the default 10 s.  A node that is actively syncing thousands of
+// blocks cannot flush catapult state in 10 s → Docker sends SIGKILL → lock
+// files are not cleaned up.  120 s gives catapult enough time to shut down
+// gracefully so the next Start does not fail with stale lock files.
+// ---------------------------------------------------------------------------
+function patchStopGracePeriod(targetDir: string): void {
+  const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  try {
+    const content = fs.readFileSync(composePath, 'utf-8');
+    const lines = content.split('\n');
+    const targetServices = new Set(['api-node-0', 'api-node-0-broker']);
+    let currentService: string | null = null;
+    let serviceIndent = '';
+    const patchedLines: string[] = [];
+    let patchedCount = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Detect top-level service block (4-space indent service names)
+      const serviceMatch = line.match(/^(\s{4})([\w-]+):\s*$/);
+      if (serviceMatch) {
+        currentService = serviceMatch[2];
+        serviceIndent = serviceMatch[1];
+      }
+
+      patchedLines.push(line);
+
+      // After service name line, check next lines for existing stop_grace_period
+      if (currentService && targetServices.has(currentService) && serviceMatch) {
+        // Look ahead: does this service block already have stop_grace_period?
+        let alreadyPatched = false;
+        for (let j = i + 1; j < lines.length; j++) {
+          const ahead = lines[j];
+          // New service block starts → stop looking
+          if (/^\s{4}[\w-]+:\s*$/.test(ahead)) break;
+          if (/stop_grace_period/.test(ahead)) {
+            alreadyPatched = true;
+            break;
+          }
+        }
+        if (!alreadyPatched) {
+          patchedLines.push(`${serviceIndent}  stop_grace_period: 120s`);
+          patchedCount++;
+          broadcastLog(`[Patch] Added stop_grace_period: 120s to service: ${currentService}\n`);
+        }
+      }
+    }
+
+    if (patchedCount > 0) {
+      fs.writeFileSync(composePath, patchedLines.join('\n'), 'utf-8');
+      broadcastLog(`[Patch] stop_grace_period patch applied to ${patchedCount} service(s) ✓\n`);
+    } else {
+      broadcastLog(`[Patch] stop_grace_period: already present in all target services (skipped)\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] Warning: could not patch stop_grace_period: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Promote networkProperties.chain.* / plugin.* values to the document root
 // of custom-preset.yml.
 //
@@ -5646,6 +5711,7 @@ app.post('/api/commands/start', async (req, res) => {
       broadcastLog('[System] Step 4b – Patching docker-compose.yml images...\n');
       forceCorrectDockerComposeImages(TARGET_DIR);
       patchRestGatewayHostname(TARGET_DIR);
+      patchStopGracePeriod(TARGET_DIR);
 
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
@@ -6203,14 +6269,16 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
       broadcastLog('[Cleanup] compose file not found, skipping compose down.\n');
     }
 
-    // Stage 2: explicit docker stop by known container names (fallback)
-    broadcastLog('[Cleanup] Forcing stop on known container names...\n');
+    // Stage 2: force-remove containers by known names (fallback)
+    // Use `docker rm -f` instead of `docker stop` so that restart:unless-stopped
+    // cannot recreate a container (and its lock files) before we delete them.
+    broadcastLog('[Cleanup] Force-removing known containers...\n');
     for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
       try {
-        const out = execSyncCL(`docker stop ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' }).toString().trim();
-        broadcastLog(`[Cleanup] docker stop ${cname}: ${out || 'ok'}\n`);
+        const out = execSyncCL(`docker rm -f ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' }).toString().trim();
+        broadcastLog(`[Cleanup] docker rm -f ${cname}: ${out || 'ok'}\n`);
       } catch (e: any) {
-        broadcastLog(`[Cleanup] docker stop ${cname}: ${e.message}\n`);
+        broadcastLog(`[Cleanup] docker rm -f ${cname}: ${e.message}\n`);
       }
     }
 
