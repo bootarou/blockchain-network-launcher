@@ -2897,6 +2897,25 @@ function backfillMosaicIds(targetDir: string): void {
     return;
   }
 
+  // ── Join-network mode detection ─────────────────────────────────────────
+  // When the user applied a JoinNetwork config, the correct currencyMosaicId
+  // and harvestingMosaicId (from the source node) are already in
+  // custom-preset.yml under networkProperties.chain.  symbol-bootstrap config
+  // recomputes mosaic IDs locally from the join PC's own nemesisSigner key,
+  // which produces DIFFERENT IDs.  If we let backfillMosaicIds read from
+  // config-network.properties (bootstrap's local computation) and write back,
+  // the correct IDs are overwritten with wrong ones.
+  //
+  // Fix: in join-node mode, treat the IDs in custom-preset.yml as authoritative
+  // and use them to PATCH config-network.properties instead of the other way around.
+  let isJoinNode = false;
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      isJoinNode = !!(meta.sourceNodeUrl);
+    }
+  } catch { /* ignore */ }
+
   let currencyId = '';
   let harvestId = '';
 
@@ -2910,6 +2929,46 @@ function backfillMosaicIds(targetDir: string): void {
       userMosaicCount = nemesis.mosaics.length;
     }
   } catch { /* ignore */ }
+
+  if (isJoinNode) {
+    // ── Join mode: read authoritative IDs from custom-preset.yml ───────────
+    // These were fetched from the source node during JoinNetwork config apply.
+    // Patch config-network.properties to match — without touching custom-preset.yml.
+    const npJoin = (presetDoc?.networkProperties as Record<string, unknown> | undefined) ?? {};
+    const chainJoin = (npJoin.chain as Record<string, unknown> | undefined) ?? {};
+    const joinCurrency = String(chainJoin.currencyMosaicId ?? '').trim();
+    const joinHarvest  = String(chainJoin.harvestingMosaicId ?? '').trim();
+    if (joinCurrency || joinHarvest) {
+      broadcastLog(`[MosaicID] Join-node mode: using IDs from custom-preset.yml\n`);
+      broadcastLog(`[MosaicID]   currencyMosaicId  = ${joinCurrency || '(not set)'}\n`);
+      broadcastLog(`[MosaicID]   harvestingMosaicId = ${joinHarvest || '(not set)'}\n`);
+      const patchMosaicFile = (cfgPath: string): void => {
+        if (!fs.existsSync(cfgPath)) return;
+        let c = fs.readFileSync(cfgPath, 'utf-8');
+        if (joinCurrency) c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m,  `$1${joinCurrency}`);
+        if (joinHarvest)  c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${joinHarvest}`);
+        fs.writeFileSync(cfgPath, c, 'utf-8');
+        broadcastLog(`[MosaicID] Patched mosaic IDs in ${path.relative(targetDir, cfgPath)}\n`);
+      };
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        for (const configDir of ['server-config', 'broker-config']) {
+          patchMosaicFile(path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties'));
+        }
+      }
+      const gwDirJoin = path.join(targetDir, 'gateways');
+      if (fs.existsSync(gwDirJoin)) {
+        for (const gw of fs.readdirSync(gwDirJoin)) {
+          patchMosaicFile(path.join(gwDirJoin, gw, 'api-node-config', 'config-network.properties'));
+        }
+      }
+      broadcastLog('[MosaicID] ✅ config-network.properties patched with join-network mosaic IDs\n');
+    } else {
+      broadcastLog('[MosaicID] Join-node mode but no mosaic IDs in custom-preset.yml — falling through to bootstrap backfill\n');
+      isJoinNode = false;  // fall through to normal backfill logic below
+    }
+
+    if (isJoinNode) return;  // skip bootstrap backfill entirely in join mode
+  }
 
   for (const nodeName of fs.readdirSync(nodesDir)) {
     const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-network.properties');
@@ -5590,31 +5649,54 @@ app.post('/api/commands/start', async (req, res) => {
           const presetDocForHash = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
           const npForHash = presetDocForHash?.networkProperties as Record<string, unknown> | undefined;
           const hashForStep4f = (npForHash?.nemesisGenerationHashSeed as string | undefined)?.trim()?.toUpperCase();
-          if (hashForStep4f) {
-            const patchHash4f = (cfgPath: string): void => {
-              if (!fs.existsSync(cfgPath)) return;
-              let c = fs.readFileSync(cfgPath, 'utf-8');
+          // In join-node mode, also enforce correct mosaic IDs from custom-preset.yml.
+          // backfillMosaicIds (Step 1b) already patched nodes/ but gateways/ was not
+          // yet created at that point.  Re-apply here now that gateways/ exists.
+          const chainForStep4f = (npForHash?.chain as Record<string, unknown> | undefined) ?? {};
+          const currencyFor4f  = String(chainForStep4f.currencyMosaicId  ?? '').trim();
+          const harvestFor4f   = String(chainForStep4f.harvestingMosaicId ?? '').trim();
+          const patchCfg4f = (cfgPath: string): void => {
+            if (!fs.existsSync(cfgPath)) return;
+            let c = fs.readFileSync(cfgPath, 'utf-8');
+            let changed4f = false;
+            if (hashForStep4f) {
               const m4f = c.match(/^generationHashSeed\s*=\s*(\S+)/m);
-              if (!m4f) return;
-              const cur4f = m4f[1].trim().toUpperCase();
-              if (cur4f === hashForStep4f) return;
-              c = c.replace(/^(generationHashSeed\s*=\s*)\S+/m, `$1${hashForStep4f}`);
-              fs.writeFileSync(cfgPath, c, 'utf-8');
-              broadcastLog(`[GenerationHash] Step 4f patched ${path.relative(TARGET_DIR, cfgPath)}: ${cur4f} → ${hashForStep4f}\n`);
-            };
-            const nodesDir4f = path.join(TARGET_DIR, 'nodes');
-            if (fs.existsSync(nodesDir4f)) {
-              for (const nn of fs.readdirSync(nodesDir4f)) {
-                for (const cd of ['server-config', 'broker-config']) {
-                  patchHash4f(path.join(nodesDir4f, nn, cd, 'resources', 'config-network.properties'));
-                }
+              if (m4f && m4f[1].trim().toUpperCase() !== hashForStep4f) {
+                c = c.replace(/^(generationHashSeed\s*=\s*)\S+/m, `$1${hashForStep4f}`);
+                changed4f = true;
+                broadcastLog(`[Step4f] generationHashSeed patched in ${path.relative(TARGET_DIR, cfgPath)}\n`);
               }
             }
-            const gwDir4f = path.join(TARGET_DIR, 'gateways');
-            if (fs.existsSync(gwDir4f)) {
-              for (const gw of fs.readdirSync(gwDir4f)) {
-                patchHash4f(path.join(gwDir4f, gw, 'api-node-config', 'config-network.properties'));
+            if (currencyFor4f) {
+              const mc = c.match(/^currencyMosaicId\s*=\s*(\S+)/m);
+              if (mc && mc[1].trim() !== currencyFor4f) {
+                c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m, `$1${currencyFor4f}`);
+                changed4f = true;
+                broadcastLog(`[Step4f] currencyMosaicId patched in ${path.relative(TARGET_DIR, cfgPath)}\n`);
               }
+            }
+            if (harvestFor4f) {
+              const mh = c.match(/^harvestingMosaicId\s*=\s*(\S+)/m);
+              if (mh && mh[1].trim() !== harvestFor4f) {
+                c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${harvestFor4f}`);
+                changed4f = true;
+                broadcastLog(`[Step4f] harvestingMosaicId patched in ${path.relative(TARGET_DIR, cfgPath)}\n`);
+              }
+            }
+            if (changed4f) fs.writeFileSync(cfgPath, c, 'utf-8');
+          };
+          const nodesDir4f = path.join(TARGET_DIR, 'nodes');
+          if (fs.existsSync(nodesDir4f)) {
+            for (const nn of fs.readdirSync(nodesDir4f)) {
+              for (const cd of ['server-config', 'broker-config']) {
+                patchCfg4f(path.join(nodesDir4f, nn, cd, 'resources', 'config-network.properties'));
+              }
+            }
+          }
+          const gwDir4f = path.join(TARGET_DIR, 'gateways');
+          if (fs.existsSync(gwDir4f)) {
+            for (const gw of fs.readdirSync(gwDir4f)) {
+              patchCfg4f(path.join(gwDir4f, gw, 'api-node-config', 'config-network.properties'));
             }
           }
         } catch (e: any) {
