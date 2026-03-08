@@ -2729,21 +2729,61 @@ function patchRestGatewayHostname(targetDir: string): void {
 
   try {
     const content = fs.readFileSync(composePath, 'utf-8');
+
+    // ── Step 1: Parse with YAML to confirm hostname: api-node-0 exists in rest-gateway ──
+    // This avoids false positives from other services and correctly handles
+    // quoted/unquoted values regardless of YAML formatting.
+    let doc: any;
+    try {
+      doc = yaml.load(content);
+    } catch (parseErr: any) {
+      broadcastLog(`[Patch] Cannot parse docker-compose.yml: ${parseErr.message}\n`);
+      return;
+    }
+
+    const restGwHostname = String(doc?.services?.['rest-gateway']?.hostname ?? '');
+    broadcastLog(`[Patch] rest-gateway hostname in YAML: "${restGwHostname || 'not set'}"\n`);
+
+    if (restGwHostname !== 'api-node-0') {
+      broadcastLog('[Patch] rest-gateway: hostname: api-node-0 not present (skipped)\n');
+      return;
+    }
+
+    // ── Step 2: Determine actual service indent level from raw text ──
+    // symbol-bootstrap may generate 2-space or 4-space indented YAML.
+    // Detect dynamically by finding the "rest-gateway:" line.
     const lines = content.split('\n');
+    let serviceIndentLen = -1;
+    for (const line of lines) {
+      const m = line.match(/^(\s+)rest-gateway:\s*$/);
+      if (m) {
+        serviceIndentLen = m[1].length;
+        break;
+      }
+    }
+
+    if (serviceIndentLen === -1) {
+      broadcastLog('[Patch] Warning: could not locate rest-gateway: line in raw text\n');
+      return;
+    }
+    broadcastLog(`[Patch] Detected service indent: ${serviceIndentLen} spaces\n`);
+
+    // ── Step 3: Remove hostname: api-node-0 from within the rest-gateway block ──
+    // Use the detected indent level to identify service boundaries so we don't
+    // accidentally remove a hostname: key from another service.
+    const serviceLineRe = new RegExp(`^\\s{${serviceIndentLen}}[\\w-]+:\\s*$`);
     let inRestGateway = false;
     const patchedLines: string[] = [];
     let patched = false;
 
     for (const line of lines) {
-      // Detect top-level service block transitions (4-space indent service names)
-      const serviceMatch = line.match(/^(\s{4})([\w-]+):\s*$/);
-      if (serviceMatch) {
-        inRestGateway = (serviceMatch[2] === 'rest-gateway');
+      if (serviceLineRe.test(line)) {
+        inRestGateway = line.trimStart().startsWith('rest-gateway:');
       }
 
-      // Skip `hostname: api-node-0` inside the rest-gateway service block
-      if (inRestGateway && /^\s+hostname:\s+api-node-0\s*$/.test(line)) {
-        broadcastLog(`[Patch] Removing hostname: api-node-0 from rest-gateway (prevents self-referential /etc/hosts)\n`);
+      // Remove any `hostname: api-node-0` (quoted or unquoted) inside rest-gateway
+      if (inRestGateway && /^\s+hostname:\s*['"]?api-node-0['"]?\s*$/.test(line)) {
+        broadcastLog('[Patch] Removing hostname: api-node-0 from rest-gateway (prevents self-referential /etc/hosts)\n');
         patched = true;
         continue;
       }
@@ -2753,9 +2793,9 @@ function patchRestGatewayHostname(targetDir: string): void {
 
     if (patched) {
       fs.writeFileSync(composePath, patchedLines.join('\n'), 'utf-8');
-      broadcastLog(`[Patch] rest-gateway hostname patch applied ✓\n`);
+      broadcastLog('[Patch] rest-gateway hostname patch applied ✓\n');
     } else {
-      broadcastLog(`[Patch] rest-gateway: hostname: api-node-0 not present (skipped)\n`);
+      broadcastLog('[Patch] Warning: YAML confirmed hostname but line filter found no match — check docker-compose.yml manually\n');
     }
   } catch (e: any) {
     broadcastLog(`[Patch] Warning: could not patch rest-gateway hostname: ${e.message}\n`);
