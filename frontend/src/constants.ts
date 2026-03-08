@@ -307,7 +307,6 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'networkName', label: 'Network Name', type: 'text', description: 'ネットワーク名' },
       { key: 'nemesisGenerationHashSeed', label: 'Generation Hash Seed', type: 'text', description: 'ジェネシスブロックのSHA3-256ハッシュ' },
       { key: 'nemesisSignerPublicKey', label: 'Nemesis Signer Public Key', type: 'text', description: 'ジェネシスブロック署名者の公開鍵' },
-      { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法。public-key: 公開鍵で識別（同一サーバー上の複数ノードや動的IPに対応）。host: IPアドレスで識別（固定IP・シンプルな構成向け）', options: [{ value: 'public-key', label: 'public-key' }, { value: 'host', label: 'host' }] },
       { key: 'epochAdjustment', label: 'Epoch Adjustment', type: 'text', description: 'Unix epochからの秒数（末尾に s を付ける）。新規ネットワークは作成時刻に近い値を推奨', placeholder: `${_todayEpochSec}s` },
       { key: 'currencyMosaicId', label: 'Currency Mosaic ID', type: 'text', description: '基軸通貨のモザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
       { key: 'harvestingMosaicId', label: 'Harvesting Mosaic ID', type: 'text', description: 'ハーベスト用モザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
@@ -533,7 +532,9 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'Nodes',
     icon: 'nodes',
     description: 'ピア / API / 投票ノード設定',
-    fields: [],
+    fields: [
+      { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法。public-key: 公開鍵で識別（Docker NAT環境・同一サーバー上の複数ノードや動的IPに対応）。host: IPアドレスで識別（固定IP・シンプルな構成向け）。変更はノード再起動のみで反映（Full Reset 不要）。', options: [{ value: 'public-key', label: 'public-key' }, { value: 'host', label: 'host' }] },
+    ],
   },
   {
     id: 'gateways',

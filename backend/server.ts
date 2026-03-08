@@ -3785,6 +3785,25 @@ function patchLocalNetworks(targetDir: string) {
       let content = fs.readFileSync(configPath, 'utf-8');
       let changed = false;
 
+      // Both trustedHosts and localNetworks need the Docker subnet prefix.
+      //
+      // trustedHosts: REST gateway (172.20.0.x) connects to catapult without
+      //   a full peer auth handshake.  Required for REST to work.
+      //
+      // localNetworks: REST gateway shares the same TLS cert as api-node-0 (same
+      //   identity key by design).  When the REST gateway connects, catapult must
+      //   classify it as "@_local_" (self-connection) to avoid an "in use identity
+      //   key" rejection.  This ONLY works if the connection comes from a
+      //   localNetworks-classified range.
+      //
+      // Peer identity conflict (join-PC through Docker DNAT):
+      //   When an external peer connects via the host's mapped port (e.g. :7900),
+      //   Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
+      //   With nodeEqualityStrategy = host, BOTH the local node AND the external
+      //   peer are "@_local_" → "in use identity key" rejection.
+      //   Fix: nodeEqualityStrategy = public-key (patched in config-network.properties
+      //   below).  With public-key, the external peer's different public key makes
+      //   it a distinct node even when its host is "@_local_".
       for (const key of ['trustedHosts', 'localNetworks']) {
         const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
         const match = content.match(regex);
@@ -3792,32 +3811,15 @@ function patchLocalNetworks(targetDir: string) {
 
         let val = match[2].trim();
 
-        if (key === 'localNetworks') {
-          // localNetworks must NOT contain the Docker subnet prefix.
-          // Catapult treats every connection from a localNetworks range as
-          // "@_local_" (the node itself).  External peers arriving through
-          // Docker NAT (172.20.0.1) would be misclassified and rejected with
-          // "in use identity key".  Remove any previously-added prefix here.
-          // Also remove CIDR form in case an old run wrote that.
-          let newVal = val
-            .split(',')
-            .map(s => s.trim())
-            .filter(s => s !== prefix && s !== subnet && s !== '')
-            .join(', ');
-          if (newVal !== val) {
-            val = newVal;
-            changed = true;
-          }
-        } else {
-          // trustedHosts: replace CIDR notation → prefix, then ensure prefix present
-          if (val.includes(subnet)) {
-            val = val.replace(subnet, prefix);
-            changed = true;
-          }
-          if (!val.includes(prefix)) {
-            val = val ? `${val}, ${prefix}` : prefix;
-            changed = true;
-          }
+        // Replace CIDR notation → prefix notation (idempotent)
+        if (val.includes(subnet)) {
+          val = val.replace(subnet, prefix);
+          changed = true;
+        }
+        // Ensure the prefix is present
+        if (!val.includes(prefix)) {
+          val = val ? `${val}, ${prefix}` : prefix;
+          changed = true;
         }
 
         if (changed) {
@@ -3833,7 +3835,47 @@ function patchLocalNetworks(targetDir: string) {
     }
   }
   if (patched > 0) {
-    broadcastLog(`[Patch] ✅ localNetworks patched in ${patched} config files\n`);
+    broadcastLog(`[Patch] ✅ trustedHosts/localNetworks patched in ${patched} config files\n`);
+  }
+
+  // ── Patch nodeEqualityStrategy = public-key in config-network.properties ──
+  // When an external peer (join-PC) connects to this node via the host's mapped
+  // port, Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
+  // This IP is inside localNetworks, so catapult labels that connection "@_local_".
+  // With nodeEqualityStrategy = host (the default), catapult rejects the peer
+  // because the "@_local_" host slot is already occupied by the local node itself.
+  // With nodeEqualityStrategy = public-key, each peer is identified by its key,
+  // not by host.  The external peer has a different key from the local node, so
+  // it is accepted as a new peer even though its host resolves to "@_local_".
+  // (The REST gateway, which shares the same key as the local node, is still
+  // accepted because same key + same host = self-connection, no conflict.)
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    for (const configDir of ['server-config', 'broker-config']) {
+      const cfgNetPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties');
+      if (!fs.existsSync(cfgNetPath)) continue;
+      let c = fs.readFileSync(cfgNetPath, 'utf-8');
+      const m = c.match(/^(nodeEqualityStrategy\s*=\s*)(\S+)/m);
+      if (!m) continue;
+      if (m[2].trim() === 'public-key') continue;
+      c = c.replace(/^(nodeEqualityStrategy\s*=\s*)\S+/m, '$1public-key');
+      fs.writeFileSync(cfgNetPath, c, 'utf-8');
+      broadcastLog(`[Patch] nodeEqualityStrategy = public-key in ${nodeName}/${configDir}\n`);
+    }
+  }
+  // Also patch gateways (api-node-config copy)
+  const gwDirNES = path.join(targetDir, 'gateways');
+  if (fs.existsSync(gwDirNES)) {
+    for (const gw of fs.readdirSync(gwDirNES)) {
+      const cfgPath = path.join(gwDirNES, gw, 'api-node-config', 'config-network.properties');
+      if (!fs.existsSync(cfgPath)) continue;
+      let c = fs.readFileSync(cfgPath, 'utf-8');
+      const m = c.match(/^(nodeEqualityStrategy\s*=\s*)(\S+)/m);
+      if (!m) continue;
+      if (m[2].trim() === 'public-key') continue;
+      c = c.replace(/^(nodeEqualityStrategy\s*=\s*)\S+/m, '$1public-key');
+      fs.writeFileSync(cfgPath, c, 'utf-8');
+      broadcastLog(`[Patch] nodeEqualityStrategy = public-key in gateways/${gw}\n`);
+    }
   }
 }
 
@@ -5712,6 +5754,38 @@ app.post('/api/commands/start', async (req, res) => {
         } catch (e: any) {
           broadcastLog(`[GenerationHash] Step 4f warning: ${e.message}\n`);
         }
+      }
+
+      // Step 4g: Remove stale lock files that prevent node recovery from starting.
+      //   If a previous run was killed (SIGKILL, OOM, power loss, etc.) the
+      //   lock files are not cleaned up.  On the next start catapult-recovery
+      //   detects the existing lock and crashes with:
+      //     "could not acquire instance lock ./data/recovery.lock"
+      //   We proactively delete all *.lock files under nodes/*/data/ before
+      //   docker compose up so the node always starts cleanly.
+      try {
+        const nodesDir4g = path.join(TARGET_DIR, 'nodes');
+        if (fs.existsSync(nodesDir4g)) {
+          let lockCount = 0;
+          for (const nodeName of fs.readdirSync(nodesDir4g)) {
+            const dataDir = path.join(nodesDir4g, nodeName, 'data');
+            if (!fs.existsSync(dataDir)) continue;
+            for (const file of fs.readdirSync(dataDir)) {
+              if (file.endsWith('.lock')) {
+                fs.unlinkSync(path.join(dataDir, file));
+                lockCount++;
+                broadcastLog(`[Cleanup] Removed stale lock: ${nodeName}/data/${file}\n`);
+              }
+            }
+          }
+          if (lockCount === 0) {
+            broadcastLog('[Cleanup] Step 4g – No stale lock files found.\n');
+          } else {
+            broadcastLog(`[Cleanup] Step 4g – Removed ${lockCount} stale lock file(s).\n`);
+          }
+        }
+      } catch (e: any) {
+        broadcastLog(`[Cleanup] Step 4g – Lock cleanup warning (non-fatal): ${e.message}\n`);
       }
 
       // Step 5: symbol-bootstrap run (docker-compose up -d)
