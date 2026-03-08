@@ -5763,30 +5763,40 @@ app.post('/api/commands/start', async (req, res) => {
       //     containers looping.  If we only delete the lock files (without
       //     stopping the containers first), the restarting container may
       //     re-create the lock between our deletion and docker compose up.
-      //     The next docker compose up then finds a fresh lock → crash.
       //
-      //   Fix: stop all node containers first (docker compose down), THEN
-      //   delete any residual lock files, THEN docker compose up (Step 5).
-      //
-      //   If a previous run was killed (SIGKILL, OOM, power loss, etc.) the
-      //   lock files are not cleaned up.  On the next start catapult-recovery
-      //   detects the existing lock and crashes with:
-      //     "could not acquire instance lock ./data/recovery.lock"
+      //   Two-stage stop strategy:
+      //     1. docker compose down  (clean shutdown via compose file)
+      //     2. docker stop <known container names>  (fallback if compose fails
+      //        e.g. wrong path, permission error, or compose file not yet created)
       {
+        const { execSync: execSync4g } = await import('child_process');
         const composePath4g = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        broadcastLog('[System] Step 4g – Stopping existing node containers before lock cleanup...\n');
+
+        // Stage 1: compose down
         if (fs.existsSync(composePath4g)) {
-          broadcastLog('[System] Step 4g – Stopping existing node containers before lock cleanup...\n');
           try {
-            const { execSync } = await import('child_process');
-            execSync(`docker compose -f "${composePath4g}" down --remove-orphans 2>/dev/null || true`, {
-              timeout: 90_000,
-              stdio: 'pipe',
-            });
-            broadcastLog('[System] Step 4g – Node containers stopped.\n');
+            const out = execSync4g(
+              `docker compose -f "${composePath4g}" down --remove-orphans 2>&1 || true`,
+              { timeout: 90_000, stdio: 'pipe' },
+            ).toString().trim();
+            if (out) broadcastLog(`[System] Step 4g – compose down: ${out.slice(0, 200)}\n`);
+            broadcastLog('[System] Step 4g – compose down complete.\n');
           } catch (e: any) {
-            broadcastLog(`[Cleanup] Step 4g – compose down warning (non-fatal): ${e.message}\n`);
+            broadcastLog(`[Cleanup] Step 4g – compose down failed: ${e.message}\n`);
           }
+        } else {
+          broadcastLog('[Cleanup] Step 4g – compose file not found, skipping compose down.\n');
         }
+
+        // Stage 2: explicit docker stop by known container names (fallback)
+        const knownContainers = ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db'];
+        for (const cname of knownContainers) {
+          try {
+            execSync4g(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
+          } catch { /* ignore */ }
+        }
+        broadcastLog('[System] Step 4g – Container stop complete.\n');
       }
       try {
         const nodesDir4g = path.join(TARGET_DIR, 'nodes');
@@ -5797,20 +5807,26 @@ app.post('/api/commands/start', async (req, res) => {
             if (!fs.existsSync(dataDir)) continue;
             for (const file of fs.readdirSync(dataDir)) {
               if (file.endsWith('.lock')) {
-                fs.unlinkSync(path.join(dataDir, file));
-                lockCount++;
-                broadcastLog(`[Cleanup] Removed stale lock: ${nodeName}/data/${file}\n`);
+                const lockPath = path.join(dataDir, file);
+                fs.unlinkSync(lockPath);
+                // Verify the file is actually gone
+                if (fs.existsSync(lockPath)) {
+                  broadcastLog(`[Cleanup] ⚠️  Could NOT delete lock (still exists): ${nodeName}/data/${file}\n`);
+                } else {
+                  lockCount++;
+                  broadcastLog(`[Cleanup] Removed stale lock: ${nodeName}/data/${file}\n`);
+                }
               }
             }
           }
           if (lockCount === 0) {
-            broadcastLog('[Cleanup] Step 4g – No stale lock files found.\n');
+            broadcastLog('[Cleanup] Step 4g \u2013 No stale lock files found.\n');
           } else {
-            broadcastLog(`[Cleanup] Step 4g – Removed ${lockCount} stale lock file(s).\n`);
+            broadcastLog(`[Cleanup] Step 4g \u2013 Removed ${lockCount} stale lock file(s).\n`);
           }
         }
       } catch (e: any) {
-        broadcastLog(`[Cleanup] Step 4g – Lock cleanup warning (non-fatal): ${e.message}\n`);
+        broadcastLog(`[Cleanup] Step 4g \u2013 Lock cleanup warning (non-fatal): ${e.message}\n`);
       }
 
       // NOTE: databases/ is intentionally NOT cleared here automatically.
@@ -6115,24 +6131,40 @@ app.post('/api/commands/kill', async (_req, res) => {
 app.post('/api/commands/clearLocks', async (_req, res) => {
   try {
     broadcastLog('\n[Cleanup] ========== Clear Locks ==========\n');
+    const { execSync: execSyncCL } = require('child_process');
 
-    // Stop node containers so they cannot recreate the lock files
+    // Stage 1: docker compose down (runs inside symbol-manager → inner Docker daemon)
     const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
     if (fs.existsSync(composePath)) {
-      broadcastLog('[Cleanup] Stopping node containers...\n');
+      broadcastLog('[Cleanup] Stopping node containers via compose down...\n');
       try {
-        const { execSync } = require('child_process');
-        execSync(`docker compose -f "${composePath}" down --remove-orphans 2>/dev/null || true`, {
-          timeout: 90_000, stdio: 'pipe',
-        });
-        broadcastLog('[Cleanup] Node containers stopped.\n');
+        const out = execSyncCL(
+          `docker compose -f "${composePath}" down --remove-orphans 2>&1 || true`,
+          { timeout: 90_000, stdio: 'pipe' },
+        ).toString().trim();
+        if (out) broadcastLog(`[Cleanup] compose down: ${out.slice(0, 300)}\n`);
+        broadcastLog('[Cleanup] compose down complete.\n');
       } catch (e: any) {
-        broadcastLog(`[Cleanup] compose down warning: ${e.message}\n`);
+        broadcastLog(`[Cleanup] compose down failed: ${e.message}\n`);
+      }
+    } else {
+      broadcastLog('[Cleanup] compose file not found, skipping compose down.\n');
+    }
+
+    // Stage 2: explicit docker stop by known container names (fallback)
+    broadcastLog('[Cleanup] Forcing stop on known container names...\n');
+    for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+      try {
+        const out = execSyncCL(`docker stop ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' }).toString().trim();
+        broadcastLog(`[Cleanup] docker stop ${cname}: ${out || 'ok'}\n`);
+      } catch (e: any) {
+        broadcastLog(`[Cleanup] docker stop ${cname}: ${e.message}\n`);
       }
     }
 
-    // Delete *.lock files
+    // Delete *.lock files with post-deletion verification
     let lockCount = 0;
+    let lockFailed = 0;
     const nodesDir = path.join(TARGET_DIR, 'nodes');
     if (fs.existsSync(nodesDir)) {
       for (const nodeName of fs.readdirSync(nodesDir)) {
@@ -6140,9 +6172,20 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
         if (!fs.existsSync(dataDir)) continue;
         for (const file of fs.readdirSync(dataDir)) {
           if (file.endsWith('.lock')) {
-            fs.unlinkSync(path.join(dataDir, file));
-            lockCount++;
-            broadcastLog(`[Cleanup] Removed lock: ${nodeName}/data/${file}\n`);
+            const lockPath = path.join(dataDir, file);
+            try {
+              fs.unlinkSync(lockPath);
+              if (fs.existsSync(lockPath)) {
+                lockFailed++;
+                broadcastLog(`[Cleanup] ⚠️  STILL EXISTS after delete (held open?): ${nodeName}/data/${file}\n`);
+              } else {
+                lockCount++;
+                broadcastLog(`[Cleanup] ✅ Removed lock: ${nodeName}/data/${file}\n`);
+              }
+            } catch (e: any) {
+              lockFailed++;
+              broadcastLog(`[Cleanup] ❌ Cannot delete ${nodeName}/data/${file}: ${e.message}\n`);
+            }
           }
         }
       }
@@ -6155,12 +6198,17 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
       broadcastLog('[Cleanup] Cleared databases/ — MongoDB will be rebuilt by recovery.\n');
     }
 
-    broadcastLog(`[Cleanup] ✅ Done. Removed ${lockCount} lock file(s) + databases/.\n`);
-    broadcastLog('[Cleanup] ▶ You can now Start the node.\n');
+    if (lockFailed > 0) {
+      broadcastLog(`[Cleanup] ⚠️  ${lockFailed} lock file(s) could NOT be deleted.\n`);
+      broadcastLog('[Cleanup] A process may still be holding the file open. Check container status above.\n');
+    } else {
+      broadcastLog(`[Cleanup] ✅ Done. Removed ${lockCount} lock file(s) + databases/.\n`);
+      broadcastLog('[Cleanup] ▶ You can now Start the node.\n');
+    }
 
     networkStatus.state = 'stopped';
     broadcastStatus();
-    res.json({ success: true, locksRemoved: lockCount });
+    res.json({ success: true, locksRemoved: lockCount, locksFailed: lockFailed });
   } catch (err: any) {
     broadcastLog(`[Cleanup] ❌ clearLocks failed: ${err.message}\n`);
     res.status(500).json({ error: err.message });
