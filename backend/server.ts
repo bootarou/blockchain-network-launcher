@@ -6119,6 +6119,68 @@ app.post('/api/commands/kill', async (_req, res) => {
 });
 
 // =============================================================================
+// Clear stale lock files + MongoDB
+// =============================================================================
+
+// Clears *.lock files in nodes/*/data/ and optionally databases/.
+// The node containers must be stopped first (or this endpoint will
+// stop them automatically via compose down before deleting).
+app.post('/api/commands/clearLocks', async (_req, res) => {
+  try {
+    broadcastLog('\n[Cleanup] ========== Clear Locks ==========\n');
+
+    // Stop node containers so they cannot recreate the lock files
+    const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+    if (fs.existsSync(composePath)) {
+      broadcastLog('[Cleanup] Stopping node containers...\n');
+      try {
+        const { execSync } = require('child_process');
+        execSync(`docker compose -f "${composePath}" down --remove-orphans 2>/dev/null || true`, {
+          timeout: 90_000, stdio: 'pipe',
+        });
+        broadcastLog('[Cleanup] Node containers stopped.\n');
+      } catch (e: any) {
+        broadcastLog(`[Cleanup] compose down warning: ${e.message}\n`);
+      }
+    }
+
+    // Delete *.lock files
+    let lockCount = 0;
+    const nodesDir = path.join(TARGET_DIR, 'nodes');
+    if (fs.existsSync(nodesDir)) {
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        const dataDir = path.join(nodesDir, nodeName, 'data');
+        if (!fs.existsSync(dataDir)) continue;
+        for (const file of fs.readdirSync(dataDir)) {
+          if (file.endsWith('.lock')) {
+            fs.unlinkSync(path.join(dataDir, file));
+            lockCount++;
+            broadcastLog(`[Cleanup] Removed lock: ${nodeName}/data/${file}\n`);
+          }
+        }
+      }
+    }
+
+    // Clear databases/ so catapult-recovery rebuilds MongoDB from block files
+    const dbDir = path.join(TARGET_DIR, 'databases');
+    if (fs.existsSync(dbDir)) {
+      fs.rmSync(dbDir, { recursive: true, force: true });
+      broadcastLog('[Cleanup] Cleared databases/ — MongoDB will be rebuilt by recovery.\n');
+    }
+
+    broadcastLog(`[Cleanup] ✅ Done. Removed ${lockCount} lock file(s) + databases/.\n`);
+    broadcastLog('[Cleanup] ▶ You can now Start the node.\n');
+
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.json({ success: true, locksRemoved: lockCount });
+  } catch (err: any) {
+    broadcastLog(`[Cleanup] ❌ clearLocks failed: ${err.message}\n`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // Join Network — fetch network properties from a remote node
 // =============================================================================
 

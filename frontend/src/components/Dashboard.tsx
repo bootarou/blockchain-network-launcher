@@ -19,6 +19,7 @@ import {
   Info,
   ChevronDown,
   ChevronUp,
+  Unlock,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { configToYaml, yamlToConfig } from '../lib/utils';
@@ -209,6 +210,12 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
   const handleFullReset = () => {
     if (confirm(t('dashboard.confirmFullReset'))) {
       runCommand('fullReset');
+    }
+  };
+
+  const handleClearLocks = () => {
+    if (confirm(t('dashboard.confirmClearLocks'))) {
+      runCommand('clearLocks');
     }
   };
 
@@ -580,6 +587,16 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             <Trash2 className="w-4 h-4" />
             {t('dashboard.fullReset')}
             <StatusIcon cmd="fullReset" />
+          </button>
+
+          <button
+            onClick={handleClearLocks}
+            disabled={cmdStatus.clearLocks === 'running'}
+            className="flex items-center gap-2 px-5 py-2.5 bg-amber-900 hover:bg-amber-800 disabled:opacity-50 text-amber-200 rounded-lg font-medium transition-colors border border-amber-700"
+          >
+            <Unlock className="w-4 h-4" />
+            {t('dashboard.clearLocks')}
+            <StatusIcon cmd="clearLocks" />
           </button>
         </div>
 

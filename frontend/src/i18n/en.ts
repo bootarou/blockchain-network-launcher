@@ -36,6 +36,8 @@ export const en: TranslationDict = {
   'dashboard.healthCheck': 'Health Check',
   'dashboard.reset': 'Reset',
   'dashboard.fullReset': 'Full Reset',
+  'dashboard.clearLocks': 'Clear Locks',
+  'dashboard.confirmClearLocks': '⚠️ Clear Locks: Stops node containers, removes lock files and databases/.\n\nMongoDB will be automatically rebuilt from block files on next start.\nContinue?',
   'dashboard.exportYaml': 'Export YAML',
   'dashboard.exportJson': 'Export JSON',
   'dashboard.import': 'Import (JSON / YAML)',
