@@ -2303,6 +2303,16 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
         },
       },
     ],
+    // nodeEqualityStrategy belongs ONLY in config-network.properties.
+    // In some bootstrap versions the broker config template accidentally puts
+    // it in config-node.properties too, which makes the broker binary crash
+    // with "configuration bag has unexpected number of properties".
+    removeProps: [
+      {
+        file: 'config-node.properties',
+        keys: ['nodeEqualityStrategy'],
+      },
+    ],
   },
   {
     id: 'v2',
