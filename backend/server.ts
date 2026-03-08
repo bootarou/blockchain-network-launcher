@@ -6191,18 +6191,18 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
       }
     }
 
-    // Clear databases/ so catapult-recovery rebuilds MongoDB from block files
-    const dbDir = path.join(TARGET_DIR, 'databases');
-    if (fs.existsSync(dbDir)) {
-      fs.rmSync(dbDir, { recursive: true, force: true });
-      broadcastLog('[Cleanup] Cleared databases/ — MongoDB will be rebuilt by recovery.\n');
-    }
+    // NOTE: Do NOT clear databases/ here.
+    // catapult.recovery crashes with SIGABRT when it sees an empty MongoDB
+    // alongside existing block files (nodes/*/data/00000/ etc.).
+    // That SIGABRT leaves recovery.lock behind → next start fails with lock
+    // conflict again.  databases/ is only safe to remove as part of a Full
+    // Reset (which also wipes block files), never in isolation.
 
     if (lockFailed > 0) {
       broadcastLog(`[Cleanup] ⚠️  ${lockFailed} lock file(s) could NOT be deleted.\n`);
       broadcastLog('[Cleanup] A process may still be holding the file open. Check container status above.\n');
     } else {
-      broadcastLog(`[Cleanup] ✅ Done. Removed ${lockCount} lock file(s) + databases/.\n`);
+      broadcastLog(`[Cleanup] ✅ Done. Removed ${lockCount} lock file(s).\n`);
       broadcastLog('[Cleanup] ▶ You can now Start the node.\n');
     }
 
