@@ -39,7 +39,7 @@ interface DashboardProps {
 
 export function Dashboard({ config, onConfigImport }: DashboardProps) {
   const { t } = useTranslation();
-  const [addresses, setAddresses] = useState<unknown>(null);
+  const [addresses, setAddresses] = useState<Record<string, unknown> | null>(null);
   const [password, setPassword] = useState('');
   const [cmdStatus, setCmdStatus] = useState<Record<string, CommandStatus>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
