@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+frontend/.vite/
 
 # Environment (user-specific settings — copy .env.example to .env)
 .env
@@ -22,6 +23,14 @@ body.json
 test-body.json
 test_start.json
 tmp-mids.json
+cmd-body.json
+start-body.json
+init-body.json
+empty_peers.json
+join_peer.json
+fix_proof_heights.py
+rebuild_hashes.py
+rebuild_hashes_gen.py
 shared/check_txs*.py
 shared/check_mosaic_id.py
 shared/compute_mosaic_from_nonce.js
