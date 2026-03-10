@@ -5796,7 +5796,7 @@ app.post('/api/restore', (req, res) => {
 
 app.post('/api/commands/start', async (req, res) => {
   try {
-    const { password } = req.body;
+    const { password, mode: requestedMode } = req.body as { password?: string; mode?: string };
     if (!password) {
       return res.status(400).json({ error: 'Network encryption password is required.' });
     }
@@ -5829,63 +5829,183 @@ app.post('/api/commands/start', async (req, res) => {
     broadcastLog(`[System] Base preset: ${basePreset}, Assembly: ${assembly}\n`);
 
     // ---------------------------------------------------------------
-    // Diagnostic: log TARGET_DIR and verify it is consistent
+    // Determine start mode
+    //
+    //   restart  – Node was previously started and data is intact.
+    //              Just do: symbol-bootstrap stop → symbol-bootstrap run.
+    //              No config, no compose, no cleanup.
+    //
+    //   full     – First-time start, or config changed, or post-restore.
+    //              Full sequence: config → compose → run (with patches).
+    //
+    // The caller can force a mode via `mode` body parameter.
+    // Otherwise we auto-detect:
+    //   - dataExists AND generatedPresetExists AND composeExists → "restart"
+    //   - otherwise → "full"
     // ---------------------------------------------------------------
-    broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
-    broadcastLog(`[System] SHARED_DIR = ${SHARED_DIR}\n`);
-    broadcastLog(`[System] TARGET_DIR exists: ${fs.existsSync(TARGET_DIR)}\n`);
-    {
-      const targetEnv = process.env.TARGET_DIR ?? '(not set)';
-      broadcastLog(`[System] TARGET_DIR env var = ${targetEnv}\n`);
+    const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
+    const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
+    const composeExists = fs.existsSync(path.join(TARGET_DIR, 'docker', 'docker-compose.yml'));
+
+    let startMode: 'restart' | 'full';
+    if (requestedMode === 'full' || requestedMode === 'restart') {
+      startMode = requestedMode;
+    } else {
+      // Auto-detect
+      startMode = (dataExists && generatedPresetExists && composeExists) ? 'restart' : 'full';
     }
 
-    // ---------------------------------------------------------------
-    // We split "start" into  config → patch → compose → run
-    // because symbol-bootstrap 1.1.10 does NOT generate all properties
-    // that catapult v1.0.3.9 expects in [cache_database] of config-node.properties.
-    // (Missing: maxLogFiles, maxLogFileSize)
-    //
-    // "start" internally does config → compose → run, but we need to
-    // inject a patch step between config and compose.
-    // ---------------------------------------------------------------
+    broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
+    broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists})\n`);
     const startSequence = async () => {
+
+      // =================================================================
+      // RESTART mode: simple stop → run, no config/compose/cleanup
+      //
+      //   This is the safe path for Stop → Start.  All data files
+      //   (statedb, spool, databases, block data) are left intact.
+      //   symbol-bootstrap stop ensures a clean shutdown,
+      //   symbol-bootstrap run brings everything back up.
+      // =================================================================
+      if (startMode === 'restart') {
+        broadcastLog('[System] ▶ Restart mode — using stop + run (no config/compose/cleanup)\n');
+
+        // 1. Stop any running containers cleanly
+        broadcastLog('[System] Step 1/3 – Stopping containers (symbol-bootstrap stop)...\n');
+        try {
+          await runBootstrapCommand('stop', [], {
+            stateWhileRunning: 'starting',
+            stateOnSuccess: 'starting',
+          });
+        } catch (e: any) {
+          broadcastLog(`[System] Stop warning (non-fatal): ${e.message}\n`);
+        }
+
+        // 2. Minimal lock cleanup — only needed if stop didn't shut down cleanly.
+        //    We do NOT touch spool, statedb, databases, state, etc.
+        {
+          const nodesDirRestart = path.join(TARGET_DIR, 'nodes');
+          if (fs.existsSync(nodesDirRestart)) {
+            for (const nodeName of fs.readdirSync(nodesDirRestart)) {
+              const dataDir = path.join(nodesDirRestart, nodeName, 'data');
+              if (!fs.existsSync(dataDir)) continue;
+
+              // Remove lock files (safety net after unclean stop)
+              for (const file of fs.readdirSync(dataDir)) {
+                if (file.endsWith('.lock')) {
+                  try {
+                    fs.unlinkSync(path.join(dataDir, file));
+                    broadcastLog(`[Cleanup] Removed lock: ${nodeName}/data/${file}\n`);
+                  } catch { /* ignore */ }
+                }
+              }
+              // Remove recovery flag
+              const recFlag = path.join(dataDir, 'server-recovery.started');
+              if (fs.existsSync(recFlag)) {
+                try { fs.unlinkSync(recFlag); } catch { /* ignore */ }
+                broadcastLog(`[Cleanup] Removed recovery flag: ${nodeName}\n`);
+              }
+
+              // Fix index.dat — if a crash left an unindexed block file,
+              // update index.dat so catapult sees cache == storage height.
+              const indexDatPath = path.join(dataDir, 'index.dat');
+              const blockDir = path.join(dataDir, '00000');
+              if (fs.existsSync(indexDatPath) && fs.existsSync(blockDir)) {
+                try {
+                  const indexBuf = fs.readFileSync(indexDatPath);
+                  const chainHeight = Number(indexBuf.readBigUInt64LE(0));
+                  let maxHeight = chainHeight;
+                  while (fs.existsSync(path.join(blockDir, String(maxHeight + 1).padStart(5, '0') + '.dat'))) {
+                    maxHeight++;
+                  }
+                  if (maxHeight > chainHeight) {
+                    const newBuf = Buffer.alloc(8);
+                    newBuf.writeBigUInt64LE(BigInt(maxHeight), 0);
+                    fs.writeFileSync(indexDatPath, newBuf);
+                    broadcastLog(`[Cleanup] index.dat updated: height ${chainHeight} → ${maxHeight}\n`);
+                  }
+                } catch (e: any) {
+                  broadcastLog(`[Cleanup] ⚠️ index.dat fix failed: ${e.message}\n`);
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Re-apply rest-gateway hostname patch (in case compose file was regenerated)
+        patchRestGatewayHostname(TARGET_DIR);
+
+        // 4. Run containers
+        broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
+        await runBootstrapCommand('run', ['-d'], {
+          stateWhileRunning: 'starting',
+          stateOnSuccess: 'running',
+        });
+
+        // 5. Re-apply rest-gateway patch + recreate (run may overwrite compose)
+        {
+          const composePath5b = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+          patchRestGatewayHostname(TARGET_DIR);
+          if (fs.existsSync(composePath5b)) {
+            try {
+              const { execSync: execSync5b } = await import('child_process');
+              execSync5b(
+                `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
+                { timeout: 60_000, stdio: 'pipe' },
+              );
+              broadcastLog('[System] rest-gateway recreated ✓\n');
+            } catch { /* non-fatal */ }
+          }
+        }
+
+        // 6. Health check
+        broadcastLog('\n[System] Step 3/3 – Waiting for node health...\n');
+        try {
+          const { execSync } = await import('child_process');
+          execSync('docker network connect docker_default symbol-manager 2>/dev/null || true');
+          NODE_REST_HOST = 'rest-gateway';
+          broadcastLog('[System] Joined docker_default network — REST host set to rest-gateway.\n');
+        } catch { /* already connected */ }
+        broadcastLog(`[System] Polling http://${NODE_REST_HOST}:${NODE_REST_PORT}/node/health ...\n`);
+        await waitForNodeHealth(90);
+
+        // Auto-restart Explorer if needed
+        if (isExplorerRunning() || explorerBuildStatus === 'built') {
+          try {
+            if (isExplorerRunning()) {
+              broadcastLog('[Explorer] ♻️ ノード再起動を検出 — Explorerを自動再起動します...\n');
+              const ns = readExplorerNamespaceFromPreset();
+              const prevName = explorerNetworkName;
+              const prevExtHost = explorerExternalHost;
+              await startExplorerContainer(ns.namespaceName, ns.divisibility, 8090, prevName, prevExtHost);
+            }
+          } catch (e: any) {
+            broadcastLog(`[Explorer] ⚠️ 自動再起動に失敗: ${e.message}\n`);
+          }
+        }
+
+        return;  // Done — skip the full sequence below
+      }
+
+      // =================================================================
+      // FULL mode: config → patch → compose → run
+      //
+      //   Used for first-time start, config changes, post-restore, etc.
+      //   This is the original full sequence.
+      // =================================================================
+      broadcastLog('[System] ▶ Full mode — running config → compose → run\n');
+
       // ---------------------------------------------------------------
-      // Pre-Step: Stop lingering containers & clean runtime debris
+      // Pre-Step: Stop lingering containers & remove lock files
       //
-      //   catapult uses file-existence–based locking (server.lock,
-      //   broker.lock, recovery.lock) and a flag file
-      //   (server-recovery.started) to coordinate recovery between
-      //   the server and broker processes.
-      //
-      //   If a previous run crashed or recovery hung (e.g. stuck at
-      //   "repairing messages"), stale runtime artifacts remain and
-      //   cause cascading failures on the next start:
-      //
-      //     *.lock              → "could not acquire instance lock"
-      //     server-recovery.started → broker loops forever:
-      //                             "Waiting for server recovery to finish"
-      //     spool/              → corrupted queue causes recovery hang at
-      //                           "repairing messages" (MongoDB reconcile)
-      //     databases/ (MongoDB)→ stale MongoDB data that doesn't match
-      //                           the block/state data causes recovery to
-      //                           hang forever during message repair
-      //
-      //   Items we MUST preserve (created by nemgen, cannot be rebuilt
-      //   by recovery alone):
-      //     data/00000/*        → nemesis block + statement data
-      //     data/statedb/       → RocksDB state from nemesis generation
-      //     data/index.dat      → block index
-      //     data/proof.index.dat→ finalization proof index
-      //
-      //   Safe to delete (transient / rebuilt automatically):
-      //     *.lock              → file-based locks
-      //     server-recovery.started → recovery coordination flag
-      //     spool/              → server↔broker message queues
-      //     importance/wip      → work-in-progress importance data
-      //     databases/          → MongoDB (rebuilt by broker from spool)
+      //   Full mode is used for first-time start (empty TARGET_DIR),
+      //   post-restore, or forced reconfiguration.  Data files are
+      //   either absent or already cleaned by the caller.
+      //   We only need to stop any lingering containers and remove
+      //   stale lock/recovery files so catapult starts cleanly.
       // ---------------------------------------------------------------
       {
-        broadcastLog('[System] Pre-Step – Stopping lingering containers & cleaning runtime debris...\n');
+        broadcastLog('[System] Pre-Step – Stopping lingering containers...\n');
         const { execSync: execSyncPre } = await import('child_process');
 
         // 1. docker compose down (if compose file exists)
@@ -5909,90 +6029,29 @@ app.post('/api/commands/start', async (req, res) => {
           } catch { /* ignore */ }
         }
 
-        // 3. Selective cleanup of each node's data/ directory
-        //    We MUST preserve statedb/, 00000/ (block data), index.dat,
-        //    proof.index.dat — these are created by nemgen and cannot be
-        //    rebuilt by recovery alone.
+        // 3. Remove lock files and recovery flags from any existing nodes
         const nodesDirPre = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDirPre)) {
           for (const nodeName of fs.readdirSync(nodesDirPre)) {
             const dataDir = path.join(nodesDirPre, nodeName, 'data');
             if (!fs.existsSync(dataDir)) continue;
-
-            // 3a. Remove ALL lock files
             for (const file of fs.readdirSync(dataDir)) {
               if (file.endsWith('.lock')) {
                 try {
                   fs.unlinkSync(path.join(dataDir, file));
-                  broadcastLog(`[Cleanup] Pre-Step – Removed lock: ${nodeName}/data/${file}\n`);
-                } catch (e: any) {
-                  broadcastLog(`[Cleanup] Pre-Step – ⚠️ Error deleting ${file}: ${e.message}\n`);
-                }
+                  broadcastLog(`[Cleanup] Removed lock: ${nodeName}/data/${file}\n`);
+                } catch { /* ignore */ }
               }
             }
-
-            // 3b. Remove server-recovery.started flag
             const recoveryFlag = path.join(dataDir, 'server-recovery.started');
             if (fs.existsSync(recoveryFlag)) {
-              try {
-                fs.unlinkSync(recoveryFlag);
-                broadcastLog(`[Cleanup] Pre-Step – Removed recovery flag: ${nodeName}/data/server-recovery.started\n`);
-              } catch (e: any) {
-                broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not remove recovery flag: ${e.message}\n`);
-              }
+              try { fs.unlinkSync(recoveryFlag); } catch { /* ignore */ }
+              broadcastLog(`[Cleanup] Removed recovery flag: ${nodeName}\n`);
             }
-
-            // 3c. Remove spool/ — transient message queues between server ↔ broker.
-            //     Corrupted spool is the #1 cause of "repairing messages" hangs.
-            const spoolDir = path.join(dataDir, 'spool');
-            if (fs.existsSync(spoolDir)) {
-              try {
-                fs.rmSync(spoolDir, { recursive: true, force: true });
-                broadcastLog(`[Cleanup] Pre-Step – Removed spool/: ${nodeName}/data/spool\n`);
-              } catch (e: any) {
-                broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not remove spool: ${e.message}\n`);
-              }
-            }
-
-            // 3d. Remove importance/wip — work-in-progress importance calcs.
-            //     Stale wip data can cause recovery to miscalculate.
-            const wipDir = path.join(dataDir, 'importance', 'wip');
-            if (fs.existsSync(wipDir)) {
-              try {
-                fs.rmSync(wipDir, { recursive: true, force: true });
-                broadcastLog(`[Cleanup] Pre-Step – Removed importance/wip: ${nodeName}/data/importance/wip\n`);
-              } catch (e: any) {
-                broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not remove importance/wip: ${e.message}\n`);
-              }
-            }
-
-            broadcastLog(`[Cleanup] Pre-Step – ✅ ${nodeName}/data/ cleaned (statedb + blocks preserved).\n`);
-          }
-        } else {
-          broadcastLog('[Cleanup] Pre-Step – nodes/ directory not found (first run). ✓\n');
-        }
-
-        // 4. Wipe databases/ (MongoDB data)
-        //
-        //   Stale MongoDB data is the primary cause of the "repairing messages"
-        //   hang in catapult.recovery.  Recovery tries to reconcile spool
-        //   messages with MongoDB; if MongoDB is out of sync with the actual
-        //   block/state data, the reconciliation never finishes.
-        //
-        //   Deleting databases/ is safe: the broker process rebuilds MongoDB
-        //   from scratch on startup via spool messages from the server.
-        //   For a genesis-only chain this takes < 1 second.
-        const databasesDir = path.join(TARGET_DIR, 'databases');
-        if (fs.existsSync(databasesDir)) {
-          try {
-            fs.rmSync(databasesDir, { recursive: true, force: true });
-            broadcastLog('[Cleanup] Pre-Step – ✅ databases/ wiped (MongoDB will rebuild).\n');
-          } catch (e: any) {
-            broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not wipe databases/: ${e.message}\n`);
           }
         }
 
-        broadcastLog('[Cleanup] Pre-Step – Runtime data cleanup complete. ✓\n');
+        broadcastLog('[Cleanup] Pre-Step complete. ✓\n');
       }
 
       // Step 0: Resolve catapult version
@@ -6328,9 +6387,24 @@ app.post('/api/commands/start', async (req, res) => {
             const dataHasBlocks = fs.existsSync(path.join(nodeDataDir00, '00001.dat'));
             if (dataHasBlocks) {
               for (const f of seedFiles) {
+                // Skip overwriting hashes.dat if the existing one is larger —
+                // it contains hashes for blocks generated beyond genesis.
+                // Overwriting with the shorter seed version causes:
+                //   "couldn't seek past end of file ./data/00000/hashes.dat"
+                if (f === 'hashes.dat') {
+                  const existingPath = path.join(nodeDataDir00, f);
+                  if (fs.existsSync(existingPath)) {
+                    const existingSize = fs.statSync(existingPath).size;
+                    const seedSize = fs.statSync(path.join(nemSeedDir00, f)).size;
+                    if (existingSize >= seedSize) {
+                      broadcastLog(`[System]   Skipping hashes.dat (existing ${existingSize}B ≥ seed ${seedSize}B)\n`);
+                      continue;
+                    }
+                  }
+                }
                 fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeDataDir00, f));
               }
-              broadcastLog(`[System] ✅ ${nodeName}/data/00000/ overwritten (upgrade mode)\n`);
+              broadcastLog(`[System] ✅ ${nodeName}/data/00000/ updated (upgrade mode)\n`);
             }
 
             // Remove stale lock files (prevents false recovery-mode on startup)
@@ -6417,101 +6491,44 @@ app.post('/api/commands/start', async (req, res) => {
         }
       }
 
-      // Step 4g: Stop existing node containers, then remove stale lock files.
-      //
-      //   Race condition without this step:
-      //     Docker's "restart: unless-stopped" policy keeps the broker/server
-      //     containers looping.  If we only delete the lock files (without
-      //     stopping the containers first), the restarting container may
-      //     re-create the lock between our deletion and docker compose up.
-      //
-      //   Two-stage stop strategy:
-      //     1. docker compose down  (clean shutdown via compose file)
-      //     2. docker stop <known container names>  (fallback if compose fails
-      //        e.g. wrong path, permission error, or compose file not yet created)
+      // Step 4g: Stop existing node containers, then remove stale lock files
+      //   before running.  This is a safety net for the full mode.
       {
         const { execSync: execSync4g } = await import('child_process');
         const composePath4g = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
-        broadcastLog('[System] Step 4g – Stopping existing node containers before lock cleanup...\n');
-
-        // Stage 1: compose down
+        broadcastLog('[System] Step 4g – Stopping containers before run...\n');
         if (fs.existsSync(composePath4g)) {
           try {
-            const out = execSync4g(
+            execSync4g(
               `docker compose -f "${composePath4g}" down --remove-orphans 2>&1 || true`,
               { timeout: 90_000, stdio: 'pipe' },
-            ).toString().trim();
-            if (out) broadcastLog(`[System] Step 4g – compose down: ${out.slice(0, 200)}\n`);
-            broadcastLog('[System] Step 4g – compose down complete.\n');
-          } catch (e: any) {
-            broadcastLog(`[Cleanup] Step 4g – compose down failed: ${e.message}\n`);
-          }
-        } else {
-          broadcastLog('[Cleanup] Step 4g – compose file not found, skipping compose down.\n');
+            );
+          } catch { /* ignore */ }
         }
-
-        // Stage 2: explicit docker stop by known container names (fallback)
-        const knownContainers = ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db'];
-        for (const cname of knownContainers) {
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
           try {
             execSync4g(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
           } catch { /* ignore */ }
         }
-        broadcastLog('[System] Step 4g – Container stop complete.\n');
-      }
-      try {
+        // Remove locks + recovery flags
         const nodesDir4g = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDir4g)) {
-          let lockCount = 0;
           for (const nodeName of fs.readdirSync(nodesDir4g)) {
             const dataDir = path.join(nodesDir4g, nodeName, 'data');
             if (!fs.existsSync(dataDir)) continue;
-            // Remove lock files
             for (const file of fs.readdirSync(dataDir)) {
               if (file.endsWith('.lock')) {
-                const lockPath = path.join(dataDir, file);
-                fs.unlinkSync(lockPath);
-                // Verify the file is actually gone
-                if (fs.existsSync(lockPath)) {
-                  broadcastLog(`[Cleanup] ⚠️  Could NOT delete lock (still exists): ${nodeName}/data/${file}\n`);
-                } else {
-                  lockCount++;
-                  broadcastLog(`[Cleanup] Removed stale lock: ${nodeName}/data/${file}\n`);
-                }
+                try { fs.unlinkSync(path.join(dataDir, file)); } catch { /* ignore */ }
               }
             }
-            // Remove recovery flag to prevent broker from waiting forever
-            const recoveryFlag = path.join(dataDir, 'server-recovery.started');
-            if (fs.existsSync(recoveryFlag)) {
-              fs.unlinkSync(recoveryFlag);
-              broadcastLog(`[Cleanup] Removed recovery flag: ${nodeName}/data/server-recovery.started\n`);
+            const recFlag4g = path.join(dataDir, 'server-recovery.started');
+            if (fs.existsSync(recFlag4g)) {
+              try { fs.unlinkSync(recFlag4g); } catch { /* ignore */ }
             }
-            // Clean spool directory — catapult recovery scans ALL spool indices
-            // sequentially from 0 to index.dat value.  If the index is very large
-            // (e.g. 1M+) from a previous run, recovery takes 10+ minutes CPU-bound.
-            // Wiping spool before the first run ensures fast recovery.
-            const spoolDir = path.join(dataDir, 'spool');
-            if (fs.existsSync(spoolDir)) {
-              fs.rmSync(spoolDir, { recursive: true, force: true });
-              broadcastLog(`[Cleanup] Removed spool directory: ${nodeName}/data/spool\n`);
-            }
-          }
-          if (lockCount === 0) {
-            broadcastLog('[Cleanup] Step 4g \u2013 No stale lock files found.\n');
-          } else {
-            broadcastLog(`[Cleanup] Step 4g \u2013 Removed ${lockCount} stale lock file(s).\n`);
           }
         }
-      } catch (e: any) {
-        broadcastLog(`[Cleanup] Step 4g \u2013 Lock cleanup warning (non-fatal): ${e.message}\n`);
+        broadcastLog('[System] Step 4g – Ready for run.\n');
       }
-
-      // NOTE: databases/ and node data/ are now wiped by Pre-Step at the
-      //   beginning of the start sequence.  This guarantees a clean state
-      //   every time, avoiding the "repairing messages" hang and SIGABRT
-      //   crashes caused by stale MongoDB ↔ block data mismatch.
-      //   Step 4e re-installs the genesis block, and catapult rebuilds
-      //   MongoDB from scratch on its first healthy startup.
 
       // Step 5: symbol-bootstrap run (docker-compose up -d)
       broadcastLog('[System] Step 5/6 – Starting docker containers...\n');
