@@ -309,6 +309,20 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
       return rest;
     });
     doc.gateways = cleanGateways;
+  } else if (flat.nodes && Array.isArray(flat.nodes)) {
+    // Auto-fix: assembly-dual.yml defaults to apiNodeName='node'. If the first
+    // node is renamed (e.g. to 'api-node-0'), the gateway config still references
+    // 'node' and bootstrap fails trying to scan nodes/node/server-config/resources.
+    // Override the gateway to reference the actual node name.
+    const firstNodeName = (flat.nodes[0] as Record<string, unknown>)?.name as string | undefined;
+    if (firstNodeName && firstNodeName !== 'node') {
+      doc.gateways = [{
+        name: 'rest-gateway',
+        apiNodeName: firstNodeName,
+        apiNodeHost: firstNodeName,
+        apiNodeBrokerHost: 'broker',
+      }];
+    }
   }
 
   // ── networkProperties (nested structure) ──
@@ -5751,6 +5765,78 @@ app.post('/api/commands/start', async (req, res) => {
     // inject a patch step between config and compose.
     // ---------------------------------------------------------------
     const startSequence = async () => {
+      // ---------------------------------------------------------------
+      // Pre-Step: Stop lingering containers & remove ALL lock files
+      //
+      //   catapult uses file-existence–based locking (server.lock,
+      //   broker.lock, recovery.lock).  If a previous run crashed,
+      //   Docker's restart policy keeps the containers looping with
+      //   stale locks, producing:
+      //     "could not acquire instance lock ./data/recovery.lock"
+      //   Cleaning locks at the VERY START of the sequence guarantees
+      //   a fresh state regardless of how the previous session ended.
+      //   This is safe to run every time — if no locks exist it's a
+      //   no-op.
+      // ---------------------------------------------------------------
+      {
+        broadcastLog('[System] Pre-Step – Stopping lingering containers & cleaning lock files...\n');
+        const { execSync: execSyncPre } = await import('child_process');
+
+        // 1. docker compose down (if compose file exists)
+        const composePathPre = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        if (fs.existsSync(composePathPre)) {
+          try {
+            execSyncPre(
+              `docker compose -f "${composePathPre}" down --remove-orphans 2>&1 || true`,
+              { timeout: 90_000, stdio: 'pipe' },
+            );
+            broadcastLog('[System] Pre-Step – compose down complete.\n');
+          } catch (e: any) {
+            broadcastLog(`[Cleanup] Pre-Step – compose down warning: ${e.message}\n`);
+          }
+        }
+
+        // 2. Explicit docker stop by known container names (fallback)
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+          try {
+            execSyncPre(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
+          } catch { /* ignore */ }
+        }
+
+        // 3. Remove ALL *.lock files from every node's data/ directory
+        const nodesDirPre = path.join(TARGET_DIR, 'nodes');
+        if (fs.existsSync(nodesDirPre)) {
+          let lockCountPre = 0;
+          for (const nodeName of fs.readdirSync(nodesDirPre)) {
+            const dataDir = path.join(nodesDirPre, nodeName, 'data');
+            if (!fs.existsSync(dataDir)) continue;
+            for (const file of fs.readdirSync(dataDir)) {
+              if (file.endsWith('.lock')) {
+                const lockPath = path.join(dataDir, file);
+                try {
+                  fs.unlinkSync(lockPath);
+                  if (!fs.existsSync(lockPath)) {
+                    lockCountPre++;
+                    broadcastLog(`[Cleanup] Pre-Step – Removed: ${nodeName}/data/${file}\n`);
+                  } else {
+                    broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could NOT delete: ${nodeName}/data/${file}\n`);
+                  }
+                } catch (e: any) {
+                  broadcastLog(`[Cleanup] Pre-Step – ⚠️ Error deleting ${file}: ${e.message}\n`);
+                }
+              }
+            }
+          }
+          if (lockCountPre === 0) {
+            broadcastLog('[Cleanup] Pre-Step – No stale lock files found. ✓\n');
+          } else {
+            broadcastLog(`[Cleanup] Pre-Step – Removed ${lockCountPre} stale lock file(s). ✓\n`);
+          }
+        } else {
+          broadcastLog('[Cleanup] Pre-Step – nodes/ directory not found (first run). ✓\n');
+        }
+      }
+
       // Step 0: Resolve catapult version
       const version = resolveVersion();
       broadcastLog(`[System] Catapult version: ${version.id} (${version.serverImage})\n`);
