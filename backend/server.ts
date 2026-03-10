@@ -2055,78 +2055,87 @@ app.post('/api/images/import', (req, res) => {
  * inside `symbol-bootstrap config`) sees all required properties.
  * This must be called BEFORE `symbol-bootstrap config`.
  */
-function resolveBootstrapTemplateDir(): string {
+function resolveBootstrapTemplateDirs(): string[] {
   const { execSync } = require('child_process') as typeof import('child_process');
+  const dirs: string[] = [];
+  const seen = new Set<string>();
 
-  // Strategy 0: require.resolve — most reliable, works regardless of install prefix
-  // Resolves the package.json of symbol-bootstrap, then navigates to config/node/resources
+  const addDir = (dir: string, label: string) => {
+    const real = fs.realpathSync(dir);
+    if (seen.has(real)) return;
+    seen.add(real);
+    dirs.push(real);
+    broadcastLog(`[Pre-Patch] Template dir (${label}): ${real}\n`);
+  };
+
+  // Strategy 0: require.resolve
   try {
     const pkgJson = require.resolve('symbol-bootstrap/package.json');
-    const pkgRoot = path.dirname(pkgJson);
-    const candidate = path.join(pkgRoot, 'config', 'node', 'resources');
-    if (fs.existsSync(candidate)) {
-      broadcastLog(`[Pre-Patch] Template dir (require.resolve): ${candidate}\n`);
-      return candidate;
-    }
-    broadcastLog(`[Pre-Patch] require.resolve found pkg at ${pkgRoot} but config/ not there\n`);
-    // List what IS in the package root for diagnostics
-    try {
-      const entries = fs.readdirSync(pkgRoot).join(', ');
-      broadcastLog(`[Pre-Patch] Package root contents: ${entries}\n`);
-    } catch { /* ignore */ }
-  } catch (e: any) {
-    broadcastLog(`[Pre-Patch] require.resolve failed: ${e.message}\n`);
-  }
+    const candidate = path.join(path.dirname(pkgJson), 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'require.resolve');
+  } catch { /* fall through */ }
 
-  // Strategy 1: find the template file directly (covers any install layout)
+  // Strategy 1: npm root -g (canonical install location — most important)
   try {
-    const found = execSync(
-      'find / -path /proc -prune -o -path /sys -prune -o -name "config-node.properties.mustache" -print 2>/dev/null | head -1',
-      { timeout: 15_000, stdio: 'pipe' }
-    ).toString().trim();
-    if (found) {
-      const dir = path.dirname(found);
-      broadcastLog(`[Pre-Patch] Template dir (find /): ${dir}\n`);
-      return dir;
+    const npmRoot = execSync('npm root -g', { timeout: 5_000, stdio: 'pipe' }).toString().trim();
+    const candidate = path.join(npmRoot, 'symbol-bootstrap', 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'npm root -g');
+  } catch { /* fall through */ }
+
+  // Strategy 1b: npx cache — runBootstrapCommand() uses `npx -y symbol-bootstrap`
+  //   so the ACTUAL templates used at runtime live in the npx cache, NOT the
+  //   global install dir.  This is the single most important location to patch.
+  try {
+    const homeDir = process.env.HOME || '/root';
+    const npxCacheDir = path.join(homeDir, '.npm', '_npx');
+    if (fs.existsSync(npxCacheDir)) {
+      for (const sub of fs.readdirSync(npxCacheDir)) {
+        const candidate = path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'config', 'node', 'resources');
+        if (fs.existsSync(candidate)) addDir(candidate, 'npx cache');
+      }
     }
   } catch { /* fall through */ }
 
-  // Strategy 2: npm root -g
+  // Strategy 2: find ALL config-node.properties.mustache on disk
+  //   symbol-bootstrap's JS code may run from the npm cache (git-clone*),
+  //   NOT from the global install dir.  We must patch every copy.
   try {
-    const npmRoot = execSync('npm root -g', { timeout: 5_000, stdio: 'pipe' })
-      .toString().trim();
-    const candidate = path.join(npmRoot, 'symbol-bootstrap', 'config', 'node', 'resources');
-    if (fs.existsSync(candidate)) {
-      broadcastLog(`[Pre-Patch] Template dir (npm root -g): ${candidate}\n`);
-      return candidate;
+    const found = execSync(
+      'find / -path /proc -prune -o -path /sys -prune -o -name "config-node.properties.mustache" -print 2>/dev/null',
+      { timeout: 15_000, stdio: 'pipe' }
+    ).toString().trim();
+    for (const line of found.split('\n')) {
+      const f = line.trim();
+      if (f) addDir(path.dirname(f), 'find');
     }
   } catch { /* fall through */ }
 
   // Strategy 3: resolve from `which symbol-bootstrap` binary location
   try {
-    const binPath = execSync('which symbol-bootstrap 2>/dev/null || true', { timeout: 5_000, stdio: 'pipe' })
-      .toString().trim();
-    if (binPath) {
+    const binPath = execSync('which symbol-bootstrap 2>/dev/null || true', { timeout: 5_000, stdio: 'pipe' }).toString().trim();
+    if (binPath && fs.existsSync(binPath)) {
       const realBin = fs.realpathSync(binPath);
       const pkgRoot = path.resolve(path.dirname(realBin), '..', '..', 'lib', 'node_modules', 'symbol-bootstrap');
       const candidate = path.join(pkgRoot, 'config', 'node', 'resources');
-      if (fs.existsSync(candidate)) {
-        broadcastLog(`[Pre-Patch] Template dir (which): ${candidate}\n`);
-        return candidate;
-      }
+      if (fs.existsSync(candidate)) addDir(candidate, 'which');
     }
   } catch { /* fall through */ }
 
-  // Fallback: well-known default
-  const fallback = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources';
-  broadcastLog(`[Pre-Patch] Template dir (fallback): ${fallback}\n`);
-  return fallback;
+  // Fallback
+  if (dirs.length === 0) {
+    const fallback = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources';
+    broadcastLog(`[Pre-Patch] Template dir (fallback): ${fallback}\n`);
+    dirs.push(fallback);
+  }
+
+  return dirs;
 }
 
 function patchMustacheTemplates(version: CatapultVersionDef) {
-  const templateDir = resolveBootstrapTemplateDir();
-  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${version.configPatches.length}\n`);
+  const templateDirs = resolveBootstrapTemplateDirs();
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${version.configPatches.length}, template dirs: ${templateDirs.length}\n`);
 
+  for (const templateDir of templateDirs) {
   for (const patch of version.configPatches) {
     const templatePath = path.join(templateDir, patch.file + '.mustache');
     if (!fs.existsSync(templatePath)) {
@@ -2178,7 +2187,7 @@ function patchMustacheTemplates(version: CatapultVersionDef) {
 
     if (patched) {
       fs.writeFileSync(templatePath, content, 'utf-8');
-      broadcastLog(`[Pre-Patch] ✅ Patched mustache template: ${patch.file}.mustache (${patch.section})\n`);
+      broadcastLog(`[Pre-Patch] ✅ Patched: ${templateDir}/${patch.file}.mustache (${patch.section})\n`);
       // Verify the patch was written correctly
       const verify = fs.readFileSync(templatePath, 'utf-8');
       for (const key of Object.keys(patch.props)) {
@@ -2186,9 +2195,10 @@ function patchMustacheTemplates(version: CatapultVersionDef) {
         broadcastLog(`[Pre-Patch]    ${key}: ${ok ? '✅ present' : '❌ MISSING'}\n`);
       }
     } else {
-      broadcastLog(`[Pre-Patch] ✅ ${patch.file}.mustache already has all required keys\n`);
+      broadcastLog(`[Pre-Patch] ✅ ${templateDir}/${patch.file}.mustache already OK\n`);
     }
   }
+  } // end for templateDirs
 }
 
 /**
@@ -2219,61 +2229,69 @@ function patchMustacheForSingleCurrency(): void {
     isSingleCurrency = Array.isArray(mosaics) && mosaics.length === 1;
   } catch { /* ignore */ }
 
-  // ── Part A: Patch base preset's mosaics array ──
-  const basePresetPath = '/usr/local/lib/node_modules/symbol-bootstrap/presets/bootstrap/network.yml';
-  if (fs.existsSync(basePresetPath)) {
-    const baseDoc = yaml.load(fs.readFileSync(basePresetPath, 'utf-8')) as Record<string, unknown>;
-    const baseNemesis = baseDoc?.nemesis as Record<string, unknown> | undefined;
-    const baseMosaics = baseNemesis?.mosaics as any[] | undefined;
+  const templateDirs = resolveBootstrapTemplateDirs();
 
-    if (isSingleCurrency && baseMosaics && baseMosaics.length > 1) {
-      // Trim to 1 mosaic so _.merge() cannot resurrect the 2nd
-      baseNemesis!.mosaics = baseMosaics.slice(0, 1);
-      fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
-      broadcastLog(`[Pre-Patch] Single-currency: trimmed base preset mosaics to 1 (was ${baseMosaics.length})\n`);
-    } else if (!isSingleCurrency && baseMosaics && baseMosaics.length < 2) {
-      // Restore default harvest mosaic if switching back to dual-currency
-      const defaultHarvest = {
-        name: 'harvest',
-        divisibility: 3,
-        duration: 0,
-        supply: 15000000,
-        isTransferable: true,
-        isSupplyMutable: true,
-        isRestrictable: false,
-        accounts: 2,
-      };
-      baseMosaics.push(defaultHarvest);
-      fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
-      broadcastLog('[Pre-Patch] Restored harvest mosaic in base preset (dual-currency mode)\n');
+  for (const templateDir of templateDirs) {
+    // templateDir points to e.g. .../symbol-bootstrap/config/node/resources
+    // We need the package root → go up 3 levels from config/node/resources
+    const pkgRoot = path.resolve(templateDir, '..', '..', '..');
+
+    // ── Part A: Patch base preset's mosaics array ──
+    const basePresetPath = path.join(pkgRoot, 'presets', 'bootstrap', 'network.yml');
+    if (fs.existsSync(basePresetPath)) {
+      const baseDoc = yaml.load(fs.readFileSync(basePresetPath, 'utf-8')) as Record<string, unknown>;
+      const baseNemesis = baseDoc?.nemesis as Record<string, unknown> | undefined;
+      const baseMosaics = baseNemesis?.mosaics as any[] | undefined;
+
+      if (isSingleCurrency && baseMosaics && baseMosaics.length > 1) {
+        // Trim to 1 mosaic so _.merge() cannot resurrect the 2nd
+        baseNemesis!.mosaics = baseMosaics.slice(0, 1);
+        fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
+        broadcastLog(`[Pre-Patch] Single-currency: trimmed base preset mosaics to 1 (was ${baseMosaics.length}) in ${basePresetPath}\n`);
+      } else if (!isSingleCurrency && baseMosaics && baseMosaics.length < 2) {
+        // Restore default harvest mosaic if switching back to dual-currency
+        const defaultHarvest = {
+          name: 'harvest',
+          divisibility: 3,
+          duration: 0,
+          supply: 15000000,
+          isTransferable: true,
+          isSupplyMutable: true,
+          isRestrictable: false,
+          accounts: 2,
+        };
+        baseMosaics.push(defaultHarvest);
+        fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
+        broadcastLog(`[Pre-Patch] Restored harvest mosaic in base preset (dual-currency mode) in ${basePresetPath}\n`);
+      }
     }
-  }
 
-  // ── Part B: Patch mustache template ──
-  const templatePath = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources/config-network.properties.mustache';
-  if (!fs.existsSync(templatePath)) return;
+    // ── Part B: Patch mustache template ──
+    const templatePath = path.join(templateDir, 'config-network.properties.mustache');
+    if (!fs.existsSync(templatePath)) continue;
 
-  let content = fs.readFileSync(templatePath, 'utf-8');
+    let content = fs.readFileSync(templatePath, 'utf-8');
 
-  if (isSingleCurrency) {
-    // Replace harvestingMosaicId to use currencyMosaicId value
-    const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
-    const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
-    if (content.includes(original)) {
-      content = content.replace(original, patched);
-      fs.writeFileSync(templatePath, content, 'utf-8');
-      broadcastLog('[Pre-Patch] Single-currency: harvestingMosaicId → currencyMosaicId in mustache template\n');
+    if (isSingleCurrency) {
+      // Replace harvestingMosaicId to use currencyMosaicId value
+      const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
+      const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
+      if (content.includes(original)) {
+        content = content.replace(original, patched);
+        fs.writeFileSync(templatePath, content, 'utf-8');
+        broadcastLog(`[Pre-Patch] Single-currency: harvestingMosaicId → currencyMosaicId in ${templatePath}\n`);
+      }
+    } else {
+      // Restore the original template if it was previously patched
+      const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
+      const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
+      if (content.includes(patched)) {
+        content = content.replace(patched, original);
+        fs.writeFileSync(templatePath, content, 'utf-8');
+        broadcastLog(`[Pre-Patch] Restored harvestingMosaicId in ${templatePath} (dual-currency mode)\n`);
+      }
     }
-  } else {
-    // Restore the original template if it was previously patched
-    const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
-    const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
-    if (content.includes(patched)) {
-      content = content.replace(patched, original);
-      fs.writeFileSync(templatePath, content, 'utf-8');
-      broadcastLog('[Pre-Patch] Restored harvestingMosaicId in mustache template (dual-currency mode)\n');
-    }
-  }
+  } // end for templateDirs
 }
 
 /** Describes a set of missing properties to inject into a specific section of a .properties file. */
@@ -2754,9 +2772,7 @@ function patchRestGatewayHostname(targetDir: string): void {
   try {
     const content = fs.readFileSync(composePath, 'utf-8');
 
-    // ── Step 1: Parse with YAML to confirm hostname: api-node-0 exists in rest-gateway ──
-    // This avoids false positives from other services and correctly handles
-    // quoted/unquoted values regardless of YAML formatting.
+    // ── Parse YAML to inspect rest-gateway service ──
     let doc: any;
     try {
       doc = yaml.load(content);
@@ -2765,17 +2781,26 @@ function patchRestGatewayHostname(targetDir: string): void {
       return;
     }
 
-    const restGwHostname = String(doc?.services?.['rest-gateway']?.hostname ?? '');
+    const restGw = doc?.services?.['rest-gateway'];
+    const restGwHostname = String(restGw?.hostname ?? '');
     broadcastLog(`[Patch] rest-gateway hostname in YAML: "${restGwHostname || 'not set'}"\n`);
 
-    if (restGwHostname !== 'api-node-0') {
-      broadcastLog('[Patch] rest-gateway: hostname: api-node-0 not present (skipped)\n');
+    // Check for the problematic hostname AND aliases.
+    // symbol-bootstrap sets both `hostname: api-node-0` and
+    // `networks.default.aliases: [api-node-0]` on the rest-gateway
+    // service.  Both cause /etc/hosts inside rest-gateway to map
+    // "api-node-0" to its own IP, so it tries to connect to itself
+    // on port 7900 instead of the real catapult container.
+    const restGwAliases: string[] = restGw?.networks?.default?.aliases ?? [];
+    const hasHostname = (restGwHostname === 'api-node-0');
+    const hasAlias = restGwAliases.includes('api-node-0');
+
+    if (!hasHostname && !hasAlias) {
+      broadcastLog('[Patch] rest-gateway: no hostname/alias=api-node-0 found (skipped)\n');
       return;
     }
 
-    // ── Step 2: Determine actual service indent level from raw text ──
-    // symbol-bootstrap may generate 2-space or 4-space indented YAML.
-    // Detect dynamically by finding the "rest-gateway:" line.
+    // ── Determine actual service indent level from raw text ──
     const lines = content.split('\n');
     let serviceIndentLen = -1;
     for (const line of lines) {
@@ -2792,23 +2817,82 @@ function patchRestGatewayHostname(targetDir: string): void {
     }
     broadcastLog(`[Patch] Detected service indent: ${serviceIndentLen} spaces\n`);
 
-    // ── Step 3: Remove hostname: api-node-0 from within the rest-gateway block ──
-    // Use the detected indent level to identify service boundaries so we don't
-    // accidentally remove a hostname: key from another service.
+    // ── Remove hostname: api-node-0 AND aliases: [api-node-0] ──
+    // We do a two-pass line filter:
+    //  1. Track which top-level service block we're in
+    //  2. Inside rest-gateway, remove:
+    //     - `hostname: api-node-0`
+    //     - The `- api-node-0` line inside aliases:
+    //       (plus the `aliases:` key itself if it becomes empty)
     const serviceLineRe = new RegExp(`^\\s{${serviceIndentLen}}[\\w-]+:\\s*$`);
     let inRestGateway = false;
+    let inAliases = false;
+    let aliasIndent = 0;
     const patchedLines: string[] = [];
     let patched = false;
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
       if (serviceLineRe.test(line)) {
         inRestGateway = line.trimStart().startsWith('rest-gateway:');
+        inAliases = false;
       }
 
-      // Remove any `hostname: api-node-0` (quoted or unquoted) inside rest-gateway
-      if (inRestGateway && /^\s+hostname:\s*['"]?api-node-0['"]?\s*$/.test(line)) {
-        broadcastLog('[Patch] Removing hostname: api-node-0 from rest-gateway (prevents self-referential /etc/hosts)\n');
+      if (!inRestGateway) {
+        patchedLines.push(line);
+        continue;
+      }
+
+      // Remove `hostname: api-node-0` (quoted or unquoted)
+      if (/^\s+hostname:\s*['"]?api-node-0['"]?\s*$/.test(line)) {
+        broadcastLog('[Patch] Removing hostname: api-node-0 from rest-gateway\n');
         patched = true;
+        continue;
+      }
+
+      // Track aliases: block
+      const aliasKeyMatch = line.match(/^(\s+)aliases:\s*$/);
+      if (aliasKeyMatch) {
+        inAliases = true;
+        aliasIndent = aliasKeyMatch[1].length;
+        // Don't emit this line yet; we'll decide below whether to keep it
+        // after scanning all alias items.  For simplicity, always remove
+        // the aliases: line and any `- api-node-0` entries.
+        // If there are OTHER aliases, they'll be kept, and we'll re-emit
+        // aliases: before them.
+        const remaining: string[] = [];
+        let j = i + 1;
+        while (j < lines.length) {
+          const nextLine = lines[j];
+          // Still inside aliases array?  Check for list item at deeper indent.
+          if (nextLine.match(/^\s+- /)) {
+            const itemIndent = nextLine.search(/\S/);
+            if (itemIndent > aliasIndent) {
+              // This is an alias entry
+              if (/^\s+- \s*['"]?api-node-0['"]?\s*$/.test(nextLine)) {
+                broadcastLog('[Patch] Removing alias: api-node-0 from rest-gateway networks\n');
+                patched = true;
+                j++;
+                continue;
+              } else {
+                remaining.push(nextLine);
+                j++;
+                continue;
+              }
+            }
+          }
+          break;
+        }
+        // Re-emit aliases: with remaining entries (if any)
+        if (remaining.length > 0) {
+          patchedLines.push(line);  // keep `aliases:`
+          for (const r of remaining) patchedLines.push(r);
+        } else {
+          patched = true;  // aliases block fully removed
+        }
+        i = j - 1;  // advance past the aliases block
+        inAliases = false;
         continue;
       }
 
@@ -2817,9 +2901,9 @@ function patchRestGatewayHostname(targetDir: string): void {
 
     if (patched) {
       fs.writeFileSync(composePath, patchedLines.join('\n'), 'utf-8');
-      broadcastLog('[Patch] rest-gateway hostname patch applied ✓\n');
+      broadcastLog('[Patch] rest-gateway hostname/alias patch applied ✓\n');
     } else {
-      broadcastLog('[Patch] Warning: YAML confirmed hostname but line filter found no match — check docker-compose.yml manually\n');
+      broadcastLog('[Patch] Warning: YAML confirmed hostname/alias but line filter found no match\n');
     }
   } catch (e: any) {
     broadcastLog(`[Patch] Warning: could not patch rest-gateway hostname: ${e.message}\n`);
@@ -5766,20 +5850,42 @@ app.post('/api/commands/start', async (req, res) => {
     // ---------------------------------------------------------------
     const startSequence = async () => {
       // ---------------------------------------------------------------
-      // Pre-Step: Stop lingering containers & remove ALL lock files
+      // Pre-Step: Stop lingering containers & clean runtime debris
       //
       //   catapult uses file-existence–based locking (server.lock,
-      //   broker.lock, recovery.lock).  If a previous run crashed,
-      //   Docker's restart policy keeps the containers looping with
-      //   stale locks, producing:
-      //     "could not acquire instance lock ./data/recovery.lock"
-      //   Cleaning locks at the VERY START of the sequence guarantees
-      //   a fresh state regardless of how the previous session ended.
-      //   This is safe to run every time — if no locks exist it's a
-      //   no-op.
+      //   broker.lock, recovery.lock) and a flag file
+      //   (server-recovery.started) to coordinate recovery between
+      //   the server and broker processes.
+      //
+      //   If a previous run crashed or recovery hung (e.g. stuck at
+      //   "repairing messages"), stale runtime artifacts remain and
+      //   cause cascading failures on the next start:
+      //
+      //     *.lock              → "could not acquire instance lock"
+      //     server-recovery.started → broker loops forever:
+      //                             "Waiting for server recovery to finish"
+      //     spool/              → corrupted queue causes recovery hang at
+      //                           "repairing messages" (MongoDB reconcile)
+      //     databases/ (MongoDB)→ stale MongoDB data that doesn't match
+      //                           the block/state data causes recovery to
+      //                           hang forever during message repair
+      //
+      //   Items we MUST preserve (created by nemgen, cannot be rebuilt
+      //   by recovery alone):
+      //     data/00000/*        → nemesis block + statement data
+      //     data/statedb/       → RocksDB state from nemesis generation
+      //     data/index.dat      → block index
+      //     data/proof.index.dat→ finalization proof index
+      //
+      //   Safe to delete (transient / rebuilt automatically):
+      //     *.lock              → file-based locks
+      //     server-recovery.started → recovery coordination flag
+      //     spool/              → server↔broker message queues
+      //     importance/wip      → work-in-progress importance data
+      //     databases/          → MongoDB (rebuilt by broker from spool)
       // ---------------------------------------------------------------
       {
-        broadcastLog('[System] Pre-Step – Stopping lingering containers & cleaning lock files...\n');
+        broadcastLog('[System] Pre-Step – Stopping lingering containers & cleaning runtime debris...\n');
         const { execSync: execSyncPre } = await import('child_process');
 
         // 1. docker compose down (if compose file exists)
@@ -5797,44 +5903,96 @@ app.post('/api/commands/start', async (req, res) => {
         }
 
         // 2. Explicit docker stop by known container names (fallback)
-        for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'broker', 'rest-gateway', 'db']) {
           try {
             execSyncPre(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
           } catch { /* ignore */ }
         }
 
-        // 3. Remove ALL *.lock files from every node's data/ directory
+        // 3. Selective cleanup of each node's data/ directory
+        //    We MUST preserve statedb/, 00000/ (block data), index.dat,
+        //    proof.index.dat — these are created by nemgen and cannot be
+        //    rebuilt by recovery alone.
         const nodesDirPre = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDirPre)) {
-          let lockCountPre = 0;
           for (const nodeName of fs.readdirSync(nodesDirPre)) {
             const dataDir = path.join(nodesDirPre, nodeName, 'data');
             if (!fs.existsSync(dataDir)) continue;
+
+            // 3a. Remove ALL lock files
             for (const file of fs.readdirSync(dataDir)) {
               if (file.endsWith('.lock')) {
-                const lockPath = path.join(dataDir, file);
                 try {
-                  fs.unlinkSync(lockPath);
-                  if (!fs.existsSync(lockPath)) {
-                    lockCountPre++;
-                    broadcastLog(`[Cleanup] Pre-Step – Removed: ${nodeName}/data/${file}\n`);
-                  } else {
-                    broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could NOT delete: ${nodeName}/data/${file}\n`);
-                  }
+                  fs.unlinkSync(path.join(dataDir, file));
+                  broadcastLog(`[Cleanup] Pre-Step – Removed lock: ${nodeName}/data/${file}\n`);
                 } catch (e: any) {
                   broadcastLog(`[Cleanup] Pre-Step – ⚠️ Error deleting ${file}: ${e.message}\n`);
                 }
               }
             }
-          }
-          if (lockCountPre === 0) {
-            broadcastLog('[Cleanup] Pre-Step – No stale lock files found. ✓\n');
-          } else {
-            broadcastLog(`[Cleanup] Pre-Step – Removed ${lockCountPre} stale lock file(s). ✓\n`);
+
+            // 3b. Remove server-recovery.started flag
+            const recoveryFlag = path.join(dataDir, 'server-recovery.started');
+            if (fs.existsSync(recoveryFlag)) {
+              try {
+                fs.unlinkSync(recoveryFlag);
+                broadcastLog(`[Cleanup] Pre-Step – Removed recovery flag: ${nodeName}/data/server-recovery.started\n`);
+              } catch (e: any) {
+                broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not remove recovery flag: ${e.message}\n`);
+              }
+            }
+
+            // 3c. Remove spool/ — transient message queues between server ↔ broker.
+            //     Corrupted spool is the #1 cause of "repairing messages" hangs.
+            const spoolDir = path.join(dataDir, 'spool');
+            if (fs.existsSync(spoolDir)) {
+              try {
+                fs.rmSync(spoolDir, { recursive: true, force: true });
+                broadcastLog(`[Cleanup] Pre-Step – Removed spool/: ${nodeName}/data/spool\n`);
+              } catch (e: any) {
+                broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not remove spool: ${e.message}\n`);
+              }
+            }
+
+            // 3d. Remove importance/wip — work-in-progress importance calcs.
+            //     Stale wip data can cause recovery to miscalculate.
+            const wipDir = path.join(dataDir, 'importance', 'wip');
+            if (fs.existsSync(wipDir)) {
+              try {
+                fs.rmSync(wipDir, { recursive: true, force: true });
+                broadcastLog(`[Cleanup] Pre-Step – Removed importance/wip: ${nodeName}/data/importance/wip\n`);
+              } catch (e: any) {
+                broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not remove importance/wip: ${e.message}\n`);
+              }
+            }
+
+            broadcastLog(`[Cleanup] Pre-Step – ✅ ${nodeName}/data/ cleaned (statedb + blocks preserved).\n`);
           }
         } else {
           broadcastLog('[Cleanup] Pre-Step – nodes/ directory not found (first run). ✓\n');
         }
+
+        // 4. Wipe databases/ (MongoDB data)
+        //
+        //   Stale MongoDB data is the primary cause of the "repairing messages"
+        //   hang in catapult.recovery.  Recovery tries to reconcile spool
+        //   messages with MongoDB; if MongoDB is out of sync with the actual
+        //   block/state data, the reconciliation never finishes.
+        //
+        //   Deleting databases/ is safe: the broker process rebuilds MongoDB
+        //   from scratch on startup via spool messages from the server.
+        //   For a genesis-only chain this takes < 1 second.
+        const databasesDir = path.join(TARGET_DIR, 'databases');
+        if (fs.existsSync(databasesDir)) {
+          try {
+            fs.rmSync(databasesDir, { recursive: true, force: true });
+            broadcastLog('[Cleanup] Pre-Step – ✅ databases/ wiped (MongoDB will rebuild).\n');
+          } catch (e: any) {
+            broadcastLog(`[Cleanup] Pre-Step – ⚠️ Could not wipe databases/: ${e.message}\n`);
+          }
+        }
+
+        broadcastLog('[Cleanup] Pre-Step – Runtime data cleanup complete. ✓\n');
       }
 
       // Step 0: Resolve catapult version
@@ -5850,7 +6008,24 @@ app.post('/api/commands/start', async (req, res) => {
       const patchedTag = await ensurePatchedImage(version);
 
       // Step 0c: Pre-patch mustache templates so nemgen sees all required props
+      //   IMPORTANT: runBootstrapCommand uses `npx -y symbol-bootstrap`, so the
+      //   actual templates live in the npx cache (~/.npm/_npx/...).  This cache
+      //   is lazily created on first npx invocation.  We must prime it BEFORE
+      //   patching so resolveBootstrapTemplateDirs() can find it.
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
+      try {
+        const { execSync } = require('child_process') as typeof import('child_process');
+        broadcastLog('[Pre-Patch] Priming npx cache (npx -y symbol-bootstrap --version)...\n');
+        const ver = execSync('npx -y symbol-bootstrap --version 2>&1', {
+          timeout: 60_000,
+          stdio: 'pipe',
+          cwd: '/',
+          env: { ...process.env, FORCE_COLOR: '0' },
+        }).toString().trim();
+        broadcastLog(`[Pre-Patch] npx cache primed — bootstrap version: ${ver}\n`);
+      } catch (e: any) {
+        broadcastLog(`[Pre-Patch] ⚠️  npx prime failed (non-fatal): ${e.message}\n`);
+      }
       patchMustacheTemplates(version);
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
@@ -5930,6 +6105,46 @@ app.post('/api/commands/start', async (req, res) => {
       }
 
       broadcastLog(`[System] Step 1/6 – Generating configuration... (upgrade=${dataExists})\n`);
+
+      // Fresh install: remove ALL bootstrap-generated values from custom-preset.yml.
+      // When TARGET_DIR was wiped (or is empty), nemgen will generate a NEW
+      // genesis block with a NEW generationHashSeed AND new mosaic IDs.
+      // If custom-preset.yml still contains values from a previous run:
+      //   - nemesisGenerationHashSeed → "nemesis block has invalid generation hash proof"
+      //   - currencyMosaicId / harvestingMosaicId → "harvesting outflows (0)
+      //     do not add up to power ten multiple of expected importance" because
+      //     the old mosaic IDs in config don't match the newly generated nemesis
+      // These will all be backfilled after config from the freshly generated preset.yml.
+      if (!dataExists && !generatedPresetExists) {
+        try {
+          const freshDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          const freshNp = freshDoc?.networkProperties as Record<string, unknown> | undefined;
+          const freshChain = (freshNp?.chain as Record<string, unknown> | undefined);
+          let cleared = false;
+
+          // Keys that are generated by nemgen / symbol-bootstrap and must NOT
+          // be pre-set when creating a brand-new custom network.
+          const NP_STALE_KEYS = ['nemesisGenerationHashSeed', 'nemesisSignerPublicKey'] as const;
+          const CHAIN_STALE_KEYS = ['currencyMosaicId', 'harvestingMosaicId'] as const;
+
+          for (const k of NP_STALE_KEYS) {
+            if (freshNp?.[k]) { delete freshNp[k]; cleared = true; }
+            if ((freshDoc as any)[k]) { delete (freshDoc as any)[k]; cleared = true; }
+          }
+          for (const k of CHAIN_STALE_KEYS) {
+            if (freshChain?.[k]) { delete freshChain[k]; cleared = true; }
+            if ((freshDoc as any)[k]) { delete (freshDoc as any)[k]; cleared = true; }
+          }
+
+          if (cleared) {
+            fs.writeFileSync(PRESET_PATH, yaml.dump(freshDoc, { lineWidth: -1 }), 'utf-8');
+            broadcastLog('[System] Cleared stale bootstrap-generated values from custom-preset.yml (fresh install).\n');
+          }
+        } catch (e: any) {
+          broadcastLog(`[System] ⚠️  Could not clear stale keys: ${e.message}\n`);
+        }
+      }
+
       const configArgs = [
         '-p', basePreset,
         '-a', assembly,
@@ -5953,13 +6168,19 @@ app.post('/api/commands/start', async (req, res) => {
           fs.copyFileSync(addrSrc, path.join(TARGET_DIR, 'addresses.yml'));
           broadcastLog('[System] ✅ Restored backed-up addresses.yml (node identity preserved).\n');
         }
-        // Restore nemesis/ directory (genesis block data)
+        // Restore nemesis/ directory (genesis block data) — ONLY if there is
+        // a real backed-up addresses.yml (= this is a genuine backup-restore
+        // scenario, not just stale crash debris).  When addresses.yml is absent
+        // from the stash, nemesis was just leftover from a previous failed run
+        // and the freshly-generated nemesis from nemgen should be kept.
         const nemSrc = path.join(STASH_DIR, 'nemesis');
-        if (fs.existsSync(nemSrc)) {
+        if (fs.existsSync(nemSrc) && fs.existsSync(addrSrc)) {
           const nemDst = path.join(TARGET_DIR, 'nemesis');
           if (fs.existsSync(nemDst)) fs.rmSync(nemDst, { recursive: true, force: true });
           fs.cpSync(nemSrc, nemDst, { recursive: true });
           broadcastLog('[System] ✅ Restored backed-up nemesis/ directory.\n');
+        } else if (fs.existsSync(nemSrc)) {
+          broadcastLog('[System] ⚠️  Skipped stale nemesis/ restore (no addresses.yml in stash — using freshly generated nemesis).\n');
         }
         // Clean up stash
         fs.rmSync(STASH_DIR, { recursive: true, force: true });
@@ -6069,23 +6290,49 @@ app.post('/api/commands/start', async (req, res) => {
         }
       }
 
-      // Step 4e: Guarantee genesis block data exists in each node's data/00000/.
-      //   symbol-bootstrap run's container start.sh skips the seed→data copy when
-      //   data/00000/ is non-empty (e.g. stale 00000.dat written by a previous partial
-      //   run).  We explicitly copy nemesis/seed/00000/* → nodes/*/data/00000/ here,
-      //   overwriting any stale files, and also remove stale lock files so catapult
-      //   does not enter broken recovery mode on startup.
+      // Step 4e: Guarantee genesis block data exists in each node's seed/00000/.
+      //
+      //   The catapult container's start.sh (and the catapult binary itself)
+      //   copies seed/00000/* → data/00000/ on first boot.  If we pre-populate
+      //   data/00000/ here, catapult's copy uses std::filesystem::copy_file
+      //   (no-overwrite) and crashes with "cannot copy file: File exists".
+      //
+      //   Therefore:
+      //     - ALWAYS update nodes/*/seed/00000/ (the copy SOURCE)
+      //     - Only update data/00000/ when it already has content (upgrade/
+      //       restart scenario where the container would SKIP the copy).
+      //   On a fresh start data/00000/ is empty → container handles the copy.
       {
         const nemSeedDir00 = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
         const nodesBaseDir  = path.join(TARGET_DIR, 'nodes');
         const seed00001     = path.join(nemSeedDir00, '00001.dat');
         if (fs.existsSync(seed00001) && fs.existsSync(nodesBaseDir)) {
-          broadcastLog('[System] Step 4e – Installing genesis block to node data directories...\n');
+          broadcastLog('[System] Step 4e – Installing genesis block to node seed directories...\n');
           const seedFiles = fs.readdirSync(nemSeedDir00);
           for (const nodeName of fs.readdirSync(nodesBaseDir)) {
-            const nodeDataDir   = path.join(nodesBaseDir, nodeName, 'data');
+            const nodeDir       = path.join(nodesBaseDir, nodeName);
+            const nodeSeedDir00 = path.join(nodeDir, 'seed', '00000');
+            const nodeDataDir   = path.join(nodeDir, 'data');
             const nodeDataDir00 = path.join(nodeDataDir, '00000');
-            fs.mkdirSync(nodeDataDir00, { recursive: true });
+
+            // Always update the node's seed/ directory (catapult's copy source)
+            fs.mkdirSync(nodeSeedDir00, { recursive: true });
+            for (const f of seedFiles) {
+              fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeSeedDir00, f));
+            }
+            broadcastLog(`[System] ✅ ${nodeName}/seed/00000/ updated: ${seedFiles.join(', ')}\n`);
+
+            // Only force-update data/00000/ on upgrade/restart (non-empty data dir).
+            // On fresh start, leave data/00000/ empty so the container's own
+            // seed→data copy works without EEXIST conflicts.
+            const dataHasBlocks = fs.existsSync(path.join(nodeDataDir00, '00001.dat'));
+            if (dataHasBlocks) {
+              for (const f of seedFiles) {
+                fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeDataDir00, f));
+              }
+              broadcastLog(`[System] ✅ ${nodeName}/data/00000/ overwritten (upgrade mode)\n`);
+            }
+
             // Remove stale lock files (prevents false recovery-mode on startup)
             for (const lf of ['server.lock', 'broker.lock', 'recovery.lock']) {
               const lfPath = path.join(nodeDataDir, lf);
@@ -6094,11 +6341,6 @@ app.post('/api/commands/start', async (req, res) => {
                 broadcastLog(`[System]   Removed stale lock: ${lf}\n`);
               }
             }
-            // Copy all seed files: 00001.dat, 00001.stmt, hashes.dat, proof.heights.dat, etc.
-            for (const f of seedFiles) {
-              fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeDataDir00, f));
-            }
-            broadcastLog(`[System] ✅ ${nodeName}/data/00000/ seeded: ${seedFiles.join(', ')}\n`);
           }
         } else {
           broadcastLog('[System] Step 4e – nemesis/seed/00000/00001.dat not found, skipping\n');
@@ -6224,6 +6466,7 @@ app.post('/api/commands/start', async (req, res) => {
           for (const nodeName of fs.readdirSync(nodesDir4g)) {
             const dataDir = path.join(nodesDir4g, nodeName, 'data');
             if (!fs.existsSync(dataDir)) continue;
+            // Remove lock files
             for (const file of fs.readdirSync(dataDir)) {
               if (file.endsWith('.lock')) {
                 const lockPath = path.join(dataDir, file);
@@ -6237,6 +6480,21 @@ app.post('/api/commands/start', async (req, res) => {
                 }
               }
             }
+            // Remove recovery flag to prevent broker from waiting forever
+            const recoveryFlag = path.join(dataDir, 'server-recovery.started');
+            if (fs.existsSync(recoveryFlag)) {
+              fs.unlinkSync(recoveryFlag);
+              broadcastLog(`[Cleanup] Removed recovery flag: ${nodeName}/data/server-recovery.started\n`);
+            }
+            // Clean spool directory — catapult recovery scans ALL spool indices
+            // sequentially from 0 to index.dat value.  If the index is very large
+            // (e.g. 1M+) from a previous run, recovery takes 10+ minutes CPU-bound.
+            // Wiping spool before the first run ensures fast recovery.
+            const spoolDir = path.join(dataDir, 'spool');
+            if (fs.existsSync(spoolDir)) {
+              fs.rmSync(spoolDir, { recursive: true, force: true });
+              broadcastLog(`[Cleanup] Removed spool directory: ${nodeName}/data/spool\n`);
+            }
           }
           if (lockCount === 0) {
             broadcastLog('[Cleanup] Step 4g \u2013 No stale lock files found.\n');
@@ -6248,22 +6506,12 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog(`[Cleanup] Step 4g \u2013 Lock cleanup warning (non-fatal): ${e.message}\n`);
       }
 
-      // NOTE: databases/ is intentionally NOT cleared here automatically.
-      //
-      //   Step 4g above does a clean "docker compose down" which gives MongoDB a
-      //   proper SIGTERM shutdown.  MongoDB flushes its WiredTiger journal correctly
-      //   on clean shutdown, so the database state is consistent and can be resumed
-      //   on the next docker compose up without any manual intervention.
-      //
-      //   Clearing databases/ when block data already exists causes catapult.recovery
-      //   to rebuild MongoDB from scratch.  The recovery binary can crash (SIGABRT /
-      //   core dump) when it encounters an empty MongoDB with existing block files in
-      //   certain code paths, leaving recovery.lock behind and preventing subsequent
-      //   starts.
-      //
-      //   If you need to force a MongoDB rebuild (e.g. genuine data corruption), use
-      //   the "Clear Locks" button in the Dashboard, which performs an explicit
-      //   compose down + lock deletion + databases/ removal as a deliberate operation.
+      // NOTE: databases/ and node data/ are now wiped by Pre-Step at the
+      //   beginning of the start sequence.  This guarantees a clean state
+      //   every time, avoiding the "repairing messages" hang and SIGABRT
+      //   crashes caused by stale MongoDB ↔ block data mismatch.
+      //   Step 4e re-installs the genesis block, and catapult rebuilds
+      //   MongoDB from scratch on its first healthy startup.
 
       // Step 5: symbol-bootstrap run (docker-compose up -d)
       broadcastLog('[System] Step 5/6 – Starting docker containers...\n');
