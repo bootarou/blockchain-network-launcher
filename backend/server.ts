@@ -5884,17 +5884,24 @@ app.post('/api/commands/start', async (req, res) => {
     const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
     const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
     const composeExists = fs.existsSync(path.join(TARGET_DIR, 'docker', 'docker-compose.yml'));
+    const hasImportedSeed = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
 
-    let startMode: 'restart' | 'full';
+    let startMode: 'restart' | 'full' | 'join';
     if (requestedMode === 'full' || requestedMode === 'restart') {
       startMode = requestedMode;
+    } else if (hasImportedSeed && !dataExists) {
+      // Imported seed from share package / join — network identity must be preserved.
+      // The seed files contain the origin network's genesis block, so
+      // nemesisGenerationHashSeed and mosaic IDs in custom-preset.yml are
+      // authoritative and must NOT be deleted.
+      startMode = 'join';
     } else {
       // Auto-detect
       startMode = (dataExists && generatedPresetExists && composeExists) ? 'restart' : 'full';
     }
 
     broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
-    broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists})\n`);
+    broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists}, importedSeed=${hasImportedSeed})\n`);
     const startSequence = async () => {
 
       // =================================================================
@@ -6026,12 +6033,18 @@ app.post('/api/commands/start', async (req, res) => {
       }
 
       // =================================================================
-      // FULL mode: config → patch → compose → run
+      // FULL / JOIN mode: config → patch → compose → run
       //
-      //   Used for first-time start, config changes, post-restore, etc.
-      //   This is the original full sequence.
+      //   full – First-time start, config changes, post-restore, etc.
+      //   join – Imported seed from share package / join network.
+      //          Same flow as full, but PRESERVES nemesisGenerationHashSeed
+      //          and mosaic IDs in custom-preset.yml (network identity).
       // =================================================================
-      broadcastLog('[System] ▶ Full mode — running config → compose → run\n');
+      if (startMode === 'join') {
+        broadcastLog('[System] ▶ Join mode — using imported seed (preserving network identity)\n');
+      } else {
+        broadcastLog('[System] ▶ Full mode — running config → compose → run\n');
+      }
 
       // ---------------------------------------------------------------
       // Pre-Step: Stop lingering containers & remove lock files
@@ -6212,7 +6225,11 @@ app.post('/api/commands/start', async (req, res) => {
       //     do not add up to power ten multiple of expected importance" because
       //     the old mosaic IDs in config don't match the newly generated nemesis
       // These will all be backfilled after config from the freshly generated preset.yml.
-      if (!dataExists && !generatedPresetExists) {
+      //
+      // JOIN mode: SKIP this cleanup.  The imported seed contains the origin
+      // network's genesis block, so nemesisGenerationHashSeed and mosaic IDs
+      // in custom-preset.yml are AUTHORITATIVE and must be preserved.
+      if (!dataExists && !generatedPresetExists && startMode !== 'join') {
         try {
           const freshDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
           const freshNp = freshDoc?.networkProperties as Record<string, unknown> | undefined;
@@ -6240,6 +6257,9 @@ app.post('/api/commands/start', async (req, res) => {
         } catch (e: any) {
           broadcastLog(`[System] ⚠️  Could not clear stale keys: ${e.message}\n`);
         }
+      }
+      if (startMode === 'join') {
+        broadcastLog('[System] Join mode — preserved nemesisGenerationHashSeed & mosaic IDs in custom-preset.yml.\n');
       }
 
       const configArgs = [
