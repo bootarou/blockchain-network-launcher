@@ -570,6 +570,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
           </button>
           )}
 
+          {nodeStopped && (
           <button
             onClick={handleClearLocks}
             disabled={cmdStatus.clearLocks === 'running'}
@@ -579,6 +580,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             {t('dashboard.clearLocks')}
             <StatusIcon cmd="clearLocks" />
           </button>
+          )}
         </div>
 
         {/* Import / Export / Addresses */}
