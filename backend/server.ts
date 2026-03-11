@@ -222,6 +222,44 @@ async function waitForNodeHealth(timeoutSec: number): Promise<void> {
 
   broadcastLog(`[HealthCheck] ⚠️  Timed out after ${timeoutSec}s – node may still be starting.\n`);
   broadcastLog(`[HealthCheck] Check manually: http://localhost:${NODE_REST_PORT}/node/health\n`);
+
+  // ── Crash detection: check api-node-0 logs for known fatal errors ──
+  try {
+    const { execSync } = await import('child_process');
+    const logs = execSync('docker logs api-node-0 --tail 60 2>&1 || true', {
+      timeout: 10_000,
+      stdio: 'pipe',
+    }).toString();
+
+    // Pattern 1: harvesting outflows / importance mismatch
+    const importanceMatch = logs.match(
+      /harvesting outflows \((\d+)\) do not add up to power ten multiple of expected importance \((\d+)\)/
+    );
+    if (importanceMatch) {
+      const outflows = importanceMatch[1];
+      const importance = importanceMatch[2];
+      broadcastLog(`\n[Error] ❌ ノード起動失敗: totalChainImportance の設定エラー\n`);
+      broadcastLog(`[Error]   harvesting outflows = ${outflows}\n`);
+      broadcastLog(`[Error]   totalChainImportance = ${importance}\n`);
+      broadcastLog(`[Error]   制約: outflows ÷ totalChainImportance が 10 の冪乗（1, 10, 100, ...）でなければなりません。\n`);
+      broadcastLog(`[Error]   修正方法: 設定画面で totalChainImportance を ${outflows} に変更し、\n`);
+      broadcastLog(`[Error]   完全初期化 → 再起動してください。\n\n`);
+    }
+
+    // Pattern 2: generation hash mismatch
+    if (logs.includes('invalid generation hash proof')) {
+      broadcastLog(`\n[Error] ❌ ノード起動失敗: nemesis ブロックの generation hash 不一致\n`);
+      broadcastLog(`[Error]   完全初期化して再起動してください。\n\n`);
+    }
+
+    // Pattern 3: generic fatal
+    if (logs.includes('<fatal>') && !importanceMatch && !logs.includes('invalid generation hash proof')) {
+      const fatalLines = logs.split('\n').filter(l => l.includes('<fatal>') || l.includes('std::exception::what'));
+      for (const line of fatalLines.slice(0, 3)) {
+        broadcastLog(`[Error] ${line.trim()}\n`);
+      }
+    }
+  } catch { /* log check failed — not critical */ }
 }
 
 // Poll every 10 seconds

@@ -356,7 +356,7 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'maxDifficultyBlocks', label: 'Max Difficulty Blocks', type: 'number', description: '難易度計算ブロック数', min: 1 },
       { key: 'maxTransactionsPerBlock', label: 'Max Txns / Block', type: 'number', description: 'ブロックあたり最大トランザクション数', min: 1 },
       { key: 'maxBlockCacheSize', label: 'Max Block Cache', type: 'text', description: 'キャッシュメモリ上限', placeholder: '10MB' },
-      { key: 'totalChainImportance', label: 'Total Chain Importance', type: 'text', description: 'ネットワーク全体インポータンス' },
+      { key: 'totalChainImportance', label: 'Total Chain Importance', type: 'text', description: '⚠️ ネットワーク全体インポータンス。nemesis ブロック生成時の harvesting outflows ÷ この値が 10 の冪乗（1, 10, 100…）でなければ起動不可。デフォルト値推奨。変更には Full Reset が必要。' },
       { key: 'initialCurrencyAtomicUnits', label: 'Initial Supply', type: 'text', description: '初期通貨供給量(atomic)' },
       { key: 'maxMosaicAtomicUnits', label: 'Max Mosaic Units', type: 'text', description: 'モザイク供給最大値' },
       { key: 'enableVerifiableState', label: 'Verifiable State', type: 'boolean', description: '検証可能状態を有効化' },

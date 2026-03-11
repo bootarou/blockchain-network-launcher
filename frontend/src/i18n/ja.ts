@@ -732,7 +732,7 @@ export const ja: TranslationDict = {
   'field.maxDifficultyBlocks.desc': '難易度計算ブロック数',
   'field.maxTransactionsPerBlock.desc': 'ブロックあたり最大トランザクション数',
   'field.maxBlockCacheSize.desc': 'キャッシュメモリ上限',
-  'field.totalChainImportance.desc': 'ネットワーク全体インポータンス',
+  'field.totalChainImportance.desc': '⚠️ ネットワーク全体インポータンス。nemesis ブロックの harvesting outflows ÷ この値が 10 の冪乗（1, 10, 100…）でないと起動不可。デフォルト値推奨。変更には Full Reset が必要。',
   'field.initialCurrencyAtomicUnits.desc': '初期通貨供給量(atomic)',
   'field.maxMosaicAtomicUnits.desc': 'モザイク供給最大値',
   'field.enableVerifiableState.desc': '検証可能状態を有効化',

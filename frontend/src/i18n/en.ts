@@ -732,7 +732,7 @@ export const en: TranslationDict = {
   'field.maxDifficultyBlocks.desc': 'Difficulty calculation block count',
   'field.maxTransactionsPerBlock.desc': 'Max transactions per block',
   'field.maxBlockCacheSize.desc': 'Cache memory limit',
-  'field.totalChainImportance.desc': 'Total network importance',
+  'field.totalChainImportance.desc': '⚠️ Total network importance. Harvesting outflows ÷ this value must be a power of 10 (1, 10, 100…) or the node will fail to start. Use the default value. Changing requires Full Reset.',
   'field.initialCurrencyAtomicUnits.desc': 'Initial currency supply (atomic)',
   'field.maxMosaicAtomicUnits.desc': 'Max mosaic supply',
   'field.enableVerifiableState.desc': 'Enable verifiable state',
