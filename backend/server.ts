@@ -5886,6 +5886,21 @@ app.post('/api/commands/start', async (req, res) => {
     const composeExists = fs.existsSync(path.join(TARGET_DIR, 'docker', 'docker-compose.yml'));
     const hasImportedSeed = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
 
+    // Detect config change: if custom-preset.yml was modified AFTER the last
+    // symbol-bootstrap config run (which generates preset.yml), the user's
+    // settings have not been applied yet.  In that case we must re-run
+    // config + compose (full mode with --upgrade) instead of a plain restart.
+    let configChanged = false;
+    if (generatedPresetExists && fs.existsSync(PRESET_PATH)) {
+      try {
+        const customMtime = fs.statSync(PRESET_PATH).mtimeMs;
+        const generatedMtime = fs.statSync(path.join(TARGET_DIR, 'preset.yml')).mtimeMs;
+        if (customMtime > generatedMtime) {
+          configChanged = true;
+        }
+      } catch { /* ignore stat errors */ }
+    }
+
     let startMode: 'restart' | 'full' | 'join';
     if (requestedMode === 'full' || requestedMode === 'restart') {
       startMode = requestedMode;
@@ -5895,13 +5910,17 @@ app.post('/api/commands/start', async (req, res) => {
       // nemesisGenerationHashSeed and mosaic IDs in custom-preset.yml are
       // authoritative and must NOT be deleted.
       startMode = 'join';
+    } else if (dataExists && generatedPresetExists && composeExists && !configChanged) {
+      // Everything intact and no config change → safe restart (stop + run only)
+      startMode = 'restart';
     } else {
-      // Auto-detect
-      startMode = (dataExists && generatedPresetExists && composeExists) ? 'restart' : 'full';
+      // First-time start, config changed, or missing artifacts → full sequence
+      // When dataExists, config step will use --upgrade to preserve chain data.
+      startMode = 'full';
     }
 
     broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
-    broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists}, importedSeed=${hasImportedSeed})\n`);
+    broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists}, importedSeed=${hasImportedSeed}, configChanged=${configChanged})\n`);
     const startSequence = async () => {
 
       // =================================================================
