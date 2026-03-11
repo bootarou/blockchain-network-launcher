@@ -5886,19 +5886,28 @@ app.post('/api/commands/start', async (req, res) => {
     const composeExists = fs.existsSync(path.join(TARGET_DIR, 'docker', 'docker-compose.yml'));
     const hasImportedSeed = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
 
-    // Detect config change: if custom-preset.yml was modified AFTER the last
-    // symbol-bootstrap config run (which generates preset.yml), the user's
-    // settings have not been applied yet.  In that case we must re-run
-    // config + compose (full mode with --upgrade) instead of a plain restart.
+    // Detect config change: compare SHA256 of current custom-preset.yml
+    // against the hash stored after the last successful `symbol-bootstrap config`.
+    // NOTE: mtime comparison doesn't work because handleStart always calls
+    // api.savePreset() before start, which rewrites custom-preset.yml and
+    // makes mtime newer than preset.yml — even when nothing changed.
+    const APPLIED_HASH_PATH = path.join(TARGET_DIR, '.preset-applied-hash');
     let configChanged = false;
     if (generatedPresetExists && fs.existsSync(PRESET_PATH)) {
       try {
-        const customMtime = fs.statSync(PRESET_PATH).mtimeMs;
-        const generatedMtime = fs.statSync(path.join(TARGET_DIR, 'preset.yml')).mtimeMs;
-        if (customMtime > generatedMtime) {
+        const currentHash = crypto.createHash('sha256')
+          .update(fs.readFileSync(PRESET_PATH))
+          .digest('hex');
+        if (fs.existsSync(APPLIED_HASH_PATH)) {
+          const appliedHash = fs.readFileSync(APPLIED_HASH_PATH, 'utf-8').trim();
+          if (currentHash !== appliedHash) {
+            configChanged = true;
+          }
+        } else {
+          // No hash file → first time or legacy — treat as changed
           configChanged = true;
         }
-      } catch { /* ignore stat errors */ }
+      } catch { /* ignore errors — will fall through to full mode */ }
     }
 
     let startMode: 'restart' | 'full' | 'join';
@@ -6295,6 +6304,16 @@ app.post('/api/commands/start', async (req, res) => {
         stateWhileRunning: 'starting',
         stateOnSuccess: 'starting',
       });
+
+      // Record the hash of custom-preset.yml that was used for this config run.
+      // Next start can compare against this to detect real config changes.
+      try {
+        const appliedHash = crypto.createHash('sha256')
+          .update(fs.readFileSync(PRESET_PATH))
+          .digest('hex');
+        fs.writeFileSync(APPLIED_HASH_PATH, appliedHash, 'utf-8');
+        broadcastLog(`[System] Saved preset hash for change detection.\n`);
+      } catch { /* non-fatal */ }
 
       // After config, restore stashed identity files (overwrite generated ones)
       if (needsReset && fs.existsSync(STASH_DIR)) {
