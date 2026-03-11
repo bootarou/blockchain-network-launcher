@@ -194,9 +194,13 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
     }
   };
 
-  const handleFullReset = () => {
+  const handleFullReset = async () => {
     if (confirm(t('dashboard.confirmFullReset'))) {
-      runCommand('fullReset');
+      await runCommand('fullReset');
+      // Full reset deletes custom-preset.yml and ui-meta on the backend.
+      // Reload the page so the config form picks up DEFAULT_PRESET
+      // instead of showing stale values from the destroyed network.
+      window.location.reload();
     }
   };
 
