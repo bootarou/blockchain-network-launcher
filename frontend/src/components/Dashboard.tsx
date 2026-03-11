@@ -546,6 +546,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             <StatusIcon cmd="healthCheck" />
           </button>
 
+          {nodeStopped && (
           <button
             onClick={handleReset}
             disabled={cmdStatus.resetData === 'running'}
@@ -555,7 +556,9 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             {t('dashboard.reset')}
             <StatusIcon cmd="resetData" />
           </button>
+          )}
 
+          {nodeStopped && (
           <button
             onClick={handleFullReset}
             disabled={cmdStatus.fullReset === 'running'}
@@ -565,6 +568,7 @@ export function Dashboard({ config, onConfigImport }: DashboardProps) {
             {t('dashboard.fullReset')}
             <StatusIcon cmd="fullReset" />
           </button>
+          )}
 
           <button
             onClick={handleClearLocks}
