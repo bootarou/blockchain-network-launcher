@@ -252,8 +252,18 @@ async function waitForNodeHealth(timeoutSec: number): Promise<void> {
       broadcastLog(`[Error]   完全初期化して再起動してください。\n\n`);
     }
 
+    // Pattern 4: nemesis public key mismatch
+    const nemesisPkMismatch = logs.includes('nemesis public key does not match network');
+    if (nemesisPkMismatch) {
+      broadcastLog(`\n[Error] ❌ ノード起動失敗: nemesis 公開鍵がネットワークと一致しません\n`);
+      broadcastLog(`[Error]   nemesis ブロックの署名者公開鍵が、ノードのネットワーク設定と異なっています。\n`);
+      broadcastLog(`[Error]   原因: 別のネットワークの nemesis seed / データが混在している可能性があります。\n`);
+      broadcastLog(`[Error]   修正方法: 完全初期化（Full Reset）を実行し、正しいネットワーク設定で再起動してください。\n`);
+      broadcastLog(`[Error]   Join モードの場合は、接続先ホストの共有パッケージを再取得してください。\n\n`);
+    }
+
     // Pattern 3: generic fatal
-    if (logs.includes('<fatal>') && !importanceMatch && !logs.includes('invalid generation hash proof')) {
+    if (logs.includes('<fatal>') && !importanceMatch && !logs.includes('invalid generation hash proof') && !nemesisPkMismatch) {
       const fatalLines = logs.split('\n').filter(l => l.includes('<fatal>') || l.includes('std::exception::what'));
       for (const line of fatalLines.slice(0, 3)) {
         broadcastLog(`[Error] ${line.trim()}\n`);
