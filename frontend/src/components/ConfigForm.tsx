@@ -546,6 +546,8 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     }
 
     if (activeTab === 'nodes') {
+      const catBoolFields = category.fields.filter((f) => f.type === 'boolean');
+      const catOtherFields = category.fields.filter((f) => f.type !== 'boolean');
       return (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -560,6 +562,23 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               <Plus className="w-4 h-4" /> {t('config.addNode')}
             </button>
           </div>
+
+          {/* Category-level settings (Docker Host Mode, nodeEqualityStrategy) */}
+          {category.fields.length > 0 && (
+            <div className="bg-zinc-800/40 border border-zinc-700/40 rounded-xl p-4 space-y-3">
+              {catOtherFields.length > 0 && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {catOtherFields.map((f) => (
+                    <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
+                  ))}
+                </div>
+              )}
+              {catBoolFields.length > 0 && catBoolFields.map((f) => (
+                <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
+              ))}
+            </div>
+          )}
+
           <div className="space-y-3">
             {config.nodes.map((node, i) => (
               <div key={i}>

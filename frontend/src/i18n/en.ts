@@ -707,6 +707,7 @@ export const en: TranslationDict = {
   'field.friendlyName.desc': 'Display name',
   'field.nemesisGenerationHashSeed.desc': 'SHA3-256 hash of the genesis block',
   'field.nemesisSignerPublicKey.desc': 'Genesis block signer public key',
+  'field.dockerHostMode.desc': 'Run catapult containers with Docker host networking. Preserves real peer IP addresses without DNAT rewriting. Recommended for networks with 3+ nodes.',
   'field.nodeEqualityStrategy.desc': 'Node identity determination method',
   'field.epochAdjustment.desc': 'Seconds from Unix epoch',
   'field.currencyMosaicId.desc': 'Base currency mosaic ID',

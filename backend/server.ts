@@ -687,6 +687,10 @@ app.post('/api/preset', (req, res) => {
     if (configData.sourceNodeUrl) {
       uiMeta.sourceNodeUrl = String(configData.sourceNodeUrl);
     }
+    // Persist Docker Host Mode setting
+    if (configData.dockerHostMode !== undefined) {
+      uiMeta.dockerHostMode = !!configData.dockerHostMode;
+    }
     // Persist inflation entries for config-inflation.properties patching
     if (Array.isArray(configData.inflation)) {
       uiMeta.inflation = configData.inflation;
@@ -3024,6 +3028,139 @@ function patchStopGracePeriod(targetDir: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Docker Host Mode: patch docker-compose.yml so api-node-0 and broker run
+// with network_mode: host instead of the default bridge network.
+//
+// This eliminates Docker DNAT — external peers connect directly to catapult
+// and their real IP addresses are preserved.  Required for 3+ node networks
+// where bidirectional peer connections need correct source IPs.
+//
+// Changes when enabled:
+//   1. api-node-0 & broker: add network_mode: "host", remove ports/networks
+//   2. db: expose 27017 on 127.0.0.1 so host-network containers can reach it
+//   3. config-database.properties: databaseUri → mongodb://127.0.0.1
+//   4. rest.json: apiNode.host → 127.0.0.1 (catapult is on the host network)
+//   5. localNetworks: skip Docker subnet prefix (no DNAT means no need)
+// ---------------------------------------------------------------------------
+function isDockerHostMode(): boolean {
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+      return !!meta.dockerHostMode;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+function patchDockerHostMode(targetDir: string): void {
+  if (!isDockerHostMode()) return;
+
+  const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  broadcastLog('[HostMode] 🖧 Docker Host Mode enabled — patching docker-compose.yml...\n');
+
+  try {
+    const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
+    if (!doc?.services) return;
+
+    // --- 1. Patch api-node-0 and api-node-0-broker → network_mode: "host" ---
+    for (const svcName of ['api-node-0', 'api-node-0-broker']) {
+      const svc = doc.services[svcName];
+      if (!svc) continue;
+
+      svc.network_mode = 'host';
+      delete svc.ports;
+      delete svc.networks;
+
+      // depends_on must remain so Docker starts db first
+      broadcastLog(`[HostMode]   ${svcName}: network_mode=host, removed ports/networks\n`);
+    }
+
+    // --- 2. Patch db: expose 27017 on localhost only ---
+    const dbSvc = doc.services['db'];
+    if (dbSvc) {
+      // Ensure ports array exists and includes localhost binding
+      if (!dbSvc.ports) dbSvc.ports = [];
+      const hasMongoPort = dbSvc.ports.some((p: string) =>
+        String(p).includes('27017')
+      );
+      if (!hasMongoPort) {
+        dbSvc.ports.push('127.0.0.1:27017:27017');
+        broadcastLog('[HostMode]   db: added port 127.0.0.1:27017:27017\n');
+      }
+    }
+
+    // --- 3. Patch rest-gateway: keep on bridge but connect to host via host.docker.internal ---
+    // rest-gateway needs to stay on bridge (it needs the Docker DNS for db).
+    // It connects to catapult via apiNode.host — patched separately in rest.json.
+
+    // Write patched compose
+    fs.writeFileSync(composePath, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+    broadcastLog('[HostMode] ✅ docker-compose.yml patched for host network mode\n');
+
+    // --- 4. Patch config-database.properties: databaseUri → mongodb://127.0.0.1 ---
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (fs.existsSync(nodesDir)) {
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        for (const configDir of ['server-config', 'broker-config']) {
+          const dbCfgPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-database.properties');
+          if (!fs.existsSync(dbCfgPath)) continue;
+          let content = fs.readFileSync(dbCfgPath, 'utf-8');
+          const oldMatch = content.match(/^(databaseUri\s*=\s*)(.+)$/m);
+          if (oldMatch && !oldMatch[2].includes('127.0.0.1')) {
+            content = content.replace(
+              /^(databaseUri\s*=\s*).+$/m,
+              '$1mongodb://127.0.0.1:27017'
+            );
+            fs.writeFileSync(dbCfgPath, content, 'utf-8');
+            broadcastLog(`[HostMode]   ${nodeName}/${configDir}: databaseUri → mongodb://127.0.0.1:27017\n`);
+          }
+        }
+      }
+    }
+
+    // --- 5. Patch rest.json: apiNode.host → 127.0.0.1, db.url → mongodb://127.0.0.1 ---
+    const gwDir = path.join(targetDir, 'gateways');
+    if (fs.existsSync(gwDir)) {
+      for (const gwName of fs.readdirSync(gwDir)) {
+        const candidates = [
+          path.join(gwDir, gwName, 'rest.json'),
+          path.join(gwDir, gwName, 'userconfig', 'resources', 'rest.json'),
+        ];
+        for (const restJsonPath of candidates) {
+          if (!fs.existsSync(restJsonPath)) continue;
+          try {
+            const obj = JSON.parse(fs.readFileSync(restJsonPath, 'utf-8'));
+            let changed = false;
+
+            // apiNode.host → the host IP (host.docker.internal for rest-gw on bridge)
+            if (obj?.apiNode?.host && obj.apiNode.host !== 'host.docker.internal') {
+              obj.apiNode.host = 'host.docker.internal';
+              changed = true;
+              broadcastLog(`[HostMode]   rest.json (${gwName}): apiNode.host → host.docker.internal\n`);
+            }
+
+            // db.url → mongodb://db:27017 (rest-gw is on bridge, db is also on bridge)
+            // No change needed for db — rest-gateway and db are both on the bridge network.
+
+            if (changed) {
+              fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
+            }
+          } catch (e: any) {
+            broadcastLog(`[HostMode]   Warning: could not patch ${restJsonPath}: ${e.message}\n`);
+          }
+        }
+      }
+    }
+
+    broadcastLog('[HostMode] ✅ All host mode patches applied\n');
+  } catch (e: any) {
+    broadcastLog(`[HostMode] ⚠️  Patch failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fix rest.json apiNode.host when symbol-bootstrap hardcodes a Docker IP.
 //
 // symbol-bootstrap writes the api-node-0 container IP (e.g. 172.20.0.25) into
@@ -4227,6 +4364,15 @@ function patchLocalNetworks(targetDir: string) {
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
 
+  // In Docker Host Mode, catapult runs directly on the host network.
+  // There is no Docker DNAT, so the Docker subnet prefix is not needed.
+  // REST gateway still runs on the bridge network and connects to catapult
+  // via host.docker.internal — no localNetworks entry needed for that.
+  const hostMode = isDockerHostMode();
+  if (hostMode) {
+    broadcastLog('[HostMode] Skipping Docker subnet localNetworks/trustedHosts patch (host network mode)\n');
+  }
+
   // Read the Docker subnet from docker-compose.yml (default 172.20.0.0/24)
   let subnet = '172.20.0.0/24';
   const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
@@ -4238,66 +4384,74 @@ function patchLocalNetworks(targetDir: string) {
 
   const prefix = cidrToPrefix(subnet);   // e.g. "172.20.0."
 
-  let patched = 0;
-  for (const nodeName of fs.readdirSync(nodesDir)) {
-    for (const configDir of ['server-config', 'broker-config']) {
-      const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-node.properties');
-      if (!fs.existsSync(configPath)) continue;
+  // ── In Host Mode, skip adding Docker subnet prefix ──
+  // When catapult runs with network_mode: host, there is no Docker bridge
+  // network.  Peers connect via the real host IP, so the 172.20.0.x prefix
+  // is meaningless.  REST gateway still runs on the bridge network and
+  // connects to catapult via host.docker.internal; catapult sees this as
+  // 127.0.0.1, which is already in the default localNetworks/trustedHosts.
+  if (!hostMode) {
+    let patched = 0;
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-node.properties');
+        if (!fs.existsSync(configPath)) continue;
 
-      let content = fs.readFileSync(configPath, 'utf-8');
-      let changed = false;
+        let content = fs.readFileSync(configPath, 'utf-8');
+        let changed = false;
 
-      // Both trustedHosts and localNetworks need the Docker subnet prefix.
-      //
-      // trustedHosts: REST gateway (172.20.0.x) connects to catapult without
-      //   a full peer auth handshake.  Required for REST to work.
-      //
-      // localNetworks: REST gateway shares the same TLS cert as api-node-0 (same
-      //   identity key by design).  When the REST gateway connects, catapult must
-      //   classify it as "@_local_" (self-connection) to avoid an "in use identity
-      //   key" rejection.  This ONLY works if the connection comes from a
-      //   localNetworks-classified range.
-      //
-      // Peer identity conflict (join-PC through Docker DNAT):
-      //   When an external peer connects via the host's mapped port (e.g. :7900),
-      //   Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
-      //   With nodeEqualityStrategy = host, BOTH the local node AND the external
-      //   peer are "@_local_" → "in use identity key" rejection.
-      //   Fix: nodeEqualityStrategy = public-key (patched in config-network.properties
-      //   below).  With public-key, the external peer's different public key makes
-      //   it a distinct node even when its host is "@_local_".
-      for (const key of ['trustedHosts', 'localNetworks']) {
-        const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
-        const match = content.match(regex);
-        if (!match) continue;
+        // Both trustedHosts and localNetworks need the Docker subnet prefix.
+        //
+        // trustedHosts: REST gateway (172.20.0.x) connects to catapult without
+        //   a full peer auth handshake.  Required for REST to work.
+        //
+        // localNetworks: REST gateway shares the same TLS cert as api-node-0 (same
+        //   identity key by design).  When the REST gateway connects, catapult must
+        //   classify it as "@_local_" (self-connection) to avoid an "in use identity
+        //   key" rejection.  This ONLY works if the connection comes from a
+        //   localNetworks-classified range.
+        //
+        // Peer identity conflict (join-PC through Docker DNAT):
+        //   When an external peer connects via the host's mapped port (e.g. :7900),
+        //   Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
+        //   With nodeEqualityStrategy = host, BOTH the local node AND the external
+        //   peer are "@_local_" → "in use identity key" rejection.
+        //   Fix: nodeEqualityStrategy = public-key (patched in config-network.properties
+        //   below).  With public-key, the external peer's different public key makes
+        //   it a distinct node even when its host is "@_local_".
+        for (const key of ['trustedHosts', 'localNetworks']) {
+          const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
+          const match = content.match(regex);
+          if (!match) continue;
 
-        let val = match[2].trim();
+          let val = match[2].trim();
 
-        // Replace CIDR notation → prefix notation (idempotent)
-        if (val.includes(subnet)) {
-          val = val.replace(subnet, prefix);
-          changed = true;
-        }
-        // Ensure the prefix is present
-        if (!val.includes(prefix)) {
-          val = val ? `${val}, ${prefix}` : prefix;
-          changed = true;
+          // Replace CIDR notation → prefix notation (idempotent)
+          if (val.includes(subnet)) {
+            val = val.replace(subnet, prefix);
+            changed = true;
+          }
+          // Ensure the prefix is present
+          if (!val.includes(prefix)) {
+            val = val ? `${val}, ${prefix}` : prefix;
+            changed = true;
+          }
+
+          if (changed) {
+            content = content.replace(regex, (_, keyPart: string) => `${keyPart}${val}`);
+          }
         }
 
         if (changed) {
-          content = content.replace(regex, (_, keyPart: string) => `${keyPart}${val}`);
+          fs.writeFileSync(configPath, content, 'utf-8');
+          patched++;
+          broadcastLog(`[Patch] Patched trustedHosts/localNetworks → prefix "${prefix}" in ${nodeName}/${configDir}\n`);
         }
       }
-
-      if (changed) {
-        fs.writeFileSync(configPath, content, 'utf-8');
-        patched++;
-        broadcastLog(`[Patch] Patched trustedHosts/localNetworks → prefix "${prefix}" in ${nodeName}/${configDir}\n`);
-      }
     }
-  }
-  if (patched > 0) {
-    broadcastLog(`[Patch] ✅ trustedHosts/localNetworks patched in ${patched} config files\n`);
+    if (patched > 0) {
+      broadcastLog(`[Patch] ✅ trustedHosts/localNetworks patched in ${patched} config files\n`);
+    }
   }
 
   // ── Patch nodeEqualityStrategy = public-key in config-network.properties ──
@@ -6336,6 +6490,7 @@ app.post('/api/commands/start', async (req, res) => {
       patchRestGatewayHostname(TARGET_DIR);
       patchStopGracePeriod(TARGET_DIR);
       patchRestJsonApiNodeHost(TARGET_DIR);
+      patchDockerHostMode(TARGET_DIR);
 
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
