@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execSync, type ChildProcess } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -3039,7 +3039,7 @@ function patchStopGracePeriod(targetDir: string): void {
 //   1. api-node-0 & broker: add network_mode: "host", remove ports/networks
 //   2. db: expose 27017 on 127.0.0.1 so host-network containers can reach it
 //   3. config-database.properties: databaseUri → mongodb://127.0.0.1
-//   4. rest.json: apiNode.host → 127.0.0.1 (catapult is on the host network)
+//   4. rest.json: apiNode.host → bridge gateway IP (rest-gw on bridge reaches catapult on host)
 //   5. localNetworks: skip Docker subnet prefix (no DNAT means no need)
 // ---------------------------------------------------------------------------
 function isDockerHostMode(): boolean {
@@ -3124,7 +3124,48 @@ function patchDockerHostMode(targetDir: string): void {
       }
     }
 
-    // --- 5. Patch rest.json: apiNode.host → 127.0.0.1, db.url → mongodb://127.0.0.1 ---
+    // --- 5. Patch rest.json: apiNode.host → bridge gateway IP ---
+    //
+    // rest-gateway stays on the bridge network (docker_default) while api-node-0
+    // runs with network_mode: host (Linux VM's network namespace).
+    //
+    // On Docker Desktop for Windows, host.docker.internal → 192.168.65.254
+    // (the Windows host), NOT the Linux VM where catapult actually listens.
+    // Bridge containers can reach host-network containers via the bridge
+    // gateway IP (e.g. 172.20.0.1) — this is the Linux VM's interface on
+    // the docker_default bridge.
+    //
+    // We dynamically discover this gateway IP via `docker network inspect`.
+    // Fallback order: gateway IP → 172.20.0.1 → host.docker.internal
+    let bridgeGatewayIp = 'host.docker.internal'; // fallback
+    try {
+      // Find the compose-project network (typically named "docker_default")
+      const composeNetworkName = 'docker_default';
+      const inspectJson = execSync(
+        `docker network inspect ${composeNetworkName} --format "{{range .IPAM.Config}}{{.Gateway}}{{end}}" 2>/dev/null || true`,
+        { encoding: 'utf-8', timeout: 10_000 },
+      ).trim();
+      if (inspectJson && /^\d+\.\d+\.\d+\.\d+$/.test(inspectJson)) {
+        bridgeGatewayIp = inspectJson;
+        broadcastLog(`[HostMode]   Bridge gateway IP discovered: ${bridgeGatewayIp}\n`);
+      } else {
+        // Gateway not explicitly set — derive from subnet (x.x.x.0/24 → x.x.x.1)
+        const subnetJson = execSync(
+          `docker network inspect ${composeNetworkName} --format "{{range .IPAM.Config}}{{.Subnet}}{{end}}" 2>/dev/null || true`,
+          { encoding: 'utf-8', timeout: 10_000 },
+        ).trim();
+        const subnetMatch = subnetJson.match(/^(\d+\.\d+\.\d+)\.\d+\//);
+        if (subnetMatch) {
+          bridgeGatewayIp = `${subnetMatch[1]}.1`;
+          broadcastLog(`[HostMode]   Bridge gateway IP derived from subnet ${subnetJson}: ${bridgeGatewayIp}\n`);
+        } else {
+          broadcastLog(`[HostMode]   ⚠️ Could not determine bridge gateway IP, falling back to host.docker.internal\n`);
+        }
+      }
+    } catch (e: any) {
+      broadcastLog(`[HostMode]   ⚠️ Bridge gateway discovery failed: ${e.message}, falling back to host.docker.internal\n`);
+    }
+
     const gwDir = path.join(targetDir, 'gateways');
     if (fs.existsSync(gwDir)) {
       for (const gwName of fs.readdirSync(gwDir)) {
@@ -3138,11 +3179,12 @@ function patchDockerHostMode(targetDir: string): void {
             const obj = JSON.parse(fs.readFileSync(restJsonPath, 'utf-8'));
             let changed = false;
 
-            // apiNode.host → the host IP (host.docker.internal for rest-gw on bridge)
-            if (obj?.apiNode?.host && obj.apiNode.host !== 'host.docker.internal') {
-              obj.apiNode.host = 'host.docker.internal';
+            // apiNode.host → bridge gateway IP so rest-gw (bridge) can reach catapult (host)
+            if (obj?.apiNode?.host && obj.apiNode.host !== bridgeGatewayIp) {
+              const oldHost = obj.apiNode.host;
+              obj.apiNode.host = bridgeGatewayIp;
               changed = true;
-              broadcastLog(`[HostMode]   rest.json (${gwName}): apiNode.host → host.docker.internal\n`);
+              broadcastLog(`[HostMode]   rest.json (${gwName}): apiNode.host ${oldHost} → ${bridgeGatewayIp}\n`);
             }
 
             // db.url → mongodb://db:27017 (rest-gw is on bridge, db is also on bridge)
