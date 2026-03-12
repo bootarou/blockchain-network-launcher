@@ -6137,6 +6137,9 @@ app.post('/api/commands/start', async (req, res) => {
         // 3. Re-apply rest-gateway hostname patch (in case compose file was regenerated)
         patchRestGatewayHostname(TARGET_DIR);
 
+        // 3b. Apply Docker Host Mode patches (also needed on quick restart)
+        patchDockerHostMode(TARGET_DIR);
+
         // 4. Run containers
         broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
         await runBootstrapCommand('run', ['-d'], {
@@ -6144,18 +6147,29 @@ app.post('/api/commands/start', async (req, res) => {
           stateOnSuccess: 'running',
         });
 
-        // 5. Re-apply rest-gateway patch + recreate (run may overwrite compose)
+        // 5. Re-apply rest-gateway patch + host mode patch + recreate (run may overwrite compose)
         {
           const composePath5b = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
           patchRestGatewayHostname(TARGET_DIR);
+          patchDockerHostMode(TARGET_DIR);
           if (fs.existsSync(composePath5b)) {
             try {
               const { execSync: execSync5b } = await import('child_process');
-              execSync5b(
-                `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
-                { timeout: 60_000, stdio: 'pipe' },
-              );
-              broadcastLog('[System] rest-gateway recreated ✓\n');
+              // When host mode is active, recreate api-node-0 and broker too
+              // (they need the network_mode: host change applied)
+              if (isDockerHostMode()) {
+                execSync5b(
+                  `docker compose -f "${composePath5b}" up -d --force-recreate api-node-0 broker rest-gateway 2>&1 || true`,
+                  { timeout: 120_000, stdio: 'pipe' },
+                );
+                broadcastLog('[System] api-node-0, broker, rest-gateway recreated (host mode) ✓\n');
+              } else {
+                execSync5b(
+                  `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
+                  { timeout: 60_000, stdio: 'pipe' },
+                );
+                broadcastLog('[System] rest-gateway recreated ✓\n');
+              }
             } catch { /* non-fatal */ }
           }
         }
@@ -6763,15 +6777,25 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog('[System] Step 5b – Re-applying rest-gateway hostname patch...\n');
         const composePath5b = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
         patchRestGatewayHostname(TARGET_DIR);
+        patchDockerHostMode(TARGET_DIR);
         if (fs.existsSync(composePath5b)) {
           try {
             const { execSync: execSync5b } = await import('child_process');
-            const out5b = execSync5b(
-              `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
-              { timeout: 60_000, stdio: 'pipe' },
-            ).toString().trim();
-            if (out5b) broadcastLog(`[System] Step 5b – ${out5b.slice(0, 300)}\n`);
-            broadcastLog('[System] Step 5b – rest-gateway recreated without hostname: api-node-0 ✓\n');
+            if (isDockerHostMode()) {
+              const out5b = execSync5b(
+                `docker compose -f "${composePath5b}" up -d --force-recreate api-node-0 broker rest-gateway 2>&1 || true`,
+                { timeout: 120_000, stdio: 'pipe' },
+              ).toString().trim();
+              if (out5b) broadcastLog(`[System] Step 5b – ${out5b.slice(0, 300)}\n`);
+              broadcastLog('[System] Step 5b – api-node-0, broker, rest-gateway recreated (host mode) ✓\n');
+            } else {
+              const out5b = execSync5b(
+                `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
+                { timeout: 60_000, stdio: 'pipe' },
+              ).toString().trim();
+              if (out5b) broadcastLog(`[System] Step 5b – ${out5b.slice(0, 300)}\n`);
+              broadcastLog('[System] Step 5b – rest-gateway recreated without hostname: api-node-0 ✓\n');
+            }
           } catch (e: any) {
             broadcastLog(`[System] Step 5b – Warning: force-recreate rest-gateway failed: ${e.message}\n`);
           }
