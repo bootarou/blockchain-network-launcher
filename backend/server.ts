@@ -3065,7 +3065,11 @@ function patchDockerHostMode(targetDir: string): void {
     if (!doc?.services) return;
 
     // --- 1. Patch api-node-0 and api-node-0-broker → network_mode: "host" ---
-    for (const svcName of ['api-node-0', 'api-node-0-broker']) {
+    // Service names vary by symbol-bootstrap version/assembly:
+    //   - "api-node-0-broker" (some assemblies)
+    //   - "broker" (dual assembly)
+    // Patch whichever exists.
+    for (const svcName of ['api-node-0', 'api-node-0-broker', 'broker']) {
       const svc = doc.services[svcName];
       if (!svc) continue;
 
