@@ -6222,7 +6222,14 @@ app.post('/api/commands/start', async (req, res) => {
       //     do not add up to power ten multiple of expected importance" because
       //     the old mosaic IDs in config don't match the newly generated nemesis
       // These will all be backfilled after config from the freshly generated preset.yml.
-      if (!dataExists && !generatedPresetExists) {
+      //
+      // IMPORTANT: When imported seed exists (join-node mode), these values came
+      // from the ORIGIN network and MUST be preserved.  Clearing them would cause
+      // symbol-bootstrap to generate new random values → mismatch with the
+      // imported nemesis block → "invalid generation hash proof" or
+      // "nemesis public key does not match network".
+      const hasImportedSeedForStart = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
+      if (!dataExists && !generatedPresetExists && !hasImportedSeedForStart) {
         try {
           const freshDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
           const freshNp = freshDoc?.networkProperties as Record<string, unknown> | undefined;
@@ -6250,6 +6257,8 @@ app.post('/api/commands/start', async (req, res) => {
         } catch (e: any) {
           broadcastLog(`[System] ⚠️  Could not clear stale keys: ${e.message}\n`);
         }
+      } else if (hasImportedSeedForStart) {
+        broadcastLog('[System] 📦 Join mode detected (imported seed exists) — preserving network identity keys in custom-preset.yml.\n');
       }
 
       const configArgs = [
