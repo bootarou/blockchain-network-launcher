@@ -274,6 +274,9 @@ export interface PresetConfig {
   baseNamespace: string;
   nemesisMosaics: NemesisMosaic[];
 
+  // Docker Host Mode
+  dockerHostMode: boolean;
+
   // Nodes & Gateways
   nodes: NodeConfig[];
   gateways: GatewayConfig[];
@@ -533,6 +536,7 @@ export const CATEGORIES: CategoryMeta[] = [
     icon: 'nodes',
     description: 'ピア / API / 投票ノード設定',
     fields: [
+      { key: 'dockerHostMode', label: 'Docker Host Network Mode', type: 'boolean', description: 'catapultコンテナをDockerホストネットワークで実行。外部ピアのIPアドレスがDNATで書き換えられず正しく認識されるため、3台以上のネットワーク構成で推奨。変更はノード再起動のみで反映。' },
       { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法。public-key: 公開鍵で識別（Docker NAT環境・同一サーバー上の複数ノードや動的IPに対応）。host: IPアドレスで識別（固定IP・シンプルな構成向け）。変更はノード再起動のみで反映（Full Reset 不要）。', options: [{ value: 'public-key', label: 'public-key' }, { value: 'host', label: 'host' }] },
     ],
   },
@@ -812,6 +816,8 @@ export const DEFAULT_PRESET: PresetConfig = {
     { name: 'currency', divisibility: 6, duration: 0, supply: '8998999998000000', isTransferable: true, isSupplyMutable: false, isRestrictable: false },
     { name: 'harvest', divisibility: 3, duration: 0, supply: '15000000', isTransferable: true, isSupplyMutable: true, isRestrictable: false },
   ],
+
+  dockerHostMode: false,
 
   nodes: [{
     name: 'api-node-0', host: '', friendlyName: 'My API Node', roles: 'Peer,Api',
