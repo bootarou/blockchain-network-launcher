@@ -1,6 +1,6 @@
 # Symbol Network Manager
 
-Symbol ブロックチェーンのカスタムネットワーク（プライベートネットワーク）を Web UI で構築・管理するツールです。
+Symbol ブロックチェーンのカスタムネットワーク（プライベートネットワーク）を Web UI で構築・管理するブロックチェーン-ネットワーク-ランチャー(BNL)です。
 
 ![Symbol](https://img.shields.io/badge/Symbol-Catapult%20v1.0.3.9-blue)
 ![Bootstrap](https://img.shields.io/badge/symbol--bootstrap-1.1.10-green)
