@@ -3090,10 +3090,85 @@ function isDockerHostMode(): boolean {
 }
 
 function patchDockerHostMode(targetDir: string): void {
-  if (!isDockerHostMode()) return;
-
   const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
   if (!fs.existsSync(composePath)) return;
+
+  const hostMode = isDockerHostMode();
+
+  // ─── Rollback: if Host Mode is OFF but compose still has network_mode: host ──
+  if (!hostMode) {
+    try {
+      const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
+      if (!doc?.services) return;
+
+      let needsWrite = false;
+
+      for (const svcName of ['api-node-0', 'api-node-0-broker', 'broker']) {
+        const svc = doc.services[svcName];
+        if (!svc || svc.network_mode !== 'host') continue;
+
+        // Remove network_mode: host → container reverts to default bridge
+        delete svc.network_mode;
+        needsWrite = true;
+        broadcastLog(`[HostMode] ↩️  ${svcName}: removed network_mode=host (rollback to bridge)\n`);
+
+        // Restore default ports for api-node-0
+        if (svcName === 'api-node-0') {
+          if (!svc.ports || !svc.ports.some((p: string) => String(p).includes('7900'))) {
+            if (!svc.ports) svc.ports = [];
+            svc.ports.push('7900:7900');
+            broadcastLog(`[HostMode] ↩️  ${svcName}: restored port 7900:7900\n`);
+          }
+        }
+      }
+
+      // Restore db: remove localhost-only 27017 port if it was added by host mode
+      const dbSvc = doc.services['db'];
+      if (dbSvc?.ports) {
+        const idx = dbSvc.ports.findIndex((p: string) =>
+          String(p) === '127.0.0.1:27017:27017'
+        );
+        if (idx >= 0) {
+          dbSvc.ports.splice(idx, 1);
+          if (dbSvc.ports.length === 0) delete dbSvc.ports;
+          needsWrite = true;
+          broadcastLog('[HostMode] ↩️  db: removed 127.0.0.1:27017:27017 (rollback)\n');
+        }
+      }
+
+      if (needsWrite) {
+        fs.writeFileSync(composePath, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+        broadcastLog('[HostMode] ✅ docker-compose.yml rolled back to bridge mode\n');
+
+        // Also rollback config-database.properties: mongodb://127.0.0.1 → mongodb://db
+        const nodesDir = path.join(targetDir, 'nodes');
+        if (fs.existsSync(nodesDir)) {
+          for (const nodeName of fs.readdirSync(nodesDir)) {
+            for (const configDir of ['server-config', 'broker-config']) {
+              const dbCfgPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-database.properties');
+              if (!fs.existsSync(dbCfgPath)) continue;
+              let content = fs.readFileSync(dbCfgPath, 'utf-8');
+              if (/databaseUri\s*=.*127\.0\.0\.1/.test(content)) {
+                content = content.replace(
+                  /^(databaseUri\s*=\s*).+$/m,
+                  '$1mongodb://db:27017'
+                );
+                fs.writeFileSync(dbCfgPath, content, 'utf-8');
+                broadcastLog(`[HostMode] ↩️  ${nodeName}/${configDir}: databaseUri → mongodb://db:27017\n`);
+              }
+            }
+          }
+        }
+        // rest.json apiNode.host is handled by patchRestJsonApiNodeHost() which
+        // already runs in the start flow and resets it to "api-node-0".
+      }
+    } catch (e: any) {
+      broadcastLog(`[HostMode] ⚠️  Rollback failed: ${e.message}\n`);
+    }
+    return; // Host mode is OFF — nothing more to do
+  }
+
+  // ─── Forward: Host Mode is ON — apply patches ────────────────────────────
 
   broadcastLog('[HostMode] 🖧 Docker Host Mode enabled — patching docker-compose.yml...\n');
 
