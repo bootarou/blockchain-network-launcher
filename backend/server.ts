@@ -1041,6 +1041,43 @@ app.get('/api/addresses/balances', async (_req, res) => {
 });
 
 // =============================================================================
+// Docker environment detection
+// =============================================================================
+
+/**
+ * Detect whether Docker is running via Docker Desktop (Windows/Mac) or natively
+ * on Linux.  Docker Desktop runs containers inside a WSL2/HyperKit VM, which
+ * means network_mode:host exposes ports only inside the VM — NOT on the LAN.
+ * This endpoint lets the UI warn users before they enable Docker Host Mode.
+ */
+let _dockerEnvCache: { isDockerDesktop: boolean; os: string } | null = null;
+
+function detectDockerDesktop(): { isDockerDesktop: boolean; os: string } {
+  if (_dockerEnvCache) return _dockerEnvCache;
+  try {
+    const info = execSync('docker info --format "{{.OperatingSystem}}|||{{.OSType}}|||{{.Name}}"', {
+      encoding: 'utf-8',
+      timeout: 10_000,
+    }).trim();
+    const [operatingSystem = '', , hostName = ''] = info.split('|||');
+    // Docker Desktop signatures:
+    //   OperatingSystem contains "Docker Desktop"
+    //   Hostname is "docker-desktop" (WSL2 backend)
+    const isDD =
+      /docker desktop/i.test(operatingSystem) ||
+      /docker-desktop/i.test(hostName);
+    _dockerEnvCache = { isDockerDesktop: isDD, os: operatingSystem };
+  } catch {
+    _dockerEnvCache = { isDockerDesktop: false, os: 'unknown' };
+  }
+  return _dockerEnvCache;
+}
+
+app.get('/api/docker-env', (_req, res) => {
+  res.json(detectDockerDesktop());
+});
+
+// =============================================================================
 // Network status endpoint
 // =============================================================================
 

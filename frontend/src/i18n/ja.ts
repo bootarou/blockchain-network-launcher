@@ -708,6 +708,7 @@ export const ja: TranslationDict = {
   'field.nemesisGenerationHashSeed.desc': 'ジェネシスブロックのSHA3-256ハッシュ',
   'field.nemesisSignerPublicKey.desc': 'ジェネシスブロック署名者の公開鍵',
   'field.dockerHostMode.desc': 'catapultコンテナをDockerホストネットワークで実行。外部ピアのIPアドレスがDNATで書き換えられず正しく認識されるため、3台以上のネットワーク構成で推奨。',
+  'config.dockerDesktopWarning': '⚠ Docker Desktop環境を検出しました。ホストモードはDocker Desktop（Windows/Mac）では動作しません — ポート7900がLANからアクセスできなくなります。この機能はネイティブLinux Dockerのみ対応です。このオプションを無効にしてください。',
   'field.nodeEqualityStrategy.desc': 'ノード同一性の判定方法',
   'field.epochAdjustment.desc': 'Unix epochからの秒数',
   'field.currencyMosaicId.desc': '基軸通貨のモザイクID',

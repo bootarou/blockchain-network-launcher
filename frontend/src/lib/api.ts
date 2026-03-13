@@ -43,6 +43,18 @@ export const api = {
     return res.text();
   },
 
+  // ── Docker environment detection ───────────────────────────────────────
+
+  getDockerEnv: async (): Promise<{ isDockerDesktop: boolean; os: string }> => {
+    try {
+      const res = await fetch(`${API_BASE}/docker-env`);
+      if (!res.ok) return { isDockerDesktop: false, os: 'unknown' };
+      return res.json();
+    } catch {
+      return { isDockerDesktop: false, os: 'unknown' };
+    }
+  },
+
   // ── Network status ─────────────────────────────────────────────────────
 
   getStatus: async () => {

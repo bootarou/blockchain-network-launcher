@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CATEGORIES,
   CATAPULT_VERSIONS,
@@ -48,6 +48,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { configToYaml } from '../lib/utils';
+import { api } from '../lib/api';
 import { useTranslation } from '../i18n';
 
 // Icon mapping per category
@@ -269,6 +270,11 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState('general');
   const [showYaml, setShowYaml] = useState(false);
+  const [isDockerDesktop, setIsDockerDesktop] = useState(false);
+
+  useEffect(() => {
+    api.getDockerEnv().then((env) => setIsDockerDesktop(env.isDockerDesktop));
+  }, []);
 
   // Scalar field change — with preset auto-switch & version auto-fill
   const handleFieldChange = (key: string, value: unknown) => {
@@ -574,7 +580,15 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
                 </div>
               )}
               {catBoolFields.length > 0 && catBoolFields.map((f) => (
-                <FieldRenderer key={f.key} field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
+                <React.Fragment key={f.key}>
+                  <FieldRenderer field={f} value={config[f.key]} onChange={handleFieldChange} preset={config.preset} />
+                  {f.key === 'dockerHostMode' && isDockerDesktop && !!config[f.key] && (
+                    <div className="flex items-start gap-2 px-3 py-2 bg-red-900/40 border border-red-700/60 rounded-lg text-red-300 text-xs">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                      <span>{t('config.dockerDesktopWarning')}</span>
+                    </div>
+                  )}
+                </React.Fragment>
               ))}
             </div>
           )}
