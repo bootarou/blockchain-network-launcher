@@ -3,8 +3,9 @@ node_modules/
 
 # Build output
 dist/
+frontend/.vite/
 
-# Environment (user-specific settings)
+# Environment (user-specific settings — copy .env.example to .env)
 .env
 
 # Logs
@@ -19,11 +20,34 @@ check_element_format.py
 verify_type.py
 debug_wrapper.sh
 body.json
+test-body.json
+test_start.json
+tmp-mids.json
+cmd-body.json
+start-body.json
+init-body.json
+empty_peers.json
+join_peer.json
+fix_proof_heights.py
+rebuild_hashes.py
+rebuild_hashes_gen.py
 shared/check_txs*.py
+shared/check_mosaic_id.py
+shared/compute_mosaic_from_nonce.js
+shared/compute_mosaic_id.py
+shared/compute_ns_id.js
+shared/parse_with_catbuffer.js
 
 # User-specific preset & runtime data
 shared/custom-preset.yml
 shared/.ui-meta.json
+
+# Distribution ZIPs (large binaries — rebuild with draft/build-zips.ps1)
+draft/windows.zip
+draft/**/*.zip
+
+# Development notes
+summary.md
 
 # OS
 Thumbs.db

@@ -1,7 +1,12 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import type { PresetConfig } from '../constants';
-import { DEFAULT_PRESET, CATAPULT_VERSIONS } from '../constants';
+import {
+  DEFAULT_PRESET,
+  CATAPULT_VERSIONS,
+  OFFICIAL_MAINNET_GENERATION_HASH,
+  OFFICIAL_TESTNET_GENERATION_HASH,
+} from '../constants';
 
 // ─── Tailwind merge helper ──────────────────────────────────────────────────
 
@@ -197,12 +202,88 @@ export function configToYaml(config: PresetConfig): string {
 
   doc.networkProperties = networkProps;
 
+  // Nemesis mosaics (bootstrap only)
+  if (config.baseNamespace) {
+    doc.baseNamespace = config.baseNamespace;
+  }
+  if (config.nemesisMosaics && config.nemesisMosaics.length > 0) {
+    // Ensure supply values are plain numbers (strip apostrophe formatting)
+    const sanitizedMosaics = config.nemesisMosaics.map((m: any) => {
+      const copy = { ...m };
+      if (typeof copy.supply === 'string') {
+        const stripped = copy.supply.replace(/'/g, '');
+        if (/^\d+$/.test(stripped)) {
+          copy.supply = parseInt(stripped, 10);
+        }
+      }
+      return copy;
+    });
+    doc.nemesis = { mosaics: sanitizedMosaics };
+  }
+
   // Explorer / Faucet
   if (config.explorerEnabled) {
     doc.explorer = { port: config.explorerPort };
   }
   if (config.faucetEnabled) {
     doc.faucet = { port: config.faucetPort, amount: config.faucetAmount };
+  }
+
+  // Inflation schedule (for custom/private networks)
+  if (config.inflation && config.inflation.length > 0) {
+    const inflObj: Record<string, unknown> = {};
+    for (const entry of config.inflation) {
+      inflObj[`starting-at-height-${entry.startHeight}`] = entry.amount;
+    }
+    doc.inflation = inflObj;
+  }
+
+  // ── Top-level field overrides ──
+  // symbol-bootstrap's mustache templates read fields from the top level of the
+  // merged preset. Setting them only under networkProperties.chain does NOT
+  // override the base preset values. Duplicate critical fields at the root.
+  const topLevelKeys: (keyof typeof config)[] = [
+    'enableVerifiableState', 'enableVerifiableReceipts',
+    'blockGenerationTargetTime', 'blockTimeSmoothingFactor',
+    'maxBlockFutureTime',
+    'importanceGrouping', 'importanceActivityPercentage',
+    'maxRollbackBlocks', 'maxDifficultyBlocks',
+    'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
+    'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'maxMosaicAtomicUnits', 'totalChainImportance',
+    'initialCurrencyAtomicUnits',
+    'minHarvesterBalance', 'maxHarvesterBalance',
+    'minVoterBalance', 'votingSetGrouping',
+    'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',
+    'harvestBeneficiaryPercentage', 'harvestNetworkPercentage',
+    'maxTransactionsPerAggregate', 'maxCosignaturesPerAggregate',
+    'enableStrictCosignatureCheck', 'enableBondedAggregateSupport',
+    'maxBondedTransactionLifetime',
+    'lockedFundsPerAggregate', 'maxHashLockDuration',
+    'maxSecretLockDuration', 'minProofSize', 'maxProofSize',
+    'maxValueSize',
+    'maxMosaicsPerAccount', 'maxMosaicDuration', 'maxMosaicDivisibility',
+    'mosaicRentalFee',
+    'maxNamespacesPerAccount', 'maxNameSize', 'maxNamespaceDepth',
+    'maxChildNamespaces', 'minNamespaceDuration', 'maxNamespaceDuration',
+    'namespaceGracePeriodDuration', 'reservedRootNamespaceNames',
+    'rootNamespaceRentalFeePerBlock', 'childNamespaceRentalFee',
+    'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
+    'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
+    'maxMessageSize',
+  ];
+  for (const k of topLevelKeys) {
+    const v = config[k];
+    if (v !== undefined && v !== null && v !== '') {
+      // Strip apostrophe formatting from numeric strings so symbol-bootstrap
+      // can use them directly in arithmetic (Math.min etc.).
+      if (typeof v === 'string' && /^\d[\d']*$/.test(v)) {
+        const num = Number(v.replace(/'/g, ''));
+        doc[k] = isNaN(num) ? v : num;
+      } else {
+        doc[k] = v;
+      }
+    }
   }
 
   return objectToYaml(doc, 0);
@@ -241,6 +322,8 @@ function mergeWithDefaults(partial: Record<string, unknown>): PresetConfig {
   // Ensure arrays are proper
   if (!Array.isArray(merged.nodes)) merged.nodes = DEFAULT_PRESET.nodes;
   if (!Array.isArray(merged.gateways)) merged.gateways = DEFAULT_PRESET.gateways;
+  if (!Array.isArray(merged.inflation)) merged.inflation = DEFAULT_PRESET.inflation;
+  if (!Array.isArray(merged.nemesisMosaics)) merged.nemesisMosaics = DEFAULT_PRESET.nemesisMosaics;
 
   return merged as PresetConfig;
 }
@@ -285,6 +368,27 @@ function flattenParsed(obj: Record<string, unknown>): Record<string, unknown> {
     if (fau.port) flat.faucetPort = fau.port;
     if (fau.amount) flat.faucetAmount = fau.amount;
     delete flat.faucet;
+  }
+
+  // Flatten inflation
+  const infl = obj.inflation as Record<string, unknown> | undefined;
+  if (infl && typeof infl === 'object' && !Array.isArray(infl)) {
+    // Convert { 'starting-at-height-2': '95000000', ... } → InflationEntry[]
+    const entries = Object.entries(infl)
+      .map(([k, v]) => {
+        const m = k.match(/starting-at-height-(\d+)/);
+        return m ? { startHeight: Number(m[1]), amount: String(v) } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a!.startHeight - b!.startHeight);
+    flat.inflation = entries;
+  }
+
+  // Flatten nemesis
+  const nemesis = obj.nemesis as Record<string, unknown> | undefined;
+  if (nemesis?.mosaics && Array.isArray(nemesis.mosaics)) {
+    flat.nemesisMosaics = nemesis.mosaics;
+    delete flat.nemesis;
   }
 
   return flat;
@@ -459,7 +563,10 @@ function restVal(v: unknown): unknown {
 export function networkPropertiesToConfig(
   networkProperties: Record<string, unknown>,
   nodeInfo: Record<string, unknown>,
-  peers: Record<string, unknown>[]
+  peers: Record<string, unknown>[],
+  minFeeMultiplier: number | null = null,
+  mosaicInfo: Record<string, unknown>[] = [],
+  mosaicNames: { mosaicId: string; names: string[] }[] = [],
 ): Partial<PresetConfig> {
   const np = networkProperties as {
     network?: Record<string, unknown>;
@@ -479,19 +586,37 @@ export function networkPropertiesToConfig(
     }
   }
 
-  // Determine preset name from network identifier
+  // Determine preset name from the genesis generation hash seed.
+  // networkIdentifier alone is ambiguous — a bootstrap custom network can
+  // reuse 152 (testnet address prefix) without being Symbol's official testnet.
+  // The generation hash seed is unique to each genesis block and is the
+  // only reliable way to identify the official networks.
   const ni = Number(nodeInfo.networkIdentifier ?? network.identifier ?? 0);
+  const genHash = String(
+    nodeInfo.networkGenerationHashSeed ?? network.generationHashSeed ?? ''
+  ).toUpperCase();
   const presetFromId =
-    ni === 104 ? 'mainnet' : ni === 152 ? 'testnet' : 'bootstrap';
+    genHash === OFFICIAL_MAINNET_GENERATION_HASH
+      ? 'mainnet'
+      : genHash === OFFICIAL_TESTNET_GENERATION_HASH
+        ? 'testnet'
+        : 'bootstrap';
 
   // Detect catapult version from node server version
   // nodeInfo.version is a packed uint32: 0xMMmmPPBB → major.minor.patch.build
   // e.g. 16777993 = 0x01000309 → 1.0.3.9 (V3), 16777990 = 0x01000306 → 1.0.3.6 (V2)
   const serverVersion = Number(nodeInfo.version ?? 0);
   const patchBuild = serverVersion & 0xFFFF; // lower 16 bits = patch.build
-  // V3 = build >= 0x0309 (1.0.3.9+), V2 = build < 0x0309 (1.0.3.6 etc.)
-  // For mainnet/testnet, always use V3 as the official networks have upgraded
-  const isV3 = (ni === 104 || ni === 152) ? true : (patchBuild >= 0x0309);
+  // For mainnet/testnet, always use V3 as the official networks have upgraded.
+  // For custom networks: V3 if build >= 0x0309 (1.0.3.9+), V2 if build < 0x0309 (1.0.3.6).
+  // IMPORTANT: if nodeInfo.version is 0 (not returned / REST unavailable), serverVersion=0
+  // and patchBuild=0, which would incorrectly detect V2.  We default to V3 in that case
+  // because 1.0.3.9 is the current standard and V2 (1.0.3.6) is only for legacy networks.
+  const isV3 = (ni === 104 || ni === 152)
+    ? true                         // official networks: always V3
+    : serverVersion === 0
+      ? true                       // version unknown → safe default = V3
+      : (patchBuild >= 0x0309);    // custom network: check actual build number
   const catapultVersion = isV3 ? 'v3' : 'v2';
 
   // Import CATAPULT_VERSIONS to set correct Docker images
@@ -631,6 +756,95 @@ export function networkPropertiesToConfig(
     maxMessageSize: restVal(pluginFlat.maxMessageSize),
   };
 
+  // Build nemesisMosaics from /mosaics REST data (bootstrap custom networks only).
+  // For official mainnet/testnet the preset handles mosaic config internally so
+  // we skip this.  For bootstrap networks the default supply values are wrong
+  // (8998999998000000 / 15000000) and must be replaced with the real values.
+  if (presetFromId === 'bootstrap' && mosaicInfo.length > 0) {
+    // Helper: clean mosaic ID to 16-char uppercase hex
+    const cleanId = (id: unknown): string =>
+      String(id ?? '').replace(/0x/gi, '').replace(/'/g, '').toUpperCase();
+
+    const rawCurrId = cleanId(chain.currencyMosaicId);
+    const rawHarvId = cleanId(chain.harvestingMosaicId);
+
+    // Build map: mosaicId → REST mosaic object.
+    // Only include mosaics with startHeight === 1 (nemesis block).
+    // In a live network /mosaics returns many entries; only block-1 mosaics
+    // are the original nemesis mosaics (currency / harvest).
+    const mosaicMap = new Map<string, Record<string, unknown>>();
+    for (const item of mosaicInfo) {
+      const m = (item as Record<string, unknown>).mosaic as Record<string, unknown> | undefined;
+      if (!m?.id) continue;
+      const sh = Number(m.startHeight ?? 0);
+      if (sh !== 1) continue; // skip non-nemesis mosaics
+      mosaicMap.set(String(m.id).toUpperCase(), m);
+    }
+
+    // Build map: mosaicId → first namespace alias (e.g. "cat.currency")
+    // REST POST /mosaics/names returns [{mosaicId, names:["cat.currency"]}, ...]
+    const nameAliasMap = new Map<string, string>();
+    for (const entry of mosaicNames) {
+      const id = String(entry.mosaicId ?? '').toUpperCase();
+      const alias = entry.names?.[0] ?? '';
+      if (id && alias) nameAliasMap.set(id, alias);
+    }
+
+    // Derive baseNamespace from the currency mosaic alias.
+    // e.g. "cat.currency" → rootNs="cat", leafName="currency"
+    const currAlias = nameAliasMap.get(rawCurrId) ?? nameAliasMap.get(rawHarvId) ?? '';
+    if (currAlias) {
+      const parts = currAlias.split('.');
+      const rootNs = parts[0];
+      if (rootNs) partial.baseNamespace = rootNs;
+    }
+
+    const leafName = (alias: string): string => {
+      if (!alias) return '';
+      const parts = alias.split('.');
+      return parts[parts.length - 1];
+    };
+
+    const currMosaic = mosaicMap.get(rawCurrId);
+    const harvMosaic = mosaicMap.get(rawHarvId);
+
+    if (currMosaic || harvMosaic) {
+      const builtMosaics: Record<string, unknown>[] = [];
+
+      // Currency mosaic entry
+      const cm = currMosaic ?? harvMosaic!;
+      const cFlags = Number(cm.flags ?? 2);
+      // Use alias leaf name if available, otherwise fall back to 'currency'
+      const currName = leafName(nameAliasMap.get(rawCurrId) ?? '') || 'currency';
+      builtMosaics.push({
+        name: currName,
+        divisibility: Number(cm.divisibility ?? 6),
+        duration: Number(cm.duration ?? 0),
+        supply: String(cm.supply ?? '0'),
+        isTransferable: (cFlags & 0x02) !== 0,
+        isSupplyMutable: (cFlags & 0x01) !== 0,
+        isRestrictable: (cFlags & 0x04) !== 0,
+      });
+
+      // Harvest mosaic entry — only when it differs from currency
+      if (harvMosaic && rawHarvId !== rawCurrId) {
+        const hFlags = Number(harvMosaic.flags ?? 6);
+        const harvName = leafName(nameAliasMap.get(rawHarvId) ?? '') || 'harvest';
+        builtMosaics.push({
+          name: harvName,
+          divisibility: Number(harvMosaic.divisibility ?? 3),
+          duration: Number(harvMosaic.duration ?? 0),
+          supply: String(harvMosaic.supply ?? '0'),
+          isTransferable: (hFlags & 0x02) !== 0,
+          isSupplyMutable: (hFlags & 0x01) !== 0,
+          isRestrictable: (hFlags & 0x04) !== 0,
+        });
+      }
+
+      partial.nemesisMosaics = builtMosaics;
+    }
+  }
+
   // NOTE: Do NOT add remote peers as nodes[] entries here.
   // Each entry in nodes[] creates a LOCAL docker container — remote peers
   // should not be instantiated locally.  The backend's fetchAndWritePeerFiles()
@@ -639,6 +853,13 @@ export function networkPropertiesToConfig(
   // By omitting partial.nodes, DEFAULT_PRESET.nodes (which contains
   // api-node-0 with api/database/harvesting enabled) is preserved during
   // the merge in handleApply().
+
+  // Apply minFeeMultiplier to local node defaults if fetched from /network/fees/transaction
+  // This is a per-node setting, so we store it in nodes[0] via DEFAULT_NODE merge in App.tsx.
+  // We surface it as a top-level key here so it flows into the config correctly.
+  if (minFeeMultiplier !== null) {
+    (partial as Record<string, unknown>)._joinMinFeeMultiplier = minFeeMultiplier;
+  }
 
   // Strip undefined values
   for (const k of Object.keys(partial)) {

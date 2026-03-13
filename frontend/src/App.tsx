@@ -1,16 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Server, RotateCcw, Globe, HelpCircle } from 'lucide-react';
+import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon } from 'lucide-react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { JoinNetwork } from './components/JoinNetwork';
+import { ShareNetwork } from './components/ShareNetwork';
+import { BackupRestore } from './components/BackupRestore';
 import { HelpPage } from './components/HelpPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
-import { DEFAULT_PRESET, type PresetConfig } from './constants';
+import { DEFAULT_PRESET, DEFAULT_NODE, DEFAULT_GATEWAY, type PresetConfig, type NodeConfig, type GatewayConfig } from './constants';
 import { api } from './lib/api';
+import { useTranslation } from './i18n';
+import { useTheme } from './theme';
 
 function App() {
   const [config, setConfig] = useState<PresetConfig>(DEFAULT_PRESET);
-  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'help'>('config');
+  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'share' | 'backup' | 'help'>('config');
+  const { t, lang, setLang } = useTranslation();
+  const { theme, toggleTheme } = useTheme();
 
   // Load saved preset from backend on mount
   useEffect(() => {
@@ -18,10 +24,21 @@ function App() {
       .loadPreset()
       .then((data) => {
         if (data && typeof data === 'object' && !data.error) {
-          setConfig((prev) => ({ ...prev, ...data }));
+          // Shallow-merge over DEFAULT_PRESET so all scalar fields are updated.
+          const merged = { ...DEFAULT_PRESET, ...data } as PresetConfig;
+          // Deep-merge each node/gateway with its default template so that
+          // fields not stored in custom-preset.yml (e.g. enableTransactionSpamThrottling)
+          // still show their correct defaults instead of appearing blank/false.
+          if (Array.isArray(data.nodes)) {
+            merged.nodes = (data.nodes as NodeConfig[]).map((n) => ({ ...DEFAULT_NODE, ...n }));
+          }
+          if (Array.isArray(data.gateways)) {
+            merged.gateways = (data.gateways as GatewayConfig[]).map((g) => ({ ...DEFAULT_GATEWAY, ...g }));
+          }
+          setConfig(merged);
         }
       })
-      .catch(console.error);
+      .catch(() => {}); // Silently ignore when backend is not running
   }, []);
 
   const handleConfigChange = (newConfig: PresetConfig) => {
@@ -32,14 +49,37 @@ function App() {
     setConfig({ ...DEFAULT_PRESET, ...imported });
   };
 
+  /** Merge helper: if _joinMinFeeMultiplier is present, apply it to nodes[] */
+  const applyJoinDefaults = (imported: PresetConfig): PresetConfig => {
+    const raw = imported as Record<string, unknown>;
+    const minFee = raw._joinMinFeeMultiplier;
+    const base = { ...DEFAULT_PRESET, ...imported };
+    // Remove temporary key
+    delete (base as Record<string, unknown>)._joinMinFeeMultiplier;
+    if (typeof minFee === 'number') {
+      base.nodes = (base.nodes ?? DEFAULT_PRESET.nodes).map((n) => ({
+        ...DEFAULT_NODE,
+        ...n,
+        minFeeMultiplier: minFee,
+      }));
+    }
+    return base;
+  };
+
   /** Import from Join Network — apply and switch to Configuration tab */
   const handleJoinImport = (imported: PresetConfig) => {
+    setConfig(applyJoinDefaults(imported));
+    setActivePanel('config');
+  };
+
+  /** Import from Share Network — apply and switch to Configuration tab */
+  const handleShareImport = (imported: PresetConfig) => {
     setConfig({ ...DEFAULT_PRESET, ...imported });
     setActivePanel('config');
   };
 
   const handleResetDefaults = () => {
-    if (confirm('全ての設定をデフォルト値にリセットしますか？')) {
+    if (confirm(t('app.resetConfirm'))) {
       setConfig(DEFAULT_PRESET);
     }
   };
@@ -53,9 +93,9 @@ function App() {
             <Server className="w-7 h-7 text-indigo-400" />
             <div>
               <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent leading-tight">
-                Symbol Network Manager
+                {t('app.title')}
               </h1>
-              <p className="text-zinc-600 text-xs">Catapult v1.0.3.1 · Aggregate V3</p>
+              <p className="text-zinc-600 text-xs">{t('app.subtitle')}</p>
             </div>
           </div>
 
@@ -73,7 +113,7 @@ function App() {
                     : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                Configuration
+                {t('tabs.config')}
               </button>
               <button
                 onClick={() => setActivePanel('join')}
@@ -84,7 +124,18 @@ function App() {
                 }`}
               >
                 <Globe className="w-3.5 h-3.5" />
-                Join Network
+                {t('tabs.join')}
+              </button>
+              <button
+                onClick={() => setActivePanel('share')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  activePanel === 'share'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                {t('tabs.share')}
               </button>
               <button
                 onClick={() => setActivePanel('dashboard')}
@@ -94,7 +145,18 @@ function App() {
                     : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                Dashboard
+                {t('tabs.dashboard')}
+              </button>
+              <button
+                onClick={() => setActivePanel('backup')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  activePanel === 'backup'
+                    ? 'bg-teal-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                {t('tabs.backup')}
               </button>
               <button
                 onClick={() => setActivePanel('help')}
@@ -105,63 +167,61 @@ function App() {
                 }`}
               >
                 <HelpCircle className="w-3.5 h-3.5" />
-                Help
+                {t('tabs.help')}
               </button>
             </div>
 
             <button
+              onClick={toggleTheme}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
+              title={theme === 'dark' ? t('theme.switchToLight') : t('theme.switchToDark')}
+            >
+              {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+            </button>
+
+            <button
+              onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
+              title={lang === 'ja' ? 'Switch to English' : '日本語に切り替え'}
+            >
+              <Languages className="w-3.5 h-3.5" />
+              {lang === 'ja' ? 'EN' : 'JA'}
+            </button>
+
+            <button
               onClick={handleResetDefaults}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
-              title="Reset to defaults"
+              title={t('app.resetToDefaults')}
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Reset
+              {t('app.reset')}
             </button>
           </div>
         </div>
       </header>
 
       {/* ── Main Content ── */}
-      <main className="flex-1 max-w-[1600px] w-full mx-auto px-6 py-8">
-        {/* Desktop: side-by-side / Mobile: toggle */}
-        {activePanel === 'help' ? (
-          <div className="hidden xl:block">
-            <HelpPage />
-          </div>
+      <main className="flex-1 max-w-4xl w-full mx-auto px-6 py-8">
+        {activePanel === 'config' ? (
+          <ConfigForm config={config} onChange={handleConfigChange} />
+        ) : activePanel === 'join' ? (
+          <JoinNetwork onConfigImport={handleJoinImport} />
+        ) : activePanel === 'share' ? (
+          <ShareNetwork onConfigImport={handleShareImport} />
+        ) : activePanel === 'backup' ? (
+          <BackupRestore />
+        ) : activePanel === 'help' ? (
+          <HelpPage />
         ) : (
-        <div className="hidden xl:grid xl:grid-cols-2 xl:gap-8">
-          <div>
-            {activePanel === 'join' ? (
-              <JoinNetwork onConfigImport={handleJoinImport} />
-            ) : (
-              <ConfigForm config={config} onChange={handleConfigChange} />
-            )}
-          </div>
-          <div className="sticky top-24 self-start">
-            <Dashboard config={config} onConfigImport={handleConfigImport} />
-          </div>
-        </div>
+          <Dashboard config={config} onConfigImport={handleConfigImport} />
         )}
-
-        {/* Mobile / Tablet: single panel */}
-        <div className="xl:hidden">
-          {activePanel === 'config' ? (
-            <ConfigForm config={config} onChange={handleConfigChange} />
-          ) : activePanel === 'join' ? (
-            <JoinNetwork onConfigImport={handleJoinImport} />
-          ) : activePanel === 'help' ? (
-            <HelpPage />
-          ) : (
-            <Dashboard config={config} onConfigImport={handleConfigImport} />
-          )}
-        </div>
       </main>
 
       {/* ── Footer ── */}
       <footer className="border-t border-zinc-800 py-4 text-center text-xs text-zinc-600 space-y-1">
-        <p>Symbol Custom Network Manager · Docker-in-Docker · symbol-bootstrap</p>
+        <p>{t('app.footer')}</p>
         <p>
-          Powered by{' '}
+          {t('app.poweredBy')}{' '}
           <a href="https://symbolplatform.com" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-indigo-400 transition-colors">
             Symbol / NEM
           </a>

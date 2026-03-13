@@ -26,7 +26,28 @@ RUN printf '#!/bin/sh\nexec docker compose "$@"\n' > /usr/local/bin/docker-compo
     && chmod +x /usr/local/bin/docker-compose
 
 # Install symbol-bootstrap globally
-RUN npm install -g symbol-bootstrap@latest
+# Default: install from bootarou fork (the original fbsobreira repo was deleted).
+# Override at build time:  docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=https://github.com/<you>/symbol-bootstrap.git
+ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
+RUN npm install -g ${SYMBOL_BOOTSTRAP_REPO}
+
+# Workaround: `npm install -g <git-url>` respects .npmignore / package.json
+# "files", which can omit config/node/resources/*.mustache templates.
+# These templates are required by nemgen during `symbol-bootstrap config`.
+# We pack the installed package, extract the config/ tree, and restore it.
+RUN SB_ROOT=$(npm root -g)/symbol-bootstrap \
+    && if [ ! -f "$SB_ROOT/config/node/resources/config-node.properties.mustache" ]; then \
+         cd /tmp \
+         && npm pack symbol-bootstrap --pack-destination /tmp 2>/dev/null \
+         && TARBALL=$(ls /tmp/symbol-bootstrap-*.tgz | head -1) \
+         && tar xzf "$TARBALL" \
+         && cp -r /tmp/package/config/* "$SB_ROOT/config/" \
+         && cp -r /tmp/package/presets/* "$SB_ROOT/presets/" 2>/dev/null || true \
+         && rm -rf /tmp/package /tmp/symbol-bootstrap-*.tgz \
+         && echo "✅ Restored missing bootstrap templates to $SB_ROOT/config/" \
+       ; else \
+         echo "✅ Bootstrap templates already present" \
+       ; fi
 
 WORKDIR /app
 
@@ -42,9 +63,9 @@ COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY shared/ ./shared/
 
-# Copy start script
+# Copy and prepare start script (normalize line endings for cross-platform compatibility)
 COPY start.sh /start.sh
-RUN chmod +x /start.sh
+RUN sed -i 's/\r$//' /start.sh && chmod +x /start.sh
 
 # Expose ports: 3000 (API+WS), 5173 (Vite dev), 80 (prod)
 EXPOSE 3000 5173 80

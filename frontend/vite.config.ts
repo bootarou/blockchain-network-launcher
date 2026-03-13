@@ -15,5 +15,19 @@ export default defineConfig({
             clientPort: 5173, // Force WebSocket to use this port
             host: 'localhost', // Or omit to inherit
         },
+        // Proxy API and WebSocket to backend (port 4000 inside container)
+        proxy: {
+            '/api': {
+                target: 'http://localhost:4000',
+                changeOrigin: true,
+            },
+            // WebSocket upgrade — the backend WS server listens on /
+            // but we scope the proxy to avoid conflicting with Vite HMR
+            '/ws': {
+                target: 'ws://localhost:4000',
+                ws: true,
+                rewrite: (path: string) => path.replace(/^\/ws/, ''),
+            },
+        },
     },
 })

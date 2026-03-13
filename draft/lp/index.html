@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Symbol Network Manager — Build Your Own Blockchain</title>
+<style>
+/* ===== Reset & Base ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;
+  --bg2:#12121a;
+  --bg3:#1a1a2e;
+  --surface:#ffffff08;
+  --surface2:#ffffff0d;
+  --border:#ffffff12;
+  --text:#e4e4e7;
+  --text2:#a1a1aa;
+  --text3:#71717a;
+  --accent:#6d5dfc;
+  --accent2:#a78bfa;
+  --accent3:#c4b5fd;
+  --green:#22c55e;
+  --cyan:#06b6d4;
+  --amber:#f59e0b;
+  --pink:#ec4899;
+  --radius:12px;
+  --radius-lg:20px;
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{
+  font-family:'Inter','Segoe UI','Helvetica Neue',Arial,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.7;
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent2);text-decoration:none;transition:color .2s}
+a:hover{color:var(--accent3)}
+img{max-width:100%;display:block}
+
+/* ===== Utilities ===== */
+.container{max-width:1200px;margin:0 auto;padding:0 24px}
+.section{padding:100px 0}
+.section-label{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:.75rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--accent2);
+  background:linear-gradient(135deg,#6d5dfc18,#a78bfa18);
+  border:1px solid var(--accent)33;
+  border-radius:999px;padding:6px 16px;margin-bottom:16px;
+}
+.section-title{font-size:clamp(1.8rem,4vw,2.8rem);font-weight:800;line-height:1.2;margin-bottom:16px;letter-spacing:-.02em}
+.section-sub{font-size:1.1rem;color:var(--text2);max-width:640px;margin-bottom:48px}
+.gradient-text{
+  background:linear-gradient(135deg,var(--accent2),var(--cyan),var(--accent3));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+.fade-in{opacity:0;transform:translateY(30px);transition:opacity .7s ease,transform .7s ease}
+.fade-in.visible{opacity:1;transform:translateY(0)}
+
+/* ===== Noise overlay ===== */
+body::before{
+  content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;
+  background:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  opacity:.4;
+}
+
+/* ===== Glow orbs ===== */
+.orb{position:absolute;border-radius:50%;filter:blur(120px);pointer-events:none;z-index:0}
+.orb-1{width:600px;height:600px;background:radial-gradient(circle,#6d5dfc22,transparent 70%);top:-200px;left:-200px}
+.orb-2{width:500px;height:500px;background:radial-gradient(circle,#06b6d418,transparent 70%);top:300px;right:-150px}
+.orb-3{width:400px;height:400px;background:radial-gradient(circle,#ec489918,transparent 70%);bottom:-100px;left:30%}
+
+/* ===== Nav ===== */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  background:rgba(10,10,15,.75);
+  border-bottom:1px solid var(--border);
+  transition:box-shadow .3s;
+}
+nav.scrolled{box-shadow:0 4px 30px rgba(0,0,0,.4)}
+.nav-inner{
+  max-width:1200px;margin:0 auto;padding:0 24px;
+  display:flex;align-items:center;justify-content:space-between;height:64px;
+}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem}
+.nav-logo svg{width:28px;height:28px}
+.nav-links{display:flex;gap:32px;list-style:none;align-items:center}
+.nav-links a{font-size:.875rem;color:var(--text2);font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--text)}
+.nav-right{display:flex;align-items:center;gap:12px}
+.nav-cta{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:8px 20px;border-radius:999px;font-size:.85rem;font-weight:600;
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);
+  color:#fff;border:none;cursor:pointer;transition:transform .15s,box-shadow .2s;
+}
+.nav-cta:hover{transform:translateY(-1px);box-shadow:0 4px 20px #6d5dfc44;color:#fff}
+@media(max-width:768px){.nav-links{display:none}}
+
+/* ===== Language Switcher ===== */
+.lang-switcher{position:relative}
+.lang-btn{
+  display:flex;align-items:center;gap:6px;
+  padding:6px 14px;border-radius:999px;font-size:.8rem;font-weight:600;
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--text2);cursor:pointer;transition:all .2s;
+  white-space:nowrap;
+}
+.lang-btn:hover{border-color:#ffffff22;color:var(--text)}
+.lang-btn svg{width:14px;height:14px;transition:transform .2s}
+.lang-switcher.open .lang-btn svg{transform:rotate(180deg)}
+.lang-dropdown{
+  position:absolute;top:calc(100% + 8px);right:0;
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:6px;min-width:150px;
+  box-shadow:0 12px 40px rgba(0,0,0,.5);
+  opacity:0;visibility:hidden;transform:translateY(-8px);
+  transition:all .2s ease;z-index:200;
+}
+.lang-switcher.open .lang-dropdown{opacity:1;visibility:visible;transform:translateY(0)}
+.lang-option{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 14px;border-radius:8px;font-size:.85rem;
+  color:var(--text2);cursor:pointer;transition:all .15s;border:none;background:none;width:100%;text-align:left;
+}
+.lang-option:hover{background:var(--surface2);color:var(--text)}
+.lang-option.active{color:var(--accent2);background:var(--accent)15}
+.lang-option .flag{font-size:1.1rem}
+
+/* ===== Hero ===== */
+.hero{
+  position:relative;min-height:100vh;
+  display:flex;align-items:center;
+  padding-top:100px;padding-bottom:80px;overflow:hidden;
+}
+.hero-content{position:relative;z-index:1;max-width:720px}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:6px 14px;border-radius:999px;font-size:.8rem;font-weight:600;
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--text2);margin-bottom:24px;
+}
+.hero-badge .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.hero h1{font-size:clamp(2.4rem,5.5vw,4rem);font-weight:800;line-height:1.1;letter-spacing:-.03em;margin-bottom:20px}
+.hero p{font-size:1.15rem;color:var(--text2);max-width:540px;margin-bottom:36px}
+.hero-actions{display:flex;gap:12px;flex-wrap:wrap}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:14px 28px;border-radius:var(--radius);font-size:.95rem;font-weight:600;
+  cursor:pointer;border:none;transition:all .2s;
+}
+.btn-primary{
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);
+  color:#fff;box-shadow:0 4px 24px #6d5dfc33;
+}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 32px #6d5dfc55;color:#fff}
+.btn-ghost{
+  background:var(--surface2);color:var(--text);
+  border:1px solid var(--border);
+}
+.btn-ghost:hover{background:var(--surface);border-color:#ffffff22}
+
+/* Hero visual */
+.hero-visual{
+  position:absolute;right:-60px;top:50%;transform:translateY(-50%);
+  width:55%;max-width:640px;z-index:0;opacity:.85;
+}
+.terminal-mock{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);
+  overflow:hidden;box-shadow:0 20px 80px rgba(0,0,0,.5);
+}
+.terminal-bar{
+  display:flex;align-items:center;gap:8px;padding:14px 18px;
+  background:var(--bg3);border-bottom:1px solid var(--border);
+}
+.terminal-dot{width:12px;height:12px;border-radius:50%}
+.terminal-dot.r{background:#ef4444}.terminal-dot.y{background:#f59e0b}.terminal-dot.g{background:#22c55e}
+.terminal-bar span{flex:1;text-align:center;font-size:.75rem;color:var(--text3)}
+.terminal-body{padding:20px;font-family:'JetBrains Mono','Fira Code',monospace;font-size:.8rem;line-height:1.9;color:var(--text2)}
+.terminal-body .prompt{color:var(--green)}
+.terminal-body .cmd{color:var(--text)}
+.terminal-body .out{color:var(--text3)}
+.terminal-body .ok{color:var(--cyan)}
+.terminal-body .hl{color:var(--accent2)}
+@media(max-width:1024px){.hero-visual{display:none}}
+
+/* ===== Features ===== */
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px}
+.feature-card{
+  position:relative;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:36px 32px;transition:transform .25s,border-color .25s,box-shadow .25s;overflow:hidden;
+}
+.feature-card:hover{
+  transform:translateY(-4px);
+  border-color:#ffffff22;
+  box-shadow:0 16px 48px rgba(0,0,0,.3);
+}
+.feature-card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  opacity:0;transition:opacity .3s;
+}
+.feature-card:hover::before{opacity:1}
+.feature-icon{
+  width:48px;height:48px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  margin-bottom:20px;font-size:1.4rem;
+}
+.feature-icon.purple{background:linear-gradient(135deg,#6d5dfc22,#a78bfa22);color:var(--accent2)}
+.feature-icon.cyan{background:linear-gradient(135deg,#06b6d422,#22d3ee22);color:var(--cyan)}
+.feature-icon.green{background:linear-gradient(135deg,#22c55e22,#4ade8022);color:var(--green)}
+.feature-icon.amber{background:linear-gradient(135deg,#f59e0b22,#fbbf2422);color:var(--amber)}
+.feature-icon.pink{background:linear-gradient(135deg,#ec489922,#f472b622);color:var(--pink)}
+.feature-icon.blue{background:linear-gradient(135deg,#3b82f622,#60a5fa22);color:#60a5fa}
+.feature-card h3{font-size:1.15rem;font-weight:700;margin-bottom:10px}
+.feature-card p{font-size:.9rem;color:var(--text2);line-height:1.7}
+
+/* ===== Screenshot ===== */
+.screenshot-wrap{
+  position:relative;border-radius:var(--radius-lg);overflow:hidden;
+  border:1px solid var(--border);box-shadow:0 30px 80px rgba(0,0,0,.5);
+  background:var(--bg2);
+}
+.screenshot-topbar{
+  display:flex;align-items:center;gap:8px;padding:12px 18px;
+  background:var(--bg3);border-bottom:1px solid var(--border);
+}
+.screenshot-url{
+  flex:1;text-align:center;font-size:.75rem;color:var(--text3);
+  background:var(--bg);border-radius:6px;padding:5px 12px;
+}
+.screenshot-body{
+  padding:32px;
+  background:linear-gradient(160deg,var(--bg2),var(--bg3));
+  min-height:420px;
+  display:grid;grid-template-columns:220px 1fr;gap:24px;
+}
+.mock-sidebar{
+  background:var(--surface);border-radius:var(--radius);padding:20px;
+  border:1px solid var(--border);
+}
+.mock-sidebar-item{
+  padding:10px 14px;border-radius:8px;font-size:.8rem;font-weight:500;
+  color:var(--text2);margin-bottom:4px;cursor:default;transition:background .15s;
+}
+.mock-sidebar-item.active{background:var(--accent)22;color:var(--accent2)}
+.mock-sidebar-item:hover{background:var(--surface2)}
+.mock-main{display:flex;flex-direction:column;gap:16px}
+.mock-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;
+}
+.mock-card-title{font-size:.75rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px}
+.mock-stat{font-size:1.8rem;font-weight:800;margin-bottom:4px}
+.mock-stat.up{color:var(--green)}
+.mock-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.mock-bar{height:6px;border-radius:3px;background:var(--surface2);overflow:hidden;margin-top:8px}
+.mock-bar-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--cyan))}
+@media(max-width:768px){.screenshot-body{grid-template-columns:1fr}.mock-sidebar{display:none}.mock-row{grid-template-columns:1fr}}
+
+/* ===== How it works ===== */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:32px;counter-reset:step}
+.step{position:relative;text-align:center;padding:32px 20px}
+.step::before{
+  counter-increment:step;content:counter(step);
+  display:flex;align-items:center;justify-content:center;
+  width:56px;height:56px;border-radius:50%;margin:0 auto 20px;
+  font-size:1.2rem;font-weight:800;
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);
+  color:#fff;box-shadow:0 4px 20px #6d5dfc44;
+}
+.step h3{font-size:1.05rem;font-weight:700;margin-bottom:8px}
+.step p{font-size:.88rem;color:var(--text2)}
+.step-connector{
+  display:none;position:absolute;top:56px;left:calc(50% + 40px);
+  width:calc(100% - 80px);height:2px;
+  background:linear-gradient(90deg,var(--accent)44,transparent);
+}
+@media(min-width:769px){.step-connector{display:block}}
+
+/* ===== Download ===== */
+.download-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+.download-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:36px 28px;text-align:center;transition:transform .25s,border-color .25s,box-shadow .25s;
+}
+.download-card:hover{transform:translateY(-4px);border-color:#ffffff22;box-shadow:0 16px 48px rgba(0,0,0,.3)}
+.download-icon{font-size:2.8rem;margin-bottom:16px}
+.download-card h3{font-size:1.2rem;font-weight:700;margin-bottom:6px}
+.download-card .version{font-size:.8rem;color:var(--text3);margin-bottom:20px}
+.download-card .btn{width:100%;justify-content:center}
+.download-card .requirements{
+  margin-top:20px;padding-top:16px;border-top:1px solid var(--border);
+  font-size:.78rem;color:var(--text3);text-align:left;
+}
+.download-card .requirements li{margin-bottom:4px;list-style:none;padding-left:16px;position:relative}
+.download-card .requirements li::before{content:'›';position:absolute;left:0;color:var(--accent2)}
+
+/* ===== Tech ===== */
+.tech-row{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+.tech-tag{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:10px 20px;border-radius:999px;
+  background:var(--surface);border:1px solid var(--border);
+  font-size:.85rem;font-weight:500;color:var(--text2);
+  transition:border-color .2s,color .2s;
+}
+.tech-tag:hover{border-color:var(--accent)55;color:var(--text)}
+
+/* ===== Footer ===== */
+footer{
+  border-top:1px solid var(--border);padding:48px 0;
+  text-align:center;font-size:.85rem;color:var(--text3);
+}
+footer a{color:var(--text2)}
+footer .heart{color:var(--pink)}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#2a2a3e}
+
+/* ===== Animations ===== */
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+@keyframes typing{from{width:0}to{width:100%}}
+.typing-line{overflow:hidden;white-space:nowrap;animation:typing 1.5s steps(40) forwards;width:0}
+.delay-1{animation-delay:.5s}
+.delay-2{animation-delay:1.5s}
+.delay-3{animation-delay:2.5s}
+.delay-4{animation-delay:3.5s}
+</style>
+</head>
+<body>
+
+<!-- ===== Nav ===== -->
+<nav id="nav">
+  <div class="nav-inner">
+    <a href="#" class="nav-logo">
+      <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="32" height="32" rx="8" fill="url(#g1)"/>
+        <path d="M8 16l4-6h8l4 6-4 6h-8l-4-6z" stroke="#fff" stroke-width="2" fill="none"/>
+        <circle cx="16" cy="16" r="3" fill="#fff"/>
+        <defs><linearGradient id="g1" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#6d5dfc"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+      </svg>
+      Symbol Network Manager
+    </a>
+    <ul class="nav-links">
+      <li><a href="#features" data-i18n="nav.features">Features</a></li>
+      <li><a href="#preview" data-i18n="nav.preview">Preview</a></li>
+      <li><a href="#how" data-i18n="nav.how">How it Works</a></li>
+      <li><a href="#download" data-i18n="nav.download">Download</a></li>
+    </ul>
+    <div class="nav-right">
+      <!-- Language Switcher -->
+      <div class="lang-switcher" id="langSwitcher">
+        <button class="lang-btn" id="langBtn" aria-label="Language">
+          <span id="langFlag">🇯🇵</span>
+          <span id="langLabel">日本語</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="lang-dropdown" id="langDropdown">
+          <button class="lang-option active" data-lang="ja"><span class="flag">🇯🇵</span> 日本語</button>
+          <button class="lang-option" data-lang="en"><span class="flag">🇺🇸</span> English</button>
+          <button class="lang-option" data-lang="ko"><span class="flag">🇰🇷</span> 한국어</button>
+          <button class="lang-option" data-lang="zh"><span class="flag">🇨🇳</span> 中文</button>
+        </div>
+      </div>
+      <a href="#download" class="nav-cta">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span data-i18n="nav.cta">Download</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ===== Hero ===== -->
+<section class="hero container">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+
+  <div class="hero-content fade-in">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      <span data-i18n="hero.badge">Open Source — Private Blockchain Toolkit</span>
+    </div>
+    <h1 data-i18n-html="hero.title">
+      あなただけの<br>
+      <span class="gradient-text">Symbol ブロックチェーン</span><br>
+      を構築しよう
+    </h1>
+    <p data-i18n-html="hero.desc">
+      GUI操作だけでプライベート・カスタムネットワークを構築。<br>
+      Docker一発起動、ブラウザで完結するオールインワン管理ツール。
+    </p>
+    <div class="hero-actions">
+      <a href="#download" class="btn btn-primary">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span data-i18n="hero.downloadBtn">無料ダウンロード</span>
+      </a>
+      <a href="#features" class="btn btn-ghost"><span data-i18n="hero.featuresBtn">機能を見る →</span></a>
+    </div>
+  </div>
+
+  <div class="hero-visual" style="animation:float 6s ease-in-out infinite">
+    <div class="terminal-mock">
+      <div class="terminal-bar">
+        <span class="terminal-dot r"></span>
+        <span class="terminal-dot y"></span>
+        <span class="terminal-dot g"></span>
+        <span>symbol-manager — terminal</span>
+      </div>
+      <div class="terminal-body">
+        <div><span class="prompt">$ </span><span class="cmd">docker compose up -d</span></div>
+        <div class="out">[+] Running 1/1</div>
+        <div class="out"> ✔ Container symbol-manager  Started</div>
+        <br>
+        <div><span class="prompt">$ </span><span class="cmd">curl localhost:4000/api/status</span></div>
+        <div class="out">{</div>
+        <div class="out">  "state": "<span class="ok">running</span>",</div>
+        <div class="out">  "lastCommand": "<span class="hl">symbol-bootstrap start</span>"</div>
+        <div class="out">}</div>
+        <br>
+        <div class="ok">🚀 Symbol Network Manager running on port 4000</div>
+        <div class="ok">📁 Node health: apiNode=up, db=up</div>
+        <div class="ok">🔗 Explorer: http://localhost:8090</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Features ===== -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="fade-in">
+      <span class="section-label">✦ Features</span>
+      <h2 class="section-title" data-i18n-html="features.title">すべてが <span class="gradient-text">ブラウザで完結</span></h2>
+      <p class="section-sub" data-i18n="features.sub">コマンドラインは不要。直感的なWeb UIでネットワーク構築からモニタリングまで。</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card fade-in">
+        <div class="feature-icon purple">⚡</div>
+        <h3 data-i18n="features.oneclick.title">ワンクリック起動</h3>
+        <p data-i18n="features.oneclick.desc">docker compose up ひとつでバックエンド・フロントエンド・Bootstrap が自動セットアップ。複雑な構成は不要です。</p>
+      </div>
+      <div class="feature-card fade-in">
+        <div class="feature-icon cyan">🎛️</div>
+        <h3 data-i18n="features.config.title">ビジュアル設定エディタ</h3>
+        <p data-i18n="features.config.desc">100以上のネットワークパラメータをカテゴリ分けされたフォームで編集。ブロック生成時間、モザイク、ネームスペースなど自在に設定。</p>
+      </div>
+      <div class="feature-card fade-in">
+        <div class="feature-icon green">📊</div>
+        <h3 data-i18n="features.dashboard.title">リアルタイムダッシュボード</h3>
+        <p data-i18n="features.dashboard.desc">ノードヘルス、チェーン高、ピア数、ファイナライズ状態を WebSocket でリアルタイム表示。ターミナルログもライブで確認。</p>
+      </div>
+      <div class="feature-card fade-in">
+        <div class="feature-icon amber">🔍</div>
+        <h3 data-i18n="features.explorer.title">内蔵エクスプローラー</h3>
+        <p data-i18n="features.explorer.desc">ブロック・トランザクション・アカウントを視覚的に閲覧。bootarou/explorer-smd を Docker で自動ビルド＆起動。</p>
+      </div>
+      <div class="feature-card fade-in">
+        <div class="feature-icon pink">🤝</div>
+        <h3 data-i18n="features.share.title">ネットワーク共有</h3>
+        <p data-i18n="features.share.desc">構築したネットワーク設定をZIPパッケージでエクスポート。他のメンバーはインポートするだけでノード参加可能。</p>
+      </div>
+      <div class="feature-card fade-in">
+        <div class="feature-icon blue">🔐</div>
+        <h3 data-i18n="features.address.title">アドレス管理</h3>
+        <p data-i18n="features.address.desc">暗号化された秘密鍵の復号表示、全アドレスの残高確認、アドレスファイルのダウンロードに対応。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Screenshot ===== -->
+<section class="section" id="preview" style="background:var(--bg2)">
+  <div class="container">
+    <div class="fade-in" style="text-align:center;margin-bottom:48px">
+      <span class="section-label">✦ Preview</span>
+      <h2 class="section-title" data-i18n-html="preview.title">洗練された <span class="gradient-text">管理画面</span></h2>
+      <p class="section-sub" style="margin:0 auto 48px" data-i18n="preview.sub">ダークテーマのモダンUI。必要な情報に素早くアクセス。</p>
+    </div>
+    <div class="screenshot-wrap fade-in">
+      <div class="screenshot-topbar">
+        <span class="terminal-dot r"></span>
+        <span class="terminal-dot y"></span>
+        <span class="terminal-dot g"></span>
+        <div class="screenshot-url">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#71717a" stroke-width="2" style="display:inline;vertical-align:-2px;margin-right:4px"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          localhost:5173
+        </div>
+      </div>
+      <div class="screenshot-body">
+        <div class="mock-sidebar">
+          <div style="font-size:.8rem;font-weight:700;color:var(--text3);padding:8px 14px;margin-bottom:8px">MENU</div>
+          <div class="mock-sidebar-item active">📊 Dashboard</div>
+          <div class="mock-sidebar-item">⚙️ Config</div>
+          <div class="mock-sidebar-item">🔍 Explorer</div>
+          <div class="mock-sidebar-item">🔑 Addresses</div>
+          <div class="mock-sidebar-item">📦 Images</div>
+          <div class="mock-sidebar-item">💾 Storage</div>
+          <div class="mock-sidebar-item">🤝 Share</div>
+          <div class="mock-sidebar-item">❓ Help</div>
+        </div>
+        <div class="mock-main">
+          <div class="mock-row">
+            <div class="mock-card">
+              <div class="mock-card-title">Node Status</div>
+              <div class="mock-stat up">● Running</div>
+              <div style="font-size:.78rem;color:var(--text3)">apiNode: up · db: up</div>
+            </div>
+            <div class="mock-card">
+              <div class="mock-card-title">Chain Height</div>
+              <div class="mock-stat" style="color:var(--accent2)">12,847</div>
+              <div class="mock-bar"><div class="mock-bar-fill" style="width:72%"></div></div>
+            </div>
+            <div class="mock-card">
+              <div class="mock-card-title">Peers</div>
+              <div class="mock-stat" style="color:var(--cyan)">5</div>
+              <div style="font-size:.78rem;color:var(--text3)">Connected nodes</div>
+            </div>
+          </div>
+          <div class="mock-card" style="flex:1">
+            <div class="mock-card-title">Terminal Output</div>
+            <div style="font-family:monospace;font-size:.75rem;line-height:1.8;color:var(--text3)">
+              <div>[HealthCheck] #1  apiNode=up  db=up</div>
+              <div style="color:var(--green)">[HealthCheck] ✅ Node is UP (12.3s elapsed)</div>
+              <div>[Explorer] ✅ Started on port 8090</div>
+              <div data-i18n="preview.terminal.detected">[System] ♻️ 既存のSymbolノードコンテナを検出しました</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== How it Works ===== -->
+<section class="section" id="how">
+  <div class="container">
+    <div class="fade-in" style="text-align:center;margin-bottom:64px">
+      <span class="section-label">✦ How it Works</span>
+      <h2 class="section-title" data-i18n-html="how.title"><span class="gradient-text">3ステップ</span>で起動</h2>
+    </div>
+    <div class="steps fade-in">
+      <div class="step">
+        <div class="step-connector"></div>
+        <h3 data-i18n="how.step1.title">ZIP を展開</h3>
+        <p data-i18n-html="how.step1.desc">ダウンロードしたZIPを展開し、<code>.env</code> ファイルを準備するだけ。</p>
+      </div>
+      <div class="step">
+        <div class="step-connector"></div>
+        <h3 data-i18n="how.step2.title">Docker で起動</h3>
+        <p data-i18n-html="how.step2.desc"><code>docker compose up -d</code> を実行。ビルドからセットアップまで全自動。</p>
+      </div>
+      <div class="step">
+        <h3 data-i18n="how.step3.title">ブラウザでアクセス</h3>
+        <p data-i18n="how.step3.desc">http://localhost:5173 を開いて、ネットワーク設定・起動・管理を開始。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Tech Stack ===== -->
+<section class="section" style="padding-top:0">
+  <div class="container fade-in" style="text-align:center">
+    <span class="section-label">✦ Built With</span>
+    <h2 class="section-title" style="margin-bottom:32px" data-i18n="tech.title">技術スタック</h2>
+    <div class="tech-row">
+      <span class="tech-tag">⚛️ React 19</span>
+      <span class="tech-tag">🟦 TypeScript</span>
+      <span class="tech-tag">🎨 Tailwind CSS 4</span>
+      <span class="tech-tag">⚡ Vite</span>
+      <span class="tech-tag">🟢 Express 5</span>
+      <span class="tech-tag">🐳 Docker</span>
+      <span class="tech-tag">🔗 Symbol Bootstrap</span>
+      <span class="tech-tag">🔌 WebSocket</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Download ===== -->
+<section class="section" id="download" style="background:var(--bg2)">
+  <div class="container">
+    <div class="fade-in" style="text-align:center;margin-bottom:48px">
+      <span class="section-label">✦ Download</span>
+      <h2 class="section-title" data-i18n-html="download.title">今すぐ <span class="gradient-text">ダウンロード</span></h2>
+      <p class="section-sub" style="margin:0 auto 48px" data-i18n="download.sub">お使いのOSに合わせたパッケージを選択してください。</p>
+    </div>
+    <div class="download-grid fade-in">
+      <!-- Windows -->
+      <div class="download-card">
+        <div class="download-icon">🪟</div>
+        <h3>Windows</h3>
+        <div class="version">Windows 10 / 11</div>
+        <a href="../windows/symbol-web-ui.zip" class="btn btn-primary" download>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span data-i18n="download.win">Download for Windows</span>
+        </a>
+        <ul class="requirements">
+          <li>Docker Desktop (WSL2)</li>
+          <li data-i18n="download.ram">RAM 8GB+（16GB 推奨）</li>
+          <li data-i18n="download.disk">空き容量 30GB+</li>
+        </ul>
+      </div>
+      <!-- macOS -->
+      <div class="download-card">
+        <div class="download-icon">🍎</div>
+        <h3>macOS</h3>
+        <div class="version">Intel / Apple Silicon</div>
+        <a href="../mac/symbol-web-ui.zip" class="btn btn-primary" download>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span data-i18n="download.mac">Download for macOS</span>
+        </a>
+        <ul class="requirements">
+          <li>Docker Desktop for Mac</li>
+          <li>macOS 12+ (Monterey)</li>
+          <li data-i18n="download.disk">空き容量 30GB+</li>
+        </ul>
+      </div>
+      <!-- Linux -->
+      <div class="download-card">
+        <div class="download-icon">🐧</div>
+        <h3>Linux</h3>
+        <div class="version">Ubuntu / Debian / CentOS / Fedora</div>
+        <a href="../linux/symbol-web-ui.zip" class="btn btn-primary" download>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span data-i18n="download.linux">Download for Linux</span>
+        </a>
+        <ul class="requirements">
+          <li>Docker Engine + Compose</li>
+          <li>x86_64 (amd64)</li>
+          <li data-i18n="download.disk">空き容量 30GB+</li>
+        </ul>
+      </div>
+    </div>
+    <div class="fade-in" style="text-align:center;margin-top:40px">
+      <p style="font-size:.85rem;color:var(--text3)" data-i18n="download.note">
+        各ZIPに OS別インストールマニュアル (INSTALL.md) が同梱されています
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Footer ===== -->
+<footer>
+  <div class="container">
+    <p>
+      Built with <span class="heart">♥</span> for the Symbol Community
+    </p>
+    <p style="margin-top:8px">
+      <a href="https://github.com/symbol" target="_blank">GitHub</a>
+      &nbsp;·&nbsp;
+      <a href="https://docs.symbol.dev/" target="_blank">Symbol Docs</a>
+    </p>
+  </div>
+</footer>
+
+<!-- ===== JS: i18n + interactions ===== -->
+<script>
+// ─── Translation Data ───
+const i18n = {
+  ja: {
+    'nav.features': 'Features',
+    'nav.preview': 'Preview',
+    'nav.how': 'How it Works',
+    'nav.download': 'Download',
+    'nav.cta': 'Download',
+    'hero.badge': 'Open Source — プライベートブロックチェーンツールキット',
+    'hero.title': 'あなただけの<br><span class="gradient-text">Symbol ブロックチェーン</span><br>を構築しよう',
+    'hero.desc': 'GUI操作だけでプライベート・カスタムネットワークを構築。<br>Docker一発起動、ブラウザで完結するオールインワン管理ツール。',
+    'hero.downloadBtn': '無料ダウンロード',
+    'hero.featuresBtn': '機能を見る →',
+    'features.title': 'すべてが <span class="gradient-text">ブラウザで完結</span>',
+    'features.sub': 'コマンドラインは不要。直感的なWeb UIでネットワーク構築からモニタリングまで。',
+    'features.oneclick.title': 'ワンクリック起動',
+    'features.oneclick.desc': 'docker compose up ひとつでバックエンド・フロントエンド・Bootstrap が自動セットアップ。複雑な構成は不要です。',
+    'features.config.title': 'ビジュアル設定エディタ',
+    'features.config.desc': '100以上のネットワークパラメータをカテゴリ分けされたフォームで編集。ブロック生成時間、モザイク、ネームスペースなど自在に設定。',
+    'features.dashboard.title': 'リアルタイムダッシュボード',
+    'features.dashboard.desc': 'ノードヘルス、チェーン高、ピア数、ファイナライズ状態を WebSocket でリアルタイム表示。ターミナルログもライブで確認。',
+    'features.explorer.title': '内蔵エクスプローラー',
+    'features.explorer.desc': 'ブロック・トランザクション・アカウントを視覚的に閲覧。bootarou/explorer-smd を Docker で自動ビルド＆起動。',
+    'features.share.title': 'ネットワーク共有',
+    'features.share.desc': '構築したネットワーク設定をZIPパッケージでエクスポート。他のメンバーはインポートするだけでノード参加可能。',
+    'features.address.title': 'アドレス管理',
+    'features.address.desc': '暗号化された秘密鍵の復号表示、全アドレスの残高確認、アドレスファイルのダウンロードに対応。',
+    'preview.title': '洗練された <span class="gradient-text">管理画面</span>',
+    'preview.sub': 'ダークテーマのモダンUI。必要な情報に素早くアクセス。',
+    'preview.terminal.detected': '[System] ♻️ 既存のSymbolノードコンテナを検出しました',
+    'how.title': '<span class="gradient-text">3ステップ</span>で起動',
+    'how.step1.title': 'ZIP を展開',
+    'how.step1.desc': 'ダウンロードしたZIPを展開し、<code>.env</code> ファイルを準備するだけ。',
+    'how.step2.title': 'Docker で起動',
+    'how.step2.desc': '<code>docker compose up -d</code> を実行。ビルドからセットアップまで全自動。',
+    'how.step3.title': 'ブラウザでアクセス',
+    'how.step3.desc': 'http://localhost:5173 を開いて、ネットワーク設定・起動・管理を開始。',
+    'tech.title': '技術スタック',
+    'download.title': '今すぐ <span class="gradient-text">ダウンロード</span>',
+    'download.sub': 'お使いのOSに合わせたパッケージを選択してください。',
+    'download.win': 'Download for Windows',
+    'download.mac': 'Download for macOS',
+    'download.linux': 'Download for Linux',
+    'download.ram': 'RAM 8GB+（16GB 推奨）',
+    'download.disk': '空き容量 30GB+',
+    'download.note': '各ZIPに OS別インストールマニュアル (INSTALL.md) が同梱されています',
+  },
+  en: {
+    'nav.features': 'Features',
+    'nav.preview': 'Preview',
+    'nav.how': 'How it Works',
+    'nav.download': 'Download',
+    'nav.cta': 'Download',
+    'hero.badge': 'Open Source — Private Blockchain Toolkit',
+    'hero.title': 'Build Your Own<br><span class="gradient-text">Symbol Blockchain</span><br>Network',
+    'hero.desc': 'Build private & custom networks with a simple GUI.<br>One Docker command to launch. Manage everything from your browser.',
+    'hero.downloadBtn': 'Free Download',
+    'hero.featuresBtn': 'View Features →',
+    'features.title': 'Everything in <span class="gradient-text">Your Browser</span>',
+    'features.sub': 'No command line needed. Intuitive Web UI for building and monitoring your network.',
+    'features.oneclick.title': 'One-Click Launch',
+    'features.oneclick.desc': 'A single docker compose up auto-configures backend, frontend, and Symbol Bootstrap. No complex setup required.',
+    'features.config.title': 'Visual Config Editor',
+    'features.config.desc': 'Edit 100+ network parameters in a categorized form. Block generation time, mosaics, namespaces — all configurable.',
+    'features.dashboard.title': 'Real-Time Dashboard',
+    'features.dashboard.desc': 'Node health, chain height, peer count, finalization status displayed in real-time via WebSocket. Live terminal logs included.',
+    'features.explorer.title': 'Built-in Explorer',
+    'features.explorer.desc': 'Browse blocks, transactions, and accounts visually. Auto-builds & launches bootarou/explorer-smd via Docker.',
+    'features.share.title': 'Network Sharing',
+    'features.share.desc': 'Export your network config as a ZIP package. Other members can join simply by importing it.',
+    'features.address.title': 'Address Management',
+    'features.address.desc': 'Decrypt and display private keys, check balances for all addresses, and download address files.',
+    'preview.title': 'A Refined <span class="gradient-text">Control Panel</span>',
+    'preview.sub': 'Modern dark-themed UI. Quick access to all the info you need.',
+    'preview.terminal.detected': '[System] ♻️ Existing Symbol node container detected',
+    'how.title': 'Launch in <span class="gradient-text">3 Steps</span>',
+    'how.step1.title': 'Extract ZIP',
+    'how.step1.desc': 'Extract the downloaded ZIP and prepare the <code>.env</code> file.',
+    'how.step2.title': 'Start with Docker',
+    'how.step2.desc': 'Run <code>docker compose up -d</code>. Build and setup are fully automated.',
+    'how.step3.title': 'Open in Browser',
+    'how.step3.desc': 'Navigate to http://localhost:5173 to configure, launch, and manage your network.',
+    'tech.title': 'Tech Stack',
+    'download.title': '<span class="gradient-text">Download</span> Now',
+    'download.sub': 'Choose the right package for your operating system.',
+    'download.win': 'Download for Windows',
+    'download.mac': 'Download for macOS',
+    'download.linux': 'Download for Linux',
+    'download.ram': 'RAM 8GB+ (16GB recommended)',
+    'download.disk': 'Free space 30GB+',
+    'download.note': 'Each ZIP includes an OS-specific installation manual (INSTALL.md)',
+  },
+  ko: {
+    'nav.features': '기능',
+    'nav.preview': '미리보기',
+    'nav.how': '사용 방법',
+    'nav.download': '다운로드',
+    'nav.cta': '다운로드',
+    'hero.badge': '오픈소스 — 프라이빗 블록체인 툴킷',
+    'hero.title': '나만의<br><span class="gradient-text">Symbol 블록체인</span><br>을 구축하세요',
+    'hero.desc': 'GUI만으로 프라이빗·커스텀 네트워크를 구축.<br>Docker 한 번으로 시작, 브라우저에서 모든 것을 관리.',
+    'hero.downloadBtn': '무료 다운로드',
+    'hero.featuresBtn': '기능 보기 →',
+    'features.title': '모든 것을 <span class="gradient-text">브라우저에서</span>',
+    'features.sub': '커맨드 라인 불필요. 직관적인 Web UI로 네트워크 구축부터 모니터링까지.',
+    'features.oneclick.title': '원클릭 시작',
+    'features.oneclick.desc': 'docker compose up 하나로 백엔드·프론트엔드·Bootstrap 자동 설정. 복잡한 구성이 필요 없습니다.',
+    'features.config.title': '비주얼 설정 에디터',
+    'features.config.desc': '100개 이상의 네트워크 파라미터를 카테고리별 폼으로 편집. 블록 생성 시간, 모자이크, 네임스페이스 등 자유롭게 설정.',
+    'features.dashboard.title': '실시간 대시보드',
+    'features.dashboard.desc': '노드 상태, 체인 높이, 피어 수, 파이널라이제이션 상태를 WebSocket으로 실시간 표시. 터미널 로그도 라이브로 확인.',
+    'features.explorer.title': '내장 익스플로러',
+    'features.explorer.desc': '블록·트랜잭션·계정을 시각적으로 탐색. bootarou/explorer-smd를 Docker로 자동 빌드 & 실행.',
+    'features.share.title': '네트워크 공유',
+    'features.share.desc': '구축한 네트워크 설정을 ZIP 패키지로 내보내기. 다른 멤버는 가져오기만 하면 노드 참여 가능.',
+    'features.address.title': '주소 관리',
+    'features.address.desc': '암호화된 비밀키 복호화 표시, 전체 주소 잔액 확인, 주소 파일 다운로드 지원.',
+    'preview.title': '세련된 <span class="gradient-text">관리 화면</span>',
+    'preview.sub': '다크 테마의 모던 UI. 필요한 정보에 빠르게 접근.',
+    'preview.terminal.detected': '[System] ♻️ 기존 Symbol 노드 컨테이너를 감지했습니다',
+    'how.title': '<span class="gradient-text">3단계</span>로 시작',
+    'how.step1.title': 'ZIP 압축 해제',
+    'how.step1.desc': '다운로드한 ZIP을 압축 해제하고 <code>.env</code> 파일을 준비하세요.',
+    'how.step2.title': 'Docker로 시작',
+    'how.step2.desc': '<code>docker compose up -d</code>를 실행. 빌드부터 설정까지 완전 자동.',
+    'how.step3.title': '브라우저에서 접속',
+    'how.step3.desc': 'http://localhost:5173을 열어 네트워크 설정·시작·관리를 시작하세요.',
+    'tech.title': '기술 스택',
+    'download.title': '지금 <span class="gradient-text">다운로드</span>',
+    'download.sub': '사용 중인 OS에 맞는 패키지를 선택하세요.',
+    'download.win': 'Windows용 다운로드',
+    'download.mac': 'macOS용 다운로드',
+    'download.linux': 'Linux용 다운로드',
+    'download.ram': 'RAM 8GB+ (16GB 권장)',
+    'download.disk': '여유 공간 30GB+',
+    'download.note': '각 ZIP에 OS별 설치 매뉴얼 (INSTALL.md)이 포함되어 있습니다',
+  },
+  zh: {
+    'nav.features': '功能',
+    'nav.preview': '预览',
+    'nav.how': '使用方法',
+    'nav.download': '下载',
+    'nav.cta': '下载',
+    'hero.badge': '开源 — 私有区块链工具包',
+    'hero.title': '构建属于你的<br><span class="gradient-text">Symbol 区块链</span><br>网络',
+    'hero.desc': '仅通过 GUI 即可构建私有·自定义网络。<br>Docker 一键启动，浏览器中完成所有管理操作。',
+    'hero.downloadBtn': '免费下载',
+    'hero.featuresBtn': '查看功能 →',
+    'features.title': '一切尽在 <span class="gradient-text">浏览器中完成</span>',
+    'features.sub': '无需命令行。通过直观的 Web UI 完成从网络构建到监控的所有操作。',
+    'features.oneclick.title': '一键启动',
+    'features.oneclick.desc': '一条 docker compose up 命令即可自动配置后端、前端和 Symbol Bootstrap。无需复杂设置。',
+    'features.config.title': '可视化配置编辑器',
+    'features.config.desc': '通过分类表单编辑 100 多个网络参数。出块时间、马赛克、命名空间等均可自由配置。',
+    'features.dashboard.title': '实时仪表板',
+    'features.dashboard.desc': '通过 WebSocket 实时显示节点健康状态、链高度、对等节点数、最终确认状态。终端日志也可实时查看。',
+    'features.explorer.title': '内置浏览器',
+    'features.explorer.desc': '可视化浏览区块、交易和账户。通过 Docker 自动构建并启动 bootarou/explorer-smd。',
+    'features.share.title': '网络共享',
+    'features.share.desc': '将构建的网络配置导出为 ZIP 包。其他成员只需导入即可加入节点。',
+    'features.address.title': '地址管理',
+    'features.address.desc': '加密私钥的解密显示、所有地址余额查询、地址文件下载支持。',
+    'preview.title': '精致的 <span class="gradient-text">管理面板</span>',
+    'preview.sub': '暗色主题的现代 UI。快速访问所需信息。',
+    'preview.terminal.detected': '[System] ♻️ 检测到现有的 Symbol 节点容器',
+    'how.title': '<span class="gradient-text">3 步</span>即可启动',
+    'how.step1.title': '解压 ZIP',
+    'how.step1.desc': '解压下载的 ZIP 并准备 <code>.env</code> 文件。',
+    'how.step2.title': '用 Docker 启动',
+    'how.step2.desc': '执行 <code>docker compose up -d</code>。从构建到配置完全自动化。',
+    'how.step3.title': '在浏览器中访问',
+    'how.step3.desc': '打开 http://localhost:5173 开始配置、启动和管理网络。',
+    'tech.title': '技术栈',
+    'download.title': '立即 <span class="gradient-text">下载</span>',
+    'download.sub': '请选择适合您操作系统的安装包。',
+    'download.win': '下载 Windows 版',
+    'download.mac': '下载 macOS 版',
+    'download.linux': '下载 Linux 版',
+    'download.ram': 'RAM 8GB+（推荐 16GB）',
+    'download.disk': '可用空间 30GB+',
+    'download.note': '每个 ZIP 中包含对应操作系统的安装手册 (INSTALL.md)',
+  }
+};
+
+const langMeta = {
+  ja: { flag: '🇯🇵', label: '日本語' },
+  en: { flag: '🇺🇸', label: 'English' },
+  ko: { flag: '🇰🇷', label: '한국어' },
+  zh: { flag: '🇨🇳', label: '中文' }
+};
+
+// ─── Language Engine ───
+let currentLang = 'ja';
+
+function applyLang(lang) {
+  currentLang = lang;
+  const dict = i18n[lang];
+  if (!dict) return;
+
+  // Update <html lang>
+  document.documentElement.lang = lang === 'zh' ? 'zh-CN' : lang;
+
+  // Update page title
+  const titles = {
+    ja: 'Symbol Network Manager — あなただけのブロックチェーンを構築',
+    en: 'Symbol Network Manager — Build Your Own Blockchain',
+    ko: 'Symbol Network Manager — 나만의 블록체인을 구축하세요',
+    zh: 'Symbol Network Manager — 构建属于你的区块链'
+  };
+  document.title = titles[lang] || titles.en;
+
+  // Translate text-only elements
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (dict[key] != null) el.textContent = dict[key];
+  });
+
+  // Translate elements containing HTML (gradient-text spans, <br>, <code>)
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    const key = el.getAttribute('data-i18n-html');
+    if (dict[key] != null) el.innerHTML = dict[key];
+  });
+
+  // Update switcher button
+  const meta = langMeta[lang];
+  document.getElementById('langFlag').textContent = meta.flag;
+  document.getElementById('langLabel').textContent = meta.label;
+
+  // Update active state in dropdown
+  document.querySelectorAll('.lang-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.lang === lang);
+  });
+
+  // Save preference
+  try { localStorage.setItem('lp-lang', lang); } catch {}
+}
+
+// ─── Language Switcher Interactions ───
+const switcher = document.getElementById('langSwitcher');
+const langBtn = document.getElementById('langBtn');
+
+langBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  switcher.classList.toggle('open');
+});
+
+document.querySelectorAll('.lang-option').forEach(btn => {
+  btn.addEventListener('click', () => {
+    applyLang(btn.dataset.lang);
+    switcher.classList.remove('open');
+  });
+});
+
+// Close on outside click
+document.addEventListener('click', (e) => {
+  if (!switcher.contains(e.target)) switcher.classList.remove('open');
+});
+
+// Close on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') switcher.classList.remove('open');
+});
+
+// ─── Auto-detect language ───
+function detectLang() {
+  // 1. localStorage
+  try {
+    const saved = localStorage.getItem('lp-lang');
+    if (saved && i18n[saved]) return saved;
+  } catch {}
+  // 2. URL param ?lang=xx
+  const params = new URLSearchParams(window.location.search);
+  const paramLang = params.get('lang');
+  if (paramLang && i18n[paramLang]) return paramLang;
+  // 3. Browser language
+  const browserLang = (navigator.language || '').toLowerCase();
+  if (browserLang.startsWith('ja')) return 'ja';
+  if (browserLang.startsWith('ko')) return 'ko';
+  if (browserLang.startsWith('zh')) return 'zh';
+  if (browserLang.startsWith('en')) return 'en';
+  // 4. Default
+  return 'en';
+}
+
+// Apply on load
+applyLang(detectLang());
+
+// ─── Nav scroll effect ───
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => {
+  nav.classList.toggle('scrolled', window.scrollY > 20);
+});
+
+// ─── Intersection Observer for fade-in ───
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((entry, i) => {
+    if (entry.isIntersecting) {
+      setTimeout(() => entry.target.classList.add('visible'), i * 80);
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+// ─── Smooth anchor scroll ───
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
+
+// ─── Parallax orbs on mousemove ───
+document.addEventListener('mousemove', (e) => {
+  const x = (e.clientX / window.innerWidth - 0.5) * 20;
+  const y = (e.clientY / window.innerHeight - 0.5) * 20;
+  document.querySelectorAll('.orb').forEach((orb, i) => {
+    const factor = (i + 1) * 0.6;
+    orb.style.transform = `translate(${x * factor}px, ${y * factor}px)`;
+  });
+});
+</script>
+</body>
+</html>

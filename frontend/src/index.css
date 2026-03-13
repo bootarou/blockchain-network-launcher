@@ -1,24 +1,44 @@
 @import "tailwindcss";
 
+/* ── Light theme: invert zinc scale so all existing classes auto-adapt ── */
+@layer base {
+  :root[data-theme="light"] {
+    color-scheme: light;
+
+    /* Zinc scale inversion (dark↔light) */
+    --color-zinc-950: #ffffff;    /* was #09090b → white */
+    --color-zinc-900: #fafafa;    /* was #18181b → zinc-50 */
+    --color-zinc-800: #f4f4f5;    /* was #27272a → zinc-100 */
+    --color-zinc-700: #e4e4e7;    /* was #3f3f46 → zinc-200 */
+    --color-zinc-600: #a1a1aa;    /* was #52525b → zinc-400 */
+    --color-zinc-500: #71717a;    /* stays middle */
+    --color-zinc-400: #52525b;    /* was #a1a1aa → zinc-600 */
+    --color-zinc-300: #3f3f46;    /* was #d4d4d8 → zinc-700 */
+    --color-zinc-200: #27272a;    /* was #e4e4e7 → zinc-800 */
+    --color-zinc-100: #18181b;    /* was #f4f4f5 → zinc-900 */
+    --color-zinc-50: #09090b;     /* was #fafafa → zinc-950 */
+  }
+}
+
 @layer base {
   body {
     @apply antialiased text-zinc-50 bg-zinc-950;
   }
 
-  /* Custom scrollbar */
+  /* Custom scrollbar — adapts via zinc overrides */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
   ::-webkit-scrollbar-track {
-    background: #18181b;
+    background: var(--color-zinc-900, #18181b);
   }
   ::-webkit-scrollbar-thumb {
-    background: #3f3f46;
+    background: var(--color-zinc-700, #3f3f46);
     border-radius: 4px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #52525b;
+    background: var(--color-zinc-600, #52525b);
   }
 
   /* Form elements */
@@ -33,5 +53,10 @@
 
   input[type='checkbox'] {
     cursor: pointer;
+  }
+
+  /* Light mode: add subtle shadow to cards for depth */
+  :root[data-theme="light"] .shadow-xl {
+    --tw-shadow: 0 4px 20px -4px rgba(0,0,0,0.08);
   }
 }

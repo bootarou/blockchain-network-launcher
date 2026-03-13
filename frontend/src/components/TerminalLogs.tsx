@@ -1,11 +1,15 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Terminal as TerminalIcon, Trash2, ArrowDown } from 'lucide-react';
+import { useTranslation } from '../i18n';
 
+// In production the backend serves the frontend on the same port → same host.
+// In dev mode Vite proxies /ws → ws://localhost:4000 (see vite.config.ts).
 const WS_URL =
   import.meta.env.VITE_WS_URL ??
-  `ws://${window.location.hostname}:4000`;
+  `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
 export function TerminalLogs() {
+  const { t } = useTranslation();
   const [logs, setLogs] = useState<string[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -18,18 +22,27 @@ export function TerminalLogs() {
     let ws: WebSocket;
     let retryTimer: ReturnType<typeof setTimeout>;
     let disposed = false;
+    let retryDelay = 3000; // exponential backoff: 3s → 6s → 12s → 24s → 30s max
 
     const connect = () => {
       if (disposed) return;
-      ws = new WebSocket(WS_URL);
+      // In dev mode, Vite proxies /ws → ws://localhost:4000
+      // In production, the backend handles the upgrade on the same port
+      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws` : WS_URL;
+      ws = new WebSocket(wsTarget);
 
       ws.onopen = () => {
         if (!disposed) setConnected(true);
+        retryDelay = 3000; // reset on successful connection
       };
       ws.onclose = () => {
         if (disposed) return;
         setConnected(false);
-        retryTimer = setTimeout(connect, 3000); // auto-reconnect
+        retryTimer = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000);
+      };
+      ws.onerror = () => {
+        // Suppress console noise — onclose will handle reconnection
       };
 
       ws.onmessage = (event) => {
@@ -78,12 +91,12 @@ export function TerminalLogs() {
       {/* Header */}
       <div className="bg-zinc-900 border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3">
         <TerminalIcon className="w-4 h-4 text-zinc-400" />
-        <span className="text-sm font-medium text-zinc-300">symbol-bootstrap terminal</span>
+        <span className="text-sm font-medium text-zinc-300">{t('terminal.title')}</span>
 
         {/* Connection indicator */}
         <span
           className={`ml-2 w-2 h-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-400 animate-pulse'}`}
-          title={connected ? 'Connected' : 'Disconnected'}
+          title={connected ? t('terminal.connected') : t('terminal.disconnected')}
         />
 
         <div className="ml-auto flex items-center gap-2">
@@ -95,7 +108,7 @@ export function TerminalLogs() {
               }}
               className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
             >
-              <ArrowDown className="w-3 h-3" /> Scroll to bottom
+              <ArrowDown className="w-3 h-3" /> {t('terminal.scrollToBottom')}
             </button>
           )}
           <button
@@ -115,7 +128,7 @@ export function TerminalLogs() {
         className="p-4 flex-1 overflow-y-auto font-mono text-xs text-green-400 space-y-0.5"
       >
         {logs.length === 0 ? (
-          <div className="text-zinc-600 italic">Waiting for logs...</div>
+          <div className="text-zinc-600 italic">{t('terminal.waiting')}</div>
         ) : (
           logs.map((log, i) => (
             <div key={i} className="break-all whitespace-pre-wrap leading-relaxed">

@@ -14,10 +14,14 @@
    - [Seedファイルをインポートする](#seedファイルをインポートする)
    - [ノードを起動する](#ノードを起動する)
    - [ノードを停止・再起動する](#ノードを停止再起動する)
+   - [証明書の有効期限を確認する](#証明書の有効期限を確認する)
+   - [証明書を更新する](#証明書を更新する)
 6. [ボタンの説明](#ボタンの説明)
 7. [リセット操作の違い](#リセット操作の違い)
-8. [トラブルシューティング](#トラブルシューティング)
-9. [技術仕様](#技術仕様)
+8. [Docker Host Mode（ホストネットワークモード）](#docker-host-mode)
+9. [nodeEqualityStrategy（ノード同一性判定）](#nodeequalitystrategy)
+10. [トラブルシューティング](#トラブルシューティング)
+11. [技術仕様](#技術仕様)
 
 ---
 
@@ -139,6 +143,43 @@ docker compose up -d --build
 - **Stop** → **Start** で再起動（データは保持されたまま）
 - 同期済みブロックデータから継続します
 
+### 証明書の有効期限を確認する
+
+Dashboard の **「ノード統計」** セクション下部に **「証明書の有効期限」** パネルが表示されます。
+
+| 証明書 | 説明 | デフォルト有効期間 |
+|--------|------|-------------------|
+| **ノード証明書** | api-node の TLS 通信用 | 375 日（約 1 年） |
+| **CA 証明書** | ノード証明書の署名用 | 7,300 日（約 20 年） |
+| **REST ノード証明書** | REST gateway の TLS 通信用 | 375 日（約 1 年） |
+| **REST CA 証明書** | REST 証明書の署名用 | 7,300 日（約 20 年） |
+
+各証明書に **残り日数** と **プログレスバー** が表示されます。残り日数に応じて色が変わります：
+
+- 🟢 **緑** — 残り 91 日以上（安全）
+- 🟡 **黄** — 残り 31〜90 日（注意）
+- 🔴 **赤** — 残り 30 日以内（要更新）
+
+> ⚠️ **重要：** ノード証明書（デフォルト 375 日）は定期的な更新が必要です。期限切れになるとノード間通信および REST gateway との接続が停止します。
+
+### 証明書を更新する
+
+1. **ノードを停止する** — Dashboard で **「Stop」** をクリック
+2. 証明書パネルの **「証明書を更新」** ボタンをクリック
+3. **パスワード** を入力（ノード起動時と同じネットワーク暗号化パスワード）
+4. 必要に応じて **「期限が近くなくても強制的に更新する」** にチェック
+   - デフォルトでは残り 30 日以内でないと更新されません
+   - 強制更新したい場合はチェックを入れてください
+5. **「更新を実行」** をクリック
+6. 処理が完了すると成功メッセージが表示される
+7. **ノードを再起動する** — パスワードを入力して **「Start」** をクリック
+
+> 💡 **ヒント：** 証明書の更新は以下の処理を自動で実行します：
+> - `symbol-bootstrap renewCertificates` — ノード証明書の再生成
+> - REST gateway 証明書の再生成 — api-node とは別の ID を維持
+>
+> CA 証明書のキーペアは保持されるため、ノードの公開鍵は変わりません。
+
 ---
 
 ## ボタンの説明
@@ -171,6 +212,249 @@ docker compose up -d --build
 
 ---
 
+## Docker Host Mode
+
+### 概要
+
+Docker Host Mode は、catapult コンテナ（`api-node-0`、`broker`）を Docker のホストネットワークモード（`network_mode: host`）で実行する機能です。
+
+Configuration の **Nodes** タブにある **「Docker Host Mode」** トグルで ON/OFF を切り替えます。
+
+### なぜ必要か
+
+通常の Docker ブリッジネットワークでは、外部ピアからの接続が **DNAT（宛先アドレス変換）** を経由します。このため catapult が認識するピアの IP アドレスは、実際の送信元ではなく **Docker ブリッジのゲートウェイ IP**（例: `172.20.0.1`）に書き換えられます。
+
+- **2台構成** → 外部ピアは1台だけなので問題にならない
+- **3台以上** → 全外部ピアが同一 IP に見える → `nodeEqualityStrategy: host` の場合にピア識別が衝突
+
+Host Mode ではコンテナがホスト OS のネットワーク名前空間を直接共有するため、DNAT が発生せず、ピアの実 IP アドレスがそのまま認識されます。
+
+### プラットフォーム別の動作
+
+| 環境 | Host Mode 動作 | LAN 接続 | 推奨 |
+|------|:-:|:-:|------|
+| **ネイティブ Linux Docker** | ✅ 正常 | ✅ ポート7900がLANに公開 | 3台以上で推奨 |
+| **Docker Desktop（Windows）** | ⚠ VM内のみ | ❌ ポート7900がLANから到達不可 | **使用不可** |
+| **Docker Desktop（macOS）** | ⚠ VM内のみ | ❌ ポート7900がLANから到達不可 | **使用不可** |
+
+> ⚠️ **重要：Docker Desktop（Windows/Mac）では Docker Host Mode を使用しないでください。**
+>
+> Docker Desktop はコンテナを WSL2（Windows）または HyperKit/Virtualization.framework（Mac）の仮想マシン内で実行します。`network_mode: host` を設定すると、コンテナは VM 内のネットワーク名前空間を共有しますが、ホスト OS の LAN インターフェースには直接アクセスできません。
+>
+> 結果として、ポート 7900 は VM 内でのみリッスンされ、LAN 上の他のノードから接続できなくなります。
+>
+> Web UI では Docker Desktop 環境を自動検出し、Host Mode を ON にすると赤い警告バナーが表示されます。
+
+### パッチ内容
+
+Host Mode を有効にすると、Start 時に以下のパッチが自動適用されます：
+
+| 対象 | 変更内容 |
+|------|----------|
+| `docker-compose.yml` — api-node-0 | `network_mode: host` 追加、`ports` / `networks` 削除 |
+| `docker-compose.yml` — broker | `network_mode: host` 追加、`ports` / `networks` 削除 |
+| `docker-compose.yml` — db | `ports: 127.0.0.1:27017:27017` 追加（ホストからMongoDB接続用） |
+| `config-database.properties` | `databaseUri` → `mongodb://127.0.0.1:27017` |
+| `rest.json` — apiNode.host | ブリッジネットワークのゲートウェイ IP に変更（rest-gateway → catapult の接続経路） |
+| `config-node.properties` — localNetworks | Docker サブネットのプレフィックス追加をスキップ |
+
+> 💡 rest-gateway はブリッジネットワーク上に残ります（Docker DNS で `db` コンテナに到達するため）。catapult へはブリッジゲートウェイ IP 経由で接続します。
+
+### 切り替え手順
+
+**有効化：**
+1. Configuration → Nodes タブ → **Docker Host Mode** を ON
+2. **Save** で保存
+3. Dashboard → **Stop** → **Start**（Full Reset は不要）
+
+**無効化：**
+1. Configuration → Nodes タブ → **Docker Host Mode** を OFF
+2. **Save** で保存
+3. Dashboard → **Stop** → **Start**
+
+---
+
+## nodeEqualityStrategy
+
+### 概要
+
+`nodeEqualityStrategy` は、catapult がネットワーク上のピアノードを「同一ノードかどうか」判定する方法を決める設定です。
+
+Configuration の **Nodes** タブにあるプルダウンメニューで選択します。
+
+### 選択肢
+
+| 値 | 判定方法 | 説明 |
+|----|----------|------|
+| **`host`**（デフォルト） | IP アドレス | 同じ IP からの接続は同一ノードとみなす |
+| **`public-key`** | 公開鍵 | ノードの公開鍵が一致すれば同一ノードとみなす |
+
+### プラットフォーム別の推奨設定
+
+| 構成 | Docker 環境 | 推奨設定 | 理由 |
+|------|------------|----------|------|
+| **2台** | Docker Desktop / Linux | `host`（デフォルト）でOK | 外部ピアは1台のみ、IP衝突なし |
+| **3台以上** | Docker Desktop（Win/Mac） | **`public-key`** | DNAT で全外部ピアが同一IPに見えるため、IP判定では衝突する |
+| **3台以上** | ネイティブ Linux + Host Mode | `host`（デフォルト）でOK | Host Mode なら DNAT なし、実IPが見える |
+
+### 具体例：3台構成での DNAT 問題
+
+```
+Node A (192.168.0.31) ──┐
+                        ├── Docker bridge (172.20.0.1) ── DNAT ── api-node-0 (172.20.0.x)
+Node B (192.168.0.36) ──┘
+```
+
+Node C の catapult から見ると：
+- Node A の接続元 IP → `172.20.0.1`
+- Node B の接続元 IP → `172.20.0.1`
+
+`nodeEqualityStrategy: host` の場合、Node A と Node B が同一ノードとみなされ、一方が切断される → 同期不安定。
+
+`nodeEqualityStrategy: public-key` なら、IP が同じでも公開鍵が異なるため正しく2つの別ノードとして識別される。
+
+### 設定変更の反映
+
+この設定は `config-node.properties` に書き込まれます。変更後は **Stop → Start** で反映されます（Full Reset は不要）。
+
+### まとめ早見表
+
+| 台数 | OS | Docker Host Mode | nodeEqualityStrategy | 備考 |
+|:----:|:---|:-:|:-:|------|
+| 2台 | Windows/Mac | OFF | どちらでもOK | 最もシンプルな構成 |
+| 2台 | Linux | OFF or ON | どちらでもOK | |
+| 3台+ | Windows/Mac | **OFF**（使用不可） | **public-key** | DNAT対策として必須 |
+| 3台+ | Linux | **ON**（推奨） | どちらでもOK | Host Mode で DNAT 回避 |
+
+### OS・台数別の制約と推奨構成
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Docker Desktop (Windows / Mac)                │
+│                                                                    │
+│  ┌──────────────────────────────────┐                              │
+│  │   ホスト OS (Windows / macOS)    │                              │
+│  │                                  │                              │
+│  │   ┌──────────────────────────┐   │                              │
+│  │   │  WSL2 / HyperKit VM     │   │   network_mode: host は      │
+│  │   │                         │   │   VM 内のみ有効               │
+│  │   │  ┌───────────────────┐  │   │                              │
+│  │   │  │ api-node-0 :7900  │──┼───┼── ❌ LAN に到達不可          │
+│  │   │  └───────────────────┘  │   │                              │
+│  │   │                         │   │   ports: マッピング経由       │
+│  │   │  ┌───────────────────┐  │   │   (ブリッジモード) なら       │
+│  │   │  │ api-node-0 :7900  │──┼───┼── ✅ LAN に公開可能          │
+│  │   │  └───────────────────┘  │   │                              │
+│  │   └──────────────────────────┘   │                              │
+│  └──────────────────────────────────┘                              │
+│                                                                    │
+│  結論: Docker Desktop では Host Mode OFF + ブリッジモードを使用    │
+│        3台以上なら nodeEqualityStrategy: public-key で DNAT 回避   │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                      ネイティブ Linux Docker                        │
+│                                                                    │
+│  ┌──────────────────────────────────────────┐                      │
+│  │   Linux ホスト (VM なし・直接実行)       │                      │
+│  │                                          │                      │
+│  │   ┌───────────────────┐                  │                      │
+│  │   │ api-node-0 :7900  │──────────────────┼── ✅ LAN に直接公開  │
+│  │   └───────────────────┘                  │                      │
+│  │   network_mode: host =                   │   DNAT なし          │
+│  │   ホスト OS のネットワーク名前空間を共有 │   実 IP を保持       │
+│  └──────────────────────────────────────────┘                      │
+│                                                                    │
+│  結論: Host Mode ON で最適なパフォーマンス                         │
+│        台数制限なし、DNAT 問題なし、VM オーバーヘッドなし          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 構成ごとの判断フローチャート
+
+```
+ノードは何台？
+  │
+  ├── 2台 ──────── OS は？
+  │                  ├── Windows/Mac ── Host Mode OFF（デフォルトのまま）✅
+  │                  └── Linux ──────── Host Mode OFF or ON どちらでもOK ✅
+  │
+  └── 3台以上 ──── OS は？
+                     ├── Windows/Mac ── Host Mode OFF（使用不可）
+                     │                  └── nodeEqualityStrategy: public-key に変更 ⚠
+                     │
+                     └── Linux ──────── Host Mode ON（推奨）✅
+                                        └── nodeEqualityStrategy はどちらでもOK
+```
+
+#### 本番運用の推奨構成
+
+| 項目 | 推奨 |
+|------|------|
+| **OS** | ネイティブ Linux（Ubuntu 22.04+ 等） |
+| **Docker** | Docker Engine（Docker Desktop ではなく） |
+| **Docker Host Mode** | ON |
+| **nodeEqualityStrategy** | `host`（デフォルト） |
+| **理由** | VM オーバーヘッドなし、DNAT なし、ポート直接公開 |
+
+### ネットワーク構築の推奨手順
+
+#### 1台目（ネメシスノード）= Linux で構築
+
+ネットワークの最初のノード（ネメシスブロック生成者）は **ネイティブ Linux** で構築することを強く推奨します。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  1台目: Linux ネメシスノード（ネットワーク管理者）              │
+│                                                                 │
+│  ├── Docker Host Mode: ON                                       │
+│  ├── Assembly: dual（API + Peer）                               │
+│  ├── Preset: bootstrap（ネメシスブロック生成）                  │
+│  ├── インポータンス: 高（全通貨の初期配分を保持）              │
+│  ├── 投票鍵: あり → ファイナリティブロック生成                  │
+│  ├── ブロック生成（ハーベスティング）の主力                     │
+│  └── 他ノード向けの Seed ファイル提供元                         │
+│                                                                 │
+│  役割: ネットワークの基盤として安定稼働                         │
+└─────────────────────────────────────────────────────────────────┘
+         │
+         │ Seed ファイル配布 + P2P 接続 (7900)
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌────────┐
+│ 2台目  │ │ 3台目  │  ...  参加ノードは OS を問わない
+│Win/Mac │ │ Linux  │
+│ブリッジ│ │ Host   │
+│ Mode   │ │ Mode   │
+└────────┘ └────────┘
+```
+
+**Linux を1台目にする理由：**
+
+| 理由 | 説明 |
+|------|------|
+| **Host Mode が使える** | ポート7900がLANに直接公開され、他ノードから確実に接続可能 |
+| **DNAT 問題なし** | 3台以上に拡張する際も、ピアIPが正しく認識される |
+| **VM オーバーヘッドなし** | Docker Desktop の WSL2/HyperKit を経由しないため高速・安定 |
+| **Seed 提供元として安定** | 他ノードの Join Network で指定する REST API (`:3000`) が安定稼働 |
+| **ファイナリティの要** | インポータンス + 投票鍵を持つノードが安定していることが最重要 |
+
+#### 2台目以降 = OS 不問
+
+Linux ネメシスノードが安定稼働していれば、2台目以降は **Windows / macOS / Linux** のいずれでも参加可能です。
+
+| 手順 | 操作 |
+|------|------|
+| 1 | Join Network タブ → ソースノード URL に Linux ノードの REST API を入力 |
+| 2 | Seed ファイルをインポート（Linux ノードの管理者から受領） |
+| 3 | 設定に反映 → Save → Start |
+| 4 | 自動的にブロック同期 + ファイナリティ同期が開始 |
+
+> 💡 参加ノードにインポータンスや投票鍵がなくても、ブロック同期・ファイナリティ同期（proof の受信・検証）は正常に動作します。
+
+---
+
 ## トラブルシューティング
 
 ### apiNode が「down」のまま
@@ -199,6 +483,19 @@ docker compose up -d --build
 1. `完全初期化` でクリーン状態に戻す
 2. 正しい Seed ファイルをインポートし直す
 3. `Start` で再起動
+
+### 証明書の更新に失敗する
+
+**考えられる原因：**
+- ノードが起動中（停止が必要）
+- パスワードが間違っている
+- 証明書ファイルが存在しない（一度もノードを起動していない）
+
+**対処法：**
+1. 必ず **Stop** でノードを停止してから更新を実行
+2. ノード起動時と同じパスワードを使用しているか確認
+3. ターミナルログでエラーの詳細を確認
+4. 解決しない場合は `完全初期化` → `Start` でやり直す（証明書は再生成されます）
 
 ### ブロック同期が進まない
 
@@ -258,7 +555,7 @@ docker compose up -d --build
 |----------|------|
 | Frontend | React 19 + Vite + Tailwind CSS v4 + TypeScript |
 | Backend | Node.js + Express 5 + WebSocket |
-| Bootstrap | symbol-bootstrap 1.1.10 |
+| Bootstrap | symbol-bootstrap 1.1.10（[bootarou/symbol-bootstrap](https://github.com/bootarou/symbol-bootstrap)） |
 | Server V2 | symbolplatform/symbol-server:gcc-1.0.3.6 |
 | Server V3 | symbolplatform/symbol-server:gcc-1.0.3.9 |
 | REST | symbolplatform/symbol-rest:2.4.2 |
@@ -295,6 +592,39 @@ docker compose up -d --build
 │   └── rest-gateway/        ← REST gateway 設定・証明書
 └── databases/
     └── db/                  ← MongoDB データ
+```
+
+---
+
+## 外部依存の管理
+
+本ツールは以下の外部リソースに依存しています。元リポジトリ（`fbsobreira/symbol-bootstrap`）が削除された教訓を踏まえ、重要な依存は自前のリポジトリにフォーク/ミラーリングしています。
+
+### GitHubリポジトリ
+
+| 依存 | 元リポジトリ | フォーク先（バックアップ） | 用途 |
+|------|-------------|--------------------------|------|
+| symbol-bootstrap | ~~fbsobreira/symbol-bootstrap~~（削除済み） | [bootarou/symbol-bootstrap](https://github.com/bootarou/symbol-bootstrap) | ノード構築・管理ツール |
+| Symbol Explorer | [symbol/explorer](https://github.com/symbol/explorer) | [bootarou/explorer-smd](https://github.com/bootarou/explorer-smd) | ブロックチェーンエクスプローラー |
+
+### Dockerイメージ
+
+| イメージ | Docker Hub | 対策 |
+|----------|-----------|------|
+| symbolplatform/symbol-server | [Docker Hub](https://hub.docker.com/r/symbolplatform/symbol-server) | ImageManager でローカルバックアップ推奨 |
+| symbolplatform/symbol-rest | [Docker Hub](https://hub.docker.com/r/symbolplatform/symbol-rest) | ImageManager でローカルバックアップ推奨 |
+| mongo:5.0.15 | [Docker Hub](https://hub.docker.com/_/mongo) | Docker公式（低リスク） |
+
+### カスタムリポジトリの利用
+
+`Dockerfile` の `SYMBOL_BOOTSTRAP_REPO` ビルド引数でインストール元を変更できます：
+
+```bash
+# デフォルト（bootarou/symbol-bootstrap）
+docker compose build
+
+# 別のリポジトリを指定
+docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=https://github.com/<your-org>/symbol-bootstrap.git
 ```
 
 ---

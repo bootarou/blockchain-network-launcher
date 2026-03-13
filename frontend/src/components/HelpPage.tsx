@@ -16,7 +16,15 @@ import {
   Play,
   Square,
   Activity,
+  Hammer,
+  Share2,
+  Package,
+  Download,
+  Upload,
+  Shield,
+  ArrowRight,
 } from 'lucide-react';
+import { useTranslation } from '../i18n';
 
 // ── Collapsible Section ──────────────────────────────────────────────────────
 
@@ -115,28 +123,31 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
 // ── Main Help Page ───────────────────────────────────────────────────────────
 
 export function HelpPage() {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4 max-w-3xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3 mb-2">
         <BookOpen className="w-7 h-7 text-indigo-400" />
         <div>
-          <h2 className="text-2xl font-bold text-zinc-100">ヘルプ・マニュアル</h2>
-          <p className="text-zinc-500 text-sm">Symbol Network Manager の使い方</p>
+          <h2 className="text-2xl font-bold text-zinc-100">{t('help.title')}</h2>
+          <p className="text-zinc-500 text-sm">{t('help.subtitle')}</p>
         </div>
       </div>
 
       {/* Quick TOC */}
       <nav className="bg-zinc-900/50 border border-zinc-800 rounded-xl px-5 py-4">
-        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">目次</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">{t('help.toc')}</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
           {[
-            { label: 'クイックスタート', href: '#quickstart', icon: Rocket },
-            { label: '画面の説明', href: '#screens', icon: Monitor },
-            { label: 'ネットワーク参加', href: '#join', icon: Globe },
-            { label: 'ボタンの説明', href: '#buttons', icon: LayoutDashboard },
-            { label: 'リセットの違い', href: '#reset', icon: RefreshCw },
-            { label: 'トラブルシューティング', href: '#trouble', icon: AlertTriangle },
+            { label: t('help.tocQuickStart'), href: '#quickstart', icon: Rocket },
+            { label: t('help.tocCreateNetwork'), href: '#create-network', icon: Hammer },
+            { label: t('help.tocSharePackage'), href: '#share-network', icon: Share2 },
+            { label: t('help.tocScreens'), href: '#screens', icon: Monitor },
+            { label: t('help.tocJoinDetail'), href: '#join', icon: Globe },
+            { label: t('help.tocButtons'), href: '#buttons', icon: LayoutDashboard },
+            { label: t('help.tocResetDiff'), href: '#reset', icon: RefreshCw },
+            { label: t('help.tocTroubleshoot'), href: '#trouble', icon: AlertTriangle },
           ].map(({ label, href, icon: I }) => (
             <a
               key={href}
@@ -156,243 +167,391 @@ export function HelpPage() {
 
       {/* ── Sections ── */}
 
-      <Section id="quickstart" title="クイックスタート" icon={Rocket} defaultOpen>
-        <p>カスタム Symbol ネットワークにノードとして参加するまでの手順です。</p>
+      <Section id="quickstart" title={t('help.quickStartTitle')} icon={Rocket} defaultOpen>
+        <p>{t('help.quickStartIntro')}</p>
 
         <div className="space-y-4 mt-2">
           <Step n={1}>
-            <strong>Docker Compose で起動</strong>
+            <strong>{t('help.quickStartStep1')}</strong>
             <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
               docker compose up -d --build
             </div>
-            <p className="mt-1 text-zinc-500">ブラウザで <code className="text-indigo-400">http://localhost:4000</code> にアクセス</p>
+            <p className="mt-1 text-zinc-500">{t('help.quickStartStep2')}</p>
           </Step>
 
           <Step n={2}>
-            <strong>「Join Network」タブでソースノードの URL を入力</strong>
-            <p className="text-zinc-500">例: <code className="text-indigo-400">http://192.168.0.33:3000</code></p>
-            <p className="text-zinc-500">「取得」ボタンでネットワーク設定を自動取得します。</p>
+            <strong>{t('help.quickStartStep3Title')}</strong>
+            <p className="text-zinc-500">{t('help.quickStartStep3Desc')}</p>
+            <p className="text-zinc-500">{t('help.quickStartStep3Note')}</p>
           </Step>
 
           <Step n={3}>
-            <strong>Seed ファイルをインポート（推奨）</strong>
-            <p className="text-zinc-500">
-              ネットワーク管理者から受け取った nemesis seed ファイルをドラッグ＆ドロップします。
-              最低限 <Badge>00001.dat</Badge> が必要です。
-            </p>
+            <strong>{t('help.quickStartStep4')}</strong>
+            <p className="text-zinc-500">{t('help.quickStartStep4Desc')}</p>
           </Step>
 
           <Step n={4}>
-            <strong>「設定に反映」→「Dashboard」タブで Start</strong>
-            <p className="text-zinc-500">
-              パスワードを入力して Start ボタンを押すと、設定生成→コンテナ起動→ブロック同期が自動実行されます。
-            </p>
+            <strong>{t('help.quickStartStep5')}</strong>
+            <p className="text-zinc-500">{t('help.quickStartStep5Desc')}</p>
           </Step>
 
           <Step n={5}>
-            <strong>ヘルスチェックが緑になれば成功！</strong>
-            <p className="text-zinc-500">
-              ヘッダー右上のインジケーターが <Badge color="green">apiNode: up</Badge>{' '}
-              <Badge color="green">db: up</Badge> になれば正常です。
-            </p>
+            <strong>{t('help.quickStartStep6')}</strong>
+            <p className="text-zinc-500">{t('help.quickStartStep6Desc')}</p>
           </Step>
         </div>
       </Section>
 
-      <Section id="screens" title="画面の説明" icon={Monitor}>
+      <Section id="create-network" title={t('help.createTitle')} icon={Hammer}>
+        <p>{t('help.createIntro')}</p>
+
+        <div className="space-y-4 mt-3">
+          <Step n={1}>
+            <strong>{t('help.createStep1')}</strong>
+            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
+              docker compose up -d --build
+            </div>
+            <p className="mt-1 text-zinc-500">{t('help.createStep1Desc')}</p>
+          </Step>
+
+          <Step n={2}>
+            <strong>{t('help.createStep2')}</strong>
+            <p className="text-zinc-500 mt-1">{t('help.createStep2Desc')}</p>
+            <ul className="list-disc list-inside mt-1 space-y-1 text-zinc-400 text-xs">
+              <li>{t('help.createStep2Item1')}</li>
+              <li>{t('help.createStep2Item2')}</li>
+              <li>{t('help.createStep2Item3')}</li>
+              <li>{t('help.createStep2Item4')}</li>
+              <li>{t('help.createStep2Item5')}</li>
+              <li>{t('help.createStep2Item6')}</li>
+              <li>{t('help.createStep2Item7')}</li>
+            </ul>
+          </Step>
+
+          <Step n={3}>
+            <strong>{t('help.createStep3')}</strong>
+            <p className="text-zinc-500 mt-1">{t('help.createStep3Desc')}</p>
+            <ul className="list-disc list-inside mt-1 space-y-1 text-zinc-400 text-xs">
+              <li>{t('help.createStep3Item1')}</li>
+              <li>{t('help.createStep3Item2')}</li>
+              <li>{t('help.createStep3Item3')}</li>
+            </ul>
+          </Step>
+
+          <Step n={4}>
+            <strong>{t('help.createStep3Item4')}</strong>
+            <p className="text-zinc-500 mt-1">{t('help.createStep3Done')}</p>
+          </Step>
+
+          <Step n={5}>
+            <strong>{t('help.createStep4')}</strong>
+            <p className="text-zinc-500 mt-1">{t('help.createStep4Desc')}</p>
+          </Step>
+        </div>
+
+        <div className="mt-4 bg-amber-950/20 border border-amber-900/30 rounded-lg px-4 py-3">
+          <h4 className="font-semibold text-amber-300 flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="w-4 h-4" />
+            {t('help.createNotes')}
+          </h4>
+          <ul className="list-disc list-inside space-y-1 text-zinc-400 text-xs">
+            <li>{t('help.createNote1')}</li>
+            <li>{t('help.createNote2')}</li>
+            <li>{t('help.createNote3')}</li>
+          </ul>
+        </div>
+      </Section>
+
+      <Section id="share-network" title={t('help.shareTitle')} icon={Share2}>
+        <p>{t('help.shareIntro')}</p>
+
+        <h4 className="font-semibold text-zinc-100 mt-4 mb-2 flex items-center gap-2">
+          <Package className="w-4 h-4 text-sky-400" />
+          {t('help.shareContentsTitle')}
+        </h4>
+        <Table
+          headers={[t('help.shareTableFile'), t('help.shareTableContent')]}
+          rows={[
+            ['metadata.json', t('help.shareFileMeta')],
+            ['custom-preset.yml', t('help.shareFilePreset')],
+            ['ui-meta.json', t('help.shareFileUiMeta')],
+            ['seed/00000/00001.dat', t('help.shareFileSeedDat')],
+            ['seed/00000/00001.stmt', t('help.shareFileSeedStmt')],
+            ['seed/00000/hashes.dat', t('help.shareFileSeedHash')],
+            ['seed/00000/00001.proof', t('help.shareFileSeedProof')],
+          ]}
+        />
+
+        <h4 className="font-semibold text-zinc-100 mt-5 mb-2 flex items-center gap-2">
+          <Download className="w-4 h-4 text-sky-400" />
+          {t('help.shareExportTitle')}
+        </h4>
+        <div className="space-y-3">
+          <Step n={1}>
+            <strong>{t('help.shareExportStep1')}</strong>
+            <p className="text-zinc-500">{t('help.shareExportStep1Desc')}</p>
+          </Step>
+          <Step n={2}>
+            <strong>{t('help.shareExportStep2')}</strong>
+            <p className="text-zinc-500">{t('help.shareExportStep2Desc')}</p>
+          </Step>
+          <Step n={3}>
+            <strong>{t('help.shareExportStep3')}</strong>
+            <p className="text-zinc-500">{t('help.shareExportStep3Desc')}</p>
+          </Step>
+          <Step n={4}>
+            <strong>{t('help.shareExportStep4')}</strong>
+            <p className="text-zinc-500">{t('help.shareExportStep4Desc')}</p>
+          </Step>
+          <Step n={5}>
+            <strong>{t('help.shareExportStep5')}</strong>
+            <p className="text-zinc-500">{t('help.shareExportStep5Desc')}</p>
+          </Step>
+        </div>
+
+        <h4 className="font-semibold text-zinc-100 mt-5 mb-2 flex items-center gap-2">
+          <Upload className="w-4 h-4 text-emerald-400" />
+          {t('help.shareImportTitle')}
+        </h4>
+        <div className="space-y-3">
+          <Step n={1}>
+            <strong>{t('help.shareImportStep1')}</strong>
+            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
+              docker compose up -d --build
+            </div>
+          </Step>
+          <Step n={2}>
+            <strong>{t('help.shareImportStep2')}</strong>
+            <p className="text-zinc-500">{t('help.shareImportStep2Desc')}</p>
+          </Step>
+          <Step n={3}>
+            <strong>{t('help.shareImportStep3')}</strong>
+            <p className="text-zinc-500">{t('help.shareImportStep3Desc')}</p>
+          </Step>
+          <Step n={4}>
+            <strong>{t('help.shareImportStep4')}</strong>
+            <p className="text-zinc-500">{t('help.shareImportStep4Desc')}</p>
+          </Step>
+          <Step n={5}>
+            <strong>{t('help.shareImportStep5')}</strong>
+            <p className="text-zinc-500">{t('help.shareImportStep5Desc')}</p>
+          </Step>
+        </div>
+
+        <div className="mt-4 bg-indigo-950/20 border border-indigo-900/30 rounded-lg px-4 py-3">
+          <h4 className="font-semibold text-indigo-300 flex items-center gap-1.5 mb-1">
+            <Shield className="w-4 h-4" />
+            {t('help.shareSecurityTitle')}
+          </h4>
+          <ul className="list-disc list-inside space-y-1 text-zinc-400 text-xs">
+            <li>{t('help.shareSecurity1')}</li>
+            <li>{t('help.shareSecurity2')}</li>
+            <li>{t('help.shareSecurity3')}</li>
+          </ul>
+        </div>
+
+        <h4 className="font-semibold text-zinc-100 mt-5 mb-2">{t('help.shareCompareTitle')}</h4>
+        <Table
+          headers={[t('help.shareCompareMethod'), t('help.shareCompareContents'), t('help.shareCompareSteps'), t('help.shareCompareRecommend')]}
+          rows={[
+            [
+              <strong className="text-sky-300">{t('help.shareCompareZip')}</strong>,
+              t('help.shareCompareZipContent'),
+              t('help.shareCompareZipSteps'),
+              t('help.shareCompareZipRecommend'),
+            ],
+            [
+              <strong className="text-emerald-300">{t('help.shareCompareJoin')}</strong>,
+              t('help.shareCompareJoinContent'),
+              t('help.shareCompareJoinSteps'),
+              t('help.shareCompareJoinRecommend'),
+            ],
+            [
+              <strong className="text-zinc-300">{t('help.shareCompareManual')}</strong>,
+              t('help.shareCompareManualContent'),
+              t('help.shareCompareManualSteps'),
+              t('help.shareCompareManualRecommend'),
+            ],
+          ]}
+        />
+      </Section>
+
+      <Section id="screens" title={t('help.screensTitle')} icon={Monitor}>
         <div className="space-y-4">
           <div>
             <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
               <Globe className="w-4 h-4 text-emerald-400" />
-              Join Network
+              {t('help.screenJoin')}
             </h4>
-            <p>
-              既存のカスタムネットワークに参加するための画面です。
-              ソースノードの REST API URL を入力してネットワーク設定を自動取得し、
-              Seed ファイルのインポートも行えます。
-            </p>
+            <p>{t('help.screenJoinDesc')}</p>
           </div>
 
           <div>
             <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
               <Settings className="w-4 h-4 text-indigo-400" />
-              Configuration
+              {t('help.screenConfig')}
             </h4>
-            <p>
-              ノードの詳細設定を行う画面です。Join Network から自動反映された値を確認・修正できます。
-              Preset / Assembly / Catapult Version / ノード名 / 各種鍵などを設定します。
-            </p>
+            <p>{t('help.screenConfigDesc')}</p>
           </div>
 
           <div>
             <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
               <LayoutDashboard className="w-4 h-4 text-indigo-400" />
-              Dashboard
+              {t('help.screenDashboard')}
             </h4>
-            <p>
-              ノードの操作・監視を行うメイン画面です。Start/Stop/Reset 等の操作ボタンと、
-              リアルタイムのターミナルログを表示します。設定の YAML/JSON エクスポート・インポートも可能です。
-            </p>
+            <p>{t('help.screenDashboardDesc')}</p>
+          </div>
+
+          <div>
+            <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
+              <Share2 className="w-4 h-4 text-sky-400" />
+              {t('help.screenShare')}
+            </h4>
+            <p>{t('help.screenShareDesc')}</p>
           </div>
 
           <div>
             <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
               <HelpCircle className="w-4 h-4 text-amber-400" />
-              Help（このページ）
+              {t('help.screenHelp')}
             </h4>
-            <p>使い方やトラブルシューティング情報を表示します。</p>
+            <p>{t('help.screenHelpDesc')}</p>
           </div>
         </div>
       </Section>
 
-      <Section id="join" title="ネットワーク参加の詳細" icon={Globe}>
-        <h4 className="font-semibold text-zinc-100 mb-2">必要な Seed ファイル</h4>
+      <Section id="join" title={t('help.joinDetailTitle')} icon={Globe}>
+        <h4 className="font-semibold text-zinc-100 mb-2">{t('help.seedFilesTitle')}</h4>
         <Table
-          headers={['ファイル名', '必須', '内容']}
+          headers={[t('help.seedFileName'), t('help.seedRequired'), t('help.seedContent')]}
           rows={[
-            ['00001.dat', <Badge color="red">必須</Badge>, 'Nemesis ブロックデータ'],
-            ['00001.stmt', <Badge color="yellow">推奨</Badge>, 'Nemesis ブロックステートメント'],
-            ['hashes.dat', <Badge color="yellow">推奨</Badge>, 'ブロックハッシュ（GenerationHash + EntityHash）'],
-            ['proof.index.dat', <Badge color="zinc">任意</Badge>, 'ファイナライゼーションインデックス（自動生成可）'],
-            ['00001.proof', <Badge color="zinc">任意</Badge>, 'ファイナライゼーション証明'],
-            ['proof.heights.dat', <Badge color="zinc">任意</Badge>, '証明の高さデータ'],
+            ['00001.dat', <Badge color="red">{t('help.seedRequiredLabel')}</Badge>, t('help.seedDat')],
+            ['00001.stmt', <Badge color="yellow">{t('help.seedRecommendedLabel')}</Badge>, t('help.seedStmt')],
+            ['hashes.dat', <Badge color="yellow">{t('help.seedRecommendedLabel')}</Badge>, t('help.seedHash')],
+            ['proof.index.dat', <Badge color="zinc">{t('help.seedOptionalLabel')}</Badge>, t('help.seedProofIndex')],
+            ['00001.proof', <Badge color="zinc">{t('help.seedOptionalLabel')}</Badge>, t('help.seedProof')],
+            ['proof.heights.dat', <Badge color="zinc">{t('help.seedOptionalLabel')}</Badge>, t('help.seedProofHeights')],
           ]}
         />
 
-        <h4 className="font-semibold text-zinc-100 mt-4 mb-2">Catapult バージョンの選択</h4>
-        <p>
-          ソースノードと<strong>同じバージョン</strong>を使用してください。
-          バージョンが異なると、設定プロパティ数の不一致やブロック検証エラーが発生します。
-        </p>
+        <h4 className="font-semibold text-zinc-100 mt-4 mb-2">{t('help.catapultVersionTitle')}</h4>
+        <p>{t('help.catapultVersionDesc')}</p>
         <Table
-          headers={['バージョン', 'イメージ', '備考']}
+          headers={[t('help.catapultColVersion'), t('help.catapultColImage'), t('help.catapultColNote')]}
           rows={[
-            ['v2', 'gcc-1.0.3.6', 'Ubuntu 22.04 / OpenSSL 3 ネイティブ'],
-            ['v3', 'gcc-1.0.3.9', 'パッチイメージ自動ビルド（OpenSSL 互換レイヤー）'],
+            ['v2', 'gcc-1.0.3.6', t('help.catapultV2Note')],
+            ['v3', 'gcc-1.0.3.9', t('help.catapultV3Note')],
           ]}
         />
       </Section>
 
-      <Section id="buttons" title="ボタンの説明" icon={LayoutDashboard}>
-        <h4 className="font-semibold text-zinc-100 mb-2">Dashboard 操作ボタン</h4>
+      <Section id="buttons" title={t('help.buttonsTitle')} icon={LayoutDashboard}>
+        <h4 className="font-semibold text-zinc-100 mb-2">{t('help.buttonsDashTitle')}</h4>
         <Table
-          headers={['ボタン', '説明']}
+          headers={[t('help.buttonsCol'), t('help.buttonsDescCol')]}
           rows={[
             [
               <span className="flex items-center gap-1.5"><Play className="w-3.5 h-3.5 text-emerald-400" /> Start</span>,
-              '設定生成 → コンテナ起動 → ヘルスチェック。パスワードの入力が必要です。',
+              t('help.btnStartDesc'),
             ],
             [
               <span className="flex items-center gap-1.5"><Square className="w-3.5 h-3.5 text-red-400" /> Stop</span>,
-              'コンテナを停止。データと設定は全て保持されます。',
+              t('help.btnStopDesc'),
             ],
             [
               <span className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 text-blue-400" /> Health Check</span>,
-              'symbol-bootstrap healthCheck を実行してノードの状態を確認。',
+              t('help.btnHealthDesc'),
             ],
             [
               <span className="flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5 text-zinc-400" /> Reset</span>,
-              'ネットワークデータ（ブロック・DB）のみ削除。設定と証明書は保持。同じネットワークにゼロから再同期したい場合に使用。',
+              t('help.btnResetDesc'),
             ],
             [
-              <span className="flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5 text-red-400" /> 完全初期化</span>,
-              '全設定・全データ・証明書・Seed を削除して初期状態に。別のネットワークに切り替える場合に使用。',
+              <span className="flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5 text-red-400" /> {t('help.resetFull')}</span>,
+              t('help.btnFullResetDesc'),
             ],
           ]}
         />
       </Section>
 
-      <Section id="reset" title="リセット操作の違い" icon={RefreshCw}>
+      <Section id="reset" title={t('help.resetDiffTitle')} icon={RefreshCw}>
         <Table
-          headers={['操作', '設定ファイル', 'ブロックデータ', '証明書・鍵', 'Seed', '用途']}
+          headers={[t('help.resetColOperation'), t('help.resetColConfig'), t('help.resetColBlock'), t('help.resetColCert'), t('help.resetColSeed'), t('help.resetColUse')]}
           rows={[
             [
-              <strong>Stop → Start</strong>,
-              <Badge color="green">保持</Badge>,
-              <Badge color="green">保持</Badge>,
-              <Badge color="green">保持</Badge>,
-              <Badge color="green">保持</Badge>,
-              '単純な再起動',
+              <strong>{t('help.resetStopStart')}</strong>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              t('help.resetStopStartUse'),
             ],
             [
-              <strong>Reset → Start</strong>,
-              <Badge color="green">保持</Badge>,
-              <Badge color="red">削除</Badge>,
-              <Badge color="green">保持</Badge>,
-              <Badge color="green">保持</Badge>,
-              '同じネットワークに再同期',
+              <strong>{t('help.resetResetStart')}</strong>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              <Badge color="red">{t('help.resetDelete')}</Badge>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              <Badge color="green">{t('help.resetKeep')}</Badge>,
+              t('help.resetResetStartUse'),
             ],
             [
-              <strong>完全初期化</strong>,
-              <Badge color="red">全削除</Badge>,
-              <Badge color="red">全削除</Badge>,
-              <Badge color="red">全削除</Badge>,
-              <Badge color="red">全削除</Badge>,
-              '別ネットワークに切り替え',
+              <strong>{t('help.resetFull')}</strong>,
+              <Badge color="red">{t('help.resetAllDelete')}</Badge>,
+              <Badge color="red">{t('help.resetAllDelete')}</Badge>,
+              <Badge color="red">{t('help.resetAllDelete')}</Badge>,
+              <Badge color="red">{t('help.resetAllDelete')}</Badge>,
+              t('help.resetFullUse'),
             ],
           ]}
         />
       </Section>
 
-      <Section id="trouble" title="トラブルシューティング" icon={AlertTriangle}>
+      <Section id="trouble" title={t('help.troubleTitle')} icon={AlertTriangle}>
         <div className="space-y-5">
           <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
-            <h4 className="font-semibold text-amber-300 mb-2">apiNode が「down」のまま</h4>
-            <p className="mb-2">
-              REST gateway と api-node 間の TLS 接続に問題がある可能性があります。
-            </p>
-            <p>
-              <strong>対処法：</strong> 「完全初期化」→ Seed ファイルを再インポート →「Start」でやり直してください。
-            </p>
+            <h4 className="font-semibold text-amber-300 mb-2">{t('help.trouble1Title')}</h4>
+            <p className="mb-2">{t('help.trouble1Desc')}</p>
+            <p>{t('help.trouble1Fix')}</p>
           </div>
 
           <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
-            <h4 className="font-semibold text-red-300 mb-2">Segmentation fault (exit code 139)</h4>
-            <p className="mb-2">
-              proof.index.dat のフォーマット不正が主な原因です。
-            </p>
-            <p>
-              <strong>対処法：</strong> 「完全初期化」→ Seed ファイルを再インポート → 「Start」でやり直してください。
-              最新版では proof.index.dat を正しい 48 バイト形式で自動生成するため、通常発生しません。
-            </p>
+            <h4 className="font-semibold text-red-300 mb-2">{t('help.trouble2Title')}</h4>
+            <p className="mb-2">{t('help.trouble2Desc')}</p>
+            <p>{t('help.trouble2Fix')}</p>
           </div>
 
           <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
-            <h4 className="font-semibold text-amber-300 mb-2">Failure_Chain_Block_Unknown_Signer</h4>
-            <p className="mb-2">
-              nemesis ブロックのトランザクションが正しく処理されず、アカウントステートキャッシュにハーベスティング鍵が登録されていません。
-            </p>
-            <p>
-              <strong>対処法：</strong> 「完全初期化」→ 正しい Seed ファイルをインポートし直す → 「Start」で再起動。
-            </p>
+            <h4 className="font-semibold text-amber-300 mb-2">{t('help.trouble3Title')}</h4>
+            <p className="mb-2">{t('help.trouble3Desc')}</p>
+            <p>{t('help.trouble3Fix')}</p>
           </div>
 
           <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
-            <h4 className="font-semibold text-amber-300 mb-2">ブロック同期が進まない</h4>
+            <h4 className="font-semibold text-amber-300 mb-2">{t('help.trouble4Title')}</h4>
             <ul className="list-disc list-inside space-y-1 text-zinc-400">
-              <li>ソースノードがダウンしていないか確認</li>
-              <li>ファイアウォールでポート 7900 がブロックされていないか確認</li>
-              <li>Catapult バージョンがソースノードと一致しているか確認</li>
-              <li>ターミナルログで <code className="text-indigo-400">Accepted</code> が出ているか確認</li>
+              <li>{t('help.trouble4Fix1')}</li>
+              <li>{t('help.trouble4Fix2')}</li>
+              <li>{t('help.trouble4Fix3')}</li>
+              <li>{t('help.trouble4Fix4')}</li>
             </ul>
           </div>
 
           <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
-            <h4 className="font-semibold text-amber-300 mb-2">コンテナが起動しない</h4>
+            <h4 className="font-semibold text-amber-300 mb-2">{t('help.trouble5Title')}</h4>
             <ul className="list-disc list-inside space-y-1 text-zinc-400">
-              <li>Docker Desktop が起動しているか確認</li>
-              <li>ディスク容量に余裕があるか確認</li>
-              <li>ターミナルログでエラーメッセージを確認</li>
-              <li>「完全初期化」→ 「Start」でやり直す</li>
+              <li>{t('help.trouble5Fix1')}</li>
+              <li>{t('help.trouble5Fix2')}</li>
+              <li>{t('help.trouble5Fix3')}</li>
+              <li>{t('help.trouble5Fix4')}</li>
             </ul>
           </div>
         </div>
       </Section>
 
-      <Section id="tech" title="技術仕様" icon={Server}>
-        <h4 className="font-semibold text-zinc-100 mb-2">使用技術</h4>
+      <Section id="tech" title={t('help.techTitle')} icon={Server}>
+        <h4 className="font-semibold text-zinc-100 mb-2">{t('help.techStackTitle')}</h4>
         <Table
-          headers={['レイヤー', '技術']}
+          headers={[t('help.techColLayer'), t('help.techColTech')]}
           rows={[
             ['Frontend', 'React 19 + Vite + Tailwind CSS v4 + TypeScript'],
             ['Backend', 'Node.js + Express 5 + WebSocket'],
@@ -405,19 +564,19 @@ export function HelpPage() {
           ]}
         />
 
-        <h4 className="font-semibold text-zinc-100 mt-4 mb-2">ポート一覧</h4>
+        <h4 className="font-semibold text-zinc-100 mt-4 mb-2">{t('help.techPortTitle')}</h4>
         <Table
-          headers={['ポート', '用途']}
+          headers={[t('help.techColPort'), t('help.techColUse')]}
           rows={[
-            ['4000', 'Symbol Network Manager Web UI / API'],
-            ['7900', 'Symbol P2P ノード通信'],
-            ['3000', 'Symbol REST API'],
-            ['27017', 'MongoDB（内部のみ）'],
-            ['7902', 'ZeroMQ（内部のみ）'],
+            ['4000', t('help.techPort4000')],
+            ['7900', t('help.techPort7900')],
+            ['3000', t('help.techPort3000')],
+            ['27017', t('help.techPort27017')],
+            ['7902', t('help.techPort7902')],
           ]}
         />
 
-        <h4 className="font-semibold text-zinc-100 mt-4 mb-2">アーキテクチャ</h4>
+        <h4 className="font-semibold text-zinc-100 mt-4 mb-2">{t('help.techArchTitle')}</h4>
         <div className="bg-zinc-900 rounded-lg p-4 font-mono text-xs text-zinc-400 whitespace-pre overflow-x-auto">{`Host (Windows/macOS/Linux)
 └─ symbol-manager (Docker Container)
    ├─ Frontend (React + Vite)     ← port 4000

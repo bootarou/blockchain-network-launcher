@@ -2,10 +2,13 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Activity, RefreshCw, Server, Database, Wifi, WifiOff } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
+import { useTranslation } from '../i18n';
 
+// In production the backend serves the frontend on the same port → same host.
+// In dev mode Vite proxies /ws → ws://localhost:4000 (see vite.config.ts).
 const WS_URL =
   import.meta.env.VITE_WS_URL ??
-  `ws://${window.location.hostname}:4000`;
+  `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
 export interface NodeHealth {
   status: 'unknown' | 'up' | 'down';
@@ -26,6 +29,7 @@ export function NodeHealthIndicator() {
   const [expanded, setExpanded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const { t } = useTranslation();
 
   // ── Close dropdown on outside click ────────────────────────────────────
   useEffect(() => {
@@ -44,15 +48,25 @@ export function NodeHealthIndicator() {
     let ws: WebSocket;
     let retryTimer: ReturnType<typeof setTimeout>;
     let disposed = false;
+    let retryDelay = 3000; // start at 3s, exponential backoff up to 30s
 
     const connect = () => {
       if (disposed) return;
-      ws = new WebSocket(WS_URL);
+      // In dev mode, Vite proxies /ws → ws://localhost:4000
+      // In production, the backend handles the upgrade on the same port
+      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws` : WS_URL;
+      ws = new WebSocket(wsTarget);
 
-      ws.onopen = () => {};
+      ws.onopen = () => {
+        retryDelay = 3000; // reset on successful connection
+      };
       ws.onclose = () => {
         if (disposed) return;
-        retryTimer = setTimeout(connect, 3000);
+        retryTimer = setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000); // backoff: 3→6→12→24→30s
+      };
+      ws.onerror = () => {
+        // Suppress console noise — onclose will handle reconnection
       };
 
       ws.onmessage = (event) => {
@@ -111,10 +125,10 @@ export function NodeHealthIndicator() {
 
   const statusText =
     health.status === 'up'
-      ? 'Node Running'
+      ? t('health.nodeRunning')
       : health.status === 'down'
-        ? 'Node Offline'
-        : 'Checking...';
+        ? t('health.nodeOffline')
+        : t('health.checking');
 
   const statusTextColor =
     health.status === 'up'
@@ -138,7 +152,7 @@ export function NodeHealthIndicator() {
           statusBorder,
           expanded ? 'bg-zinc-800/60' : 'bg-zinc-900/60'
         )}
-        title={`${statusText} — click for details`}
+        title={t('health.clickDetails', { status: statusText })}
       >
         {/* Pulsing dot */}
         <span className="relative flex h-2.5 w-2.5">
@@ -165,13 +179,13 @@ export function NodeHealthIndicator() {
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
               <Activity className="w-4 h-4 text-indigo-400" />
-              Node Health
+              {t('health.title')}
             </h3>
             <button
               onClick={handleRefresh}
               disabled={refreshing}
               className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors"
-              title="Refresh now"
+              title={t('health.refreshNow')}
             >
               <RefreshCw className={cn('w-3.5 h-3.5', refreshing && 'animate-spin')} />
             </button>
@@ -187,7 +201,7 @@ export function NodeHealthIndicator() {
             )}>
               <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-1">
                 <Server className="w-3 h-3" />
-                API Node
+                {t('health.apiNode')}
               </div>
               <p className={cn(
                 'text-sm font-semibold',
@@ -206,7 +220,7 @@ export function NodeHealthIndicator() {
             )}>
               <div className="flex items-center gap-1.5 text-xs text-zinc-500 mb-1">
                 <Database className="w-3 h-3" />
-                Database
+                {t('health.database')}
               </div>
               <p className={cn(
                 'text-sm font-semibold',
@@ -220,18 +234,18 @@ export function NodeHealthIndicator() {
           {/* Details */}
           <div className="space-y-1 text-xs text-zinc-500 border-t border-zinc-800 pt-2">
             <div className="flex justify-between">
-              <span>HTTP Status</span>
+              <span>{t('health.httpStatus')}</span>
               <span className="text-zinc-400 font-mono">
                 {health.statusCode ?? '—'}
               </span>
             </div>
             <div className="flex justify-between">
-              <span>Last Check</span>
+              <span>{t('health.lastCheck')}</span>
               <span className="text-zinc-400">{lastCheckStr}</span>
             </div>
             <div className="flex justify-between">
-              <span>Polling</span>
-              <span className="text-zinc-400">every 10s</span>
+              <span>{t('health.polling')}</span>
+              <span className="text-zinc-400">{t('health.every10s')}</span>
             </div>
           </div>
         </div>

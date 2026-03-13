@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import {
-  BarChart3,
+import {  AlertTriangle,  BarChart3,
   Box,
   Users,
   Shield,
@@ -16,8 +15,15 @@ import {
   HardDrive,
   Database,
   FolderOpen,
+  Loader2,
+  Trash2,
+  Info,
+  KeyRound,
+  ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useTranslation } from '../i18n';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +75,25 @@ interface StorageData {
   target: { usedBytes: number; breakdown: Record<string, number> };
 }
 
+interface CertEntry {
+  exists: boolean;
+  notBefore: string | null;
+  notAfter: string | null;
+  daysRemaining: number | null;
+}
+
+interface CertificateData {
+  available: boolean;
+  nodeCert?: CertEntry;
+  caCert?: CertEntry;
+  restNodeCert?: CertEntry;
+  restCaCert?: CertEntry;
+  preset?: {
+    nodeCertificateExpirationInDays: number | null;
+    caCertificateExpirationInDays: number | null;
+  };
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatHeight(h: string | null | undefined): string {
@@ -89,14 +114,14 @@ function formatVersion(v: string | null | undefined): string {
   return `${major}.${minor}.${patch}.${build}`;
 }
 
-function roleLabel(roles: number | null | undefined): string {
+function roleLabel(roles: number | null | undefined, t: (key: string) => string): string {
   if (roles == null) return '—';
   const labels: string[] = [];
-  if (roles & 1) labels.push('Peer');
-  if (roles & 2) labels.push('API');
-  if (roles & 4) labels.push('Voting');
-  if (roles & 64) labels.push('IPv4');
-  if (roles & 128) labels.push('IPv6');
+  if (roles & 1) labels.push(t('stats.rolePeer'));
+  if (roles & 2) labels.push(t('stats.roleApi'));
+  if (roles & 4) labels.push(t('stats.roleVoting'));
+  if (roles & 64) labels.push(t('stats.roleIpv4'));
+  if (roles & 128) labels.push(t('stats.roleIpv6'));
   return labels.length > 0 ? labels.join(', ') : `Role ${roles}`;
 }
 
@@ -106,13 +131,13 @@ function shortKey(key: string | null | undefined): string {
   return `${key.slice(0, 8)}…${key.slice(-8)}`;
 }
 
-function timeAgo(ts: string): string {
+function timeAgo(ts: string, t: (key: string, params?: Record<string, string | number> | string) => string): string {
   const diff = Date.now() - new Date(ts).getTime();
   const sec = Math.floor(diff / 1000);
-  if (sec < 5) return 'たった今';
-  if (sec < 60) return `${sec}秒前`;
+  if (sec < 5) return t('stats.justNow');
+  if (sec < 60) return t('stats.secondsAgo', { n: sec });
   const min = Math.floor(sec / 60);
-  return `${min}分前`;
+  return t('stats.minutesAgo', { n: min });
 }
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -188,7 +213,16 @@ const BREAKDOWN_ICONS: Record<string, React.ReactNode> = {
   nemesis: <Shield className="w-3 h-3 text-amber-400" />,
 };
 
-function StorageIndicator({ data }: { data: StorageData }) {
+interface VolumeInfo {
+  mountPoint: string;
+  fsType: string;
+  totalGB: number;
+  availGB: number;
+  usedPercent: number;
+}
+
+function StorageIndicator({ data, networkState }: { data: StorageData; networkState: string }) {
+  const { t } = useTranslation();
   const { filesystem, target } = data;
   const fsPercent = filesystem.totalBytes > 0
     ? Math.round((filesystem.usedBytes / filesystem.totalBytes) * 100)
@@ -197,19 +231,302 @@ function StorageIndicator({ data }: { data: StorageData }) {
     ? Math.round((target.usedBytes / filesystem.totalBytes) * 100)
     : 0;
 
+  const nodeStopped = networkState === 'stopped' || networkState === 'error';
+
   // Sort breakdown by size descending
   const breakdownEntries = Object.entries(target.breakdown)
     .sort(([, a], [, b]) => b - a);
+
+  // ── Path change state ──
+  const [showPathPanel, setShowPathPanel] = useState(false);
+  const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
+  const [loadingVolumes, setLoadingVolumes] = useState(false);
+  const [customPath, setCustomPath] = useState('');
+  const [selectedPath, setSelectedPath] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
+  const [copyError, setCopyError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const openPathPanel = async () => {
+    setShowPathPanel(true);
+    setSuccessMsg('');
+    setCopyError('');
+    setLoadingVolumes(true);
+    try {
+      const res = await api.getVolumes();
+      if (res.volumes) setVolumes(res.volumes);
+    } catch { /* ignore */ }
+    setLoadingVolumes(false);
+  };
+
+  const closePathPanel = () => {
+    setShowPathPanel(false);
+    setCustomPath('');
+    setSelectedPath('');
+    setCopyError('');
+  };
+
+  const applyPath = async () => {
+    const newPath = customPath.trim() || selectedPath;
+    if (!newPath) return;
+    setSaving(true);
+    setCopyError('');
+    try {
+      const res = await api.setTargetDir(newPath);
+      if (res.success) {
+        setSuccessMsg(newPath);
+        setCustomPath('');
+        setSelectedPath('');
+      } else if (res.error === 'NODE_RUNNING') {
+        setCopyError(t('stats.stopNodeFirst'));
+      } else if (res.error === 'FORBIDDEN_PATH') {
+        setCopyError(t('stats.forbiddenPath'));
+      } else if (res.error === 'SAME_PATH') {
+        setCopyError(t('stats.samePath'));
+      } else if (res.error === 'COPY_FAILED') {
+        setCopyError(res.message || t('stats.copyFailed'));
+      } else {
+        setCopyError(res.error || res.message || 'Failed');
+      }
+    } catch {
+      setCopyError(t('stats.copyFailed'));
+    }
+    setSaving(false);
+  };
+
+  const confirmDelete = async (dirPath: string) => {
+    setDeleting(true);
+    setCopyError('');
+    try {
+      const res = await api.deleteDirectory(dirPath);
+      if (res.success) {
+        // Refresh volume list
+        const vRes = await api.getVolumes();
+        if (vRes.volumes) setVolumes(vRes.volumes);
+        setDeleteTarget(null);
+      } else {
+        setCopyError(res.message || res.error || 'Delete failed');
+        setDeleteTarget(null);
+      }
+    } catch {
+      setCopyError(t('stats.deleteFailed'));
+      setDeleteTarget(null);
+    }
+    setDeleting(false);
+  };
+
+  // Minimum GB threshold for small-volume warning
+  const SMALL_VOLUME_GB = 10;
+
+  const effectivePath = customPath.trim() || selectedPath;
 
   return (
     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs text-zinc-500">
           <HardDrive className={`w-4 h-4 ${usageColor(fsPercent)}`} />
-          ストレージ使用状況
+          {t('stats.storage')}
         </div>
-        <span className="text-xs text-zinc-600 font-mono">{data.targetDir}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-zinc-600 font-mono">{data.targetDir}</span>
+          <button
+            onClick={showPathPanel ? closePathPanel : openPathPanel}
+            className="text-[10px] px-2 py-0.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+          >
+            {t('stats.changePath')}
+          </button>
+        </div>
       </div>
+
+      {/* ── Path change panel ── */}
+      {showPathPanel && (
+        <div className="bg-zinc-900/80 border border-zinc-700/60 rounded-lg p-3 space-y-3">
+          <div>
+            <div className="text-xs font-semibold text-zinc-300 mb-1">{t('stats.storagePathTitle')}</div>
+            <div className="text-[10px] text-zinc-500">{t('stats.storagePathDesc')}</div>
+          </div>
+
+          {/* Hint: recommended path for Docker Desktop (Windows) */}
+          <div className="bg-sky-950/30 border border-sky-800/40 rounded-lg px-3 py-2 flex items-start gap-2">
+            <Info className="w-3.5 h-3.5 text-sky-400 flex-shrink-0 mt-0.5" />
+            <div className="text-[10px] text-sky-300/80 leading-relaxed">
+              {t('stats.pathHintWindows')}
+            </div>
+          </div>
+
+          {/* Warning: node must be stopped */}
+          {!nodeStopped && (
+            <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+              <span className="text-xs text-amber-400">{t('stats.stopNodeFirst')}</span>
+            </div>
+          )}
+
+          {/* Error message */}
+          {copyError && (
+            <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">
+              <span className="text-xs text-red-400">{copyError}</span>
+            </div>
+          )}
+
+          {/* Success message */}
+          {successMsg && (
+            <div className="bg-emerald-950/40 border border-emerald-800/50 rounded-lg p-3 space-y-2">
+              <div className="text-xs text-emerald-400">
+                {t('stats.restartRequired').replace('{path}', successMsg)}
+              </div>
+              <code className="block text-[10px] bg-zinc-950 text-zinc-300 rounded px-2 py-1.5 font-mono select-all">
+                {t('stats.restartCommand')}
+              </code>
+            </div>
+          )}
+
+          {/* Volume list */}
+          <div>
+            <div className="text-[10px] text-zinc-500 mb-1.5">{t('stats.volumeList')}</div>
+            {loadingVolumes ? (
+              <div className="flex items-center gap-2 text-xs text-zinc-500 py-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              </div>
+            ) : volumes.length === 0 ? (
+              <div className="text-xs text-zinc-600 py-1">—</div>
+            ) : (
+              <div className="space-y-1.5">
+                {volumes.map((v) => {
+                  const isCurrent = v.mountPoint === data.targetDir;
+                  const isSelected = selectedPath === v.mountPoint && !customPath.trim();
+                  const isSmall = v.availGB < SMALL_VOLUME_GB;
+                  const canDelete = !isCurrent && nodeStopped && v.mountPoint.startsWith('/opt/');
+                  return (
+                    <div key={v.mountPoint} className="flex items-center gap-1">
+                      <button
+                        onClick={() => { setSelectedPath(v.mountPoint); setCustomPath(''); }}
+                        className={`flex-1 text-left flex items-center justify-between px-3 py-2 rounded-lg border transition-colors ${
+                          isSelected
+                            ? 'border-indigo-500/60 bg-indigo-500/10'
+                            : isCurrent
+                              ? 'border-zinc-600 bg-zinc-800/40'
+                              : isSmall
+                                ? 'border-amber-800/40 bg-amber-950/10 hover:border-amber-700/60'
+                                : 'border-zinc-800 bg-zinc-950/60 hover:border-zinc-600'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <HardDrive className={`w-3.5 h-3.5 flex-shrink-0 ${
+                            isSmall ? 'text-amber-400' : isSelected ? 'text-indigo-400' : 'text-zinc-500'
+                          }`} />
+                          <span className="text-xs font-mono text-zinc-300 truncate">{v.mountPoint}</span>
+                          {isCurrent && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-400 flex-shrink-0">
+                              {t('stats.currentLabel')}
+                            </span>
+                          )}
+                          {isSelected && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 flex-shrink-0">
+                              {t('stats.selected')}
+                            </span>
+                          )}
+                          {isSmall && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 flex-shrink-0 flex items-center gap-0.5">
+                              <AlertTriangle className="w-2.5 h-2.5" />
+                              {t('stats.smallVolume')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0 ml-2">
+                          {/* Mini usage bar */}
+                          <div className="w-16 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${barColor(v.usedPercent)}`}
+                              style={{ width: `${v.usedPercent}%` }}
+                            />
+                          </div>
+                          <span className={`text-[10px] whitespace-nowrap ${
+                            isSmall ? 'text-amber-400' : 'text-zinc-400'
+                          }`}>
+                            {t('stats.volumeAvail').replace('{avail}', String(v.availGB)).replace('{total}', String(v.totalGB))}
+                          </span>
+                        </div>
+                      </button>
+                      {/* Delete button for non-current /opt/* directories */}
+                      {canDelete && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDeleteTarget(v.mountPoint); }}
+                          className="p-1.5 rounded-lg border border-zinc-800 text-zinc-600 hover:text-red-400 hover:border-red-800/50 transition-colors flex-shrink-0"
+                          title={t('stats.deleteVolume')}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Custom path input */}
+          <div>
+            <div className="text-[10px] text-zinc-500 mb-1">{t('stats.customPath')}</div>
+            <input
+              type="text"
+              value={customPath}
+              onChange={(e) => setCustomPath(e.target.value)}
+              placeholder={t('stats.customPathPlaceholder')}
+              className="w-full text-xs bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={applyPath}
+              disabled={!effectivePath || saving || !nodeStopped}
+              className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+              title={!nodeStopped ? t('stats.stopNodeFirst') : ''}
+            >
+              {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+              {saving ? t('stats.copying') : t('stats.applyPath')}
+            </button>
+            <button
+              onClick={closePathPanel}
+              className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              {t('stats.cancelPath')}
+            </button>
+          </div>
+
+          {/* Delete confirmation dialog */}
+          {deleteTarget && (
+            <div className="bg-red-950/30 border border-red-800/50 rounded-lg p-3 space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-red-300">
+                  {t('stats.deleteConfirm').replace('{path}', deleteTarget)}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => confirmDelete(deleteTarget)}
+                  disabled={deleting}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-500 disabled:opacity-40 transition-colors flex items-center gap-1.5"
+                >
+                  {deleting && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {deleting ? t('stats.deleting') : t('stats.deleteExecute')}
+                </button>
+                <button
+                  onClick={() => setDeleteTarget(null)}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  {t('stats.cancelPath')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main progress bar */}
       <div className="space-y-1.5">
@@ -234,7 +551,7 @@ function StorageIndicator({ data }: { data: StorageData }) {
       <div className="flex items-center justify-between text-xs pt-1">
         <div className="flex items-center gap-1.5 text-zinc-400">
           <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
-          ブロックチェーンデータ
+          {t('stats.blockchainData')}
         </div>
         <span className="text-zinc-300 font-semibold">
           {formatBytes(target.usedBytes)}
@@ -269,8 +586,262 @@ function StorageIndicator({ data }: { data: StorageData }) {
             ? 'bg-red-950/40 border-red-900/50 text-red-400'
             : 'bg-amber-950/40 border-amber-900/50 text-amber-400'
         }`}>
-          ⚠️ ストレージの残り容量が{fsPercent >= 90 ? '非常に' : ''}少なくなっています。
-          ブロックチェーンの同期を続けるには、ディスク容量の拡張を検討してください。
+          {fsPercent >= 90 ? t('stats.storageWarningCritical') : t('stats.storageWarning')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Certificate info component ───────────────────────────────────────────
+
+function certDaysColor(days: number | null): string {
+  if (days === null) return 'text-zinc-500';
+  if (days <= 30) return 'text-red-400';
+  if (days <= 90) return 'text-amber-400';
+  return 'text-emerald-400';
+}
+
+function certDaysBg(days: number | null): string {
+  if (days === null) return 'border-zinc-800';
+  if (days <= 30) return 'border-red-800/50 bg-red-950/20';
+  if (days <= 90) return 'border-amber-800/50 bg-amber-950/20';
+  return 'border-zinc-800';
+}
+
+function certIcon(days: number | null) {
+  if (days === null) return <KeyRound className="w-4 h-4 text-zinc-500" />;
+  if (days <= 30) return <ShieldAlert className="w-4 h-4 text-red-400" />;
+  if (days <= 90) return <ShieldAlert className="w-4 h-4 text-amber-400" />;
+  return <ShieldCheck className="w-4 h-4 text-emerald-400" />;
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  } catch {
+    return dateStr;
+  }
+}
+
+function CertificateIndicator({ data, networkState, onRenewed }: {
+  data: CertificateData;
+  networkState: string;
+  onRenewed: () => void;
+}) {
+  const { t } = useTranslation();
+  const [showRenewDialog, setShowRenewDialog] = useState(false);
+  const [renewPassword, setRenewPassword] = useState('');
+  const [forceRenew, setForceRenew] = useState(false);
+  const [renewing, setRenewing] = useState(false);
+  const [renewError, setRenewError] = useState('');
+  const [renewSuccess, setRenewSuccess] = useState(false);
+
+  if (!data.available) return null;
+
+  const nodeStopped = networkState === 'stopped' || networkState === 'error';
+
+  const certs: { key: string; label: string; entry: CertEntry | undefined }[] = [
+    { key: 'node', label: t('cert.nodeCert'), entry: data.nodeCert },
+    { key: 'ca', label: t('cert.caCert'), entry: data.caCert },
+    { key: 'restNode', label: t('cert.restNodeCert'), entry: data.restNodeCert },
+    { key: 'restCa', label: t('cert.restCaCert'), entry: data.restCaCert },
+  ];
+
+  // Find the minimum days remaining for the overall status icon
+  const allDays = certs
+    .map((c) => c.entry?.daysRemaining)
+    .filter((d): d is number => d !== null && d !== undefined);
+  const minDays = allDays.length > 0 ? Math.min(...allDays) : null;
+
+  const handleRenew = async () => {
+    if (!renewPassword.trim()) return;
+    setRenewing(true);
+    setRenewError('');
+    setRenewSuccess(false);
+    try {
+      const result = await api.renewCertificate(renewPassword, forceRenew);
+      if (result.success) {
+        setRenewSuccess(true);
+        setRenewPassword('');
+        onRenewed();
+      } else if (result.error === 'NODE_RUNNING') {
+        setRenewError(t('cert.errorNodeRunning'));
+      } else if (result.error === 'PASSWORD_REQUIRED') {
+        setRenewError(t('cert.errorPasswordRequired'));
+      } else if (result.error === 'NO_CERTIFICATES') {
+        setRenewError(t('cert.errorNoCertificates'));
+      } else {
+        setRenewError(result.message || result.error || 'Unknown error');
+      }
+    } catch {
+      setRenewError(t('cert.errorRenewFailed'));
+    }
+    setRenewing(false);
+  };
+
+  const closeDialog = () => {
+    setShowRenewDialog(false);
+    setRenewPassword('');
+    setRenewError('');
+    setRenewSuccess(false);
+    setForceRenew(false);
+  };
+
+  return (
+    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
+      {/* Header */}
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        {certIcon(minDays)}
+        <span>{t('cert.title')}</span>
+        {minDays !== null && minDays <= 90 && (
+          <span className={`text-xs font-medium ${certDaysColor(minDays)}`}>
+            {minDays <= 30 ? t('cert.expiringSoon') : t('cert.expiringWarning')}
+          </span>
+        )}
+        <button
+          onClick={() => { setShowRenewDialog(true); setRenewSuccess(false); setRenewError(''); }}
+          className="ml-auto text-[10px] px-2 py-0.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors flex items-center gap-1"
+        >
+          <RefreshCw className="w-3 h-3" />
+          {t('cert.renewButton')}
+        </button>
+      </div>
+
+      {/* Renew dialog */}
+      {showRenewDialog && (
+        <div className="bg-zinc-900/80 border border-zinc-700/60 rounded-lg p-3 space-y-3">
+          <div>
+            <div className="text-xs font-semibold text-zinc-300 mb-1">{t('cert.renewTitle')}</div>
+            <div className="text-[10px] text-zinc-500">{t('cert.renewDesc')}</div>
+          </div>
+
+          {/* Warning: node must be stopped */}
+          {!nodeStopped && (
+            <div className="bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+              <span className="text-xs text-amber-400">{t('cert.errorNodeRunning')}</span>
+            </div>
+          )}
+
+          {/* Error */}
+          {renewError && (
+            <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2">
+              <span className="text-xs text-red-400">{renewError}</span>
+            </div>
+          )}
+
+          {/* Success */}
+          {renewSuccess && (
+            <div className="bg-emerald-950/40 border border-emerald-800/50 rounded-lg p-3 space-y-1">
+              <div className="text-xs text-emerald-400">{t('cert.renewSuccess')}</div>
+              <div className="text-[10px] text-zinc-500">{t('cert.renewRestartHint')}</div>
+            </div>
+          )}
+
+          {!renewSuccess && (
+            <>
+              {/* Password input */}
+              <div>
+                <div className="text-[10px] text-zinc-500 mb-1">{t('cert.passwordLabel')}</div>
+                <input
+                  type="password"
+                  value={renewPassword}
+                  onChange={(e) => setRenewPassword(e.target.value)}
+                  placeholder={t('cert.passwordPlaceholder')}
+                  className="w-full text-xs bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-1.5 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50"
+                  onKeyDown={(e) => { if (e.key === 'Enter' && renewPassword.trim() && nodeStopped) handleRenew(); }}
+                />
+              </div>
+
+              {/* Force option */}
+              <label className="flex items-center gap-2 text-[10px] text-zinc-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={forceRenew}
+                  onChange={(e) => setForceRenew(e.target.checked)}
+                  className="rounded border-zinc-600 bg-zinc-900 text-indigo-500 focus:ring-indigo-500/30"
+                />
+                {t('cert.forceRenew')}
+              </label>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={handleRenew}
+                  disabled={!renewPassword.trim() || renewing || !nodeStopped}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                  title={!nodeStopped ? t('cert.errorNodeRunning') : ''}
+                >
+                  {renewing && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {renewing ? t('cert.renewing') : t('cert.renewExecute')}
+                </button>
+                <button
+                  onClick={closeDialog}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  {t('cert.renewCancel')}
+                </button>
+              </div>
+            </>
+          )}
+
+          {renewSuccess && (
+            <button
+              onClick={closeDialog}
+              className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              {t('cert.renewClose')}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Certificate cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {certs.map(({ key, label, entry }) => {
+          if (!entry?.exists) return null;
+          return (
+            <div
+              key={key}
+              className={`border rounded-lg p-3 space-y-1.5 ${certDaysBg(entry.daysRemaining)}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-zinc-400 font-medium">{label}</span>
+                {entry.daysRemaining !== null && (
+                  <span className={`text-lg font-bold tracking-tight ${certDaysColor(entry.daysRemaining)}`}>
+                    {entry.daysRemaining.toLocaleString()}<span className="text-xs font-normal ml-0.5">{t('cert.days')}</span>
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                <span>{t('cert.validFrom')} {formatDate(entry.notBefore)}</span>
+                <span>{t('cert.validUntil')} {formatDate(entry.notAfter)}</span>
+              </div>
+              {/* Progress bar showing remaining life */}
+              {entry.notBefore && entry.notAfter && entry.daysRemaining !== null && (
+                <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                  {(() => {
+                    const total = (new Date(entry.notAfter).getTime() - new Date(entry.notBefore).getTime()) / (1000 * 60 * 60 * 24);
+                    const elapsed = total - entry.daysRemaining;
+                    const pct = total > 0 ? Math.max(0, Math.min(100, (elapsed / total) * 100)) : 0;
+                    const color = entry.daysRemaining <= 30 ? 'bg-red-500' : entry.daysRemaining <= 90 ? 'bg-amber-500' : 'bg-emerald-500';
+                    return <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${pct}%` }} />;
+                  })()}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Warning banner if any cert is close to expiry */}
+      {minDays !== null && minDays <= 30 && (
+        <div className="bg-red-950/40 border border-red-900/50 rounded-lg px-3 py-2 flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-red-400 flex-shrink-0 mt-0.5" />
+          <span className="text-xs text-red-400">{t('cert.renewWarning')}</span>
         </div>
       )}
     </div>
@@ -282,19 +853,26 @@ function StorageIndicator({ data }: { data: StorageData }) {
 export function NodeStats() {
   const [stats, setStats] = useState<NodeStatsData | null>(null);
   const [storage, setStorage] = useState<StorageData | null>(null);
+  const [certInfo, setCertInfo] = useState<CertificateData | null>(null);
+  const [networkState, setNetworkState] = useState<string>('stopped');
   const [loading, setLoading] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const { t } = useTranslation();
 
   const fetchStats = useCallback(async () => {
     setLoading(true);
     try {
-      const [nodeData, storageData] = await Promise.all([
+      const [nodeData, storageData, statusData, certData] = await Promise.all([
         api.getNodeStats(),
         api.getStorage().catch(() => null),
+        api.getStatus().catch(() => null),
+        api.getCertificateInfo().catch(() => null),
       ]);
       setStats(nodeData);
       if (storageData && !storageData.error) setStorage(storageData);
+      if (statusData?.state) setNetworkState(statusData.state);
+      if (certData && !certData.error) setCertInfo(certData);
     } catch {
       // keep previous stats on error
     } finally {
@@ -320,13 +898,13 @@ export function NodeStats() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold flex items-center gap-2">
           <BarChart3 className="w-5 h-5 text-indigo-400" />
-          Node Statistics
+          {t('stats.title')}
         </h2>
         <div className="flex items-center gap-3">
           {stats?.timestamp && (
             <span className="text-xs text-zinc-500 flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {timeAgo(stats.timestamp)}
+              {timeAgo(stats.timestamp, t)}
             </span>
           )}
           <button
@@ -337,7 +915,7 @@ export function NodeStats() {
                 : 'border-zinc-700 text-zinc-500'
             }`}
           >
-            {autoRefresh ? '自動更新 ON' : '自動更新 OFF'}
+            {autoRefresh ? t('stats.autoOn') : t('stats.autoOff')}
           </button>
           <button
             onClick={fetchStats}
@@ -352,7 +930,7 @@ export function NodeStats() {
       {notAvailable ? (
         <div className="flex items-center gap-3 py-8 justify-center text-zinc-500">
           <WifiOff className="w-5 h-5" />
-          <span>ノードが起動していないか、REST Gateway に接続できません</span>
+          <span>{t('stats.noConnection')}</span>
         </div>
       ) : (
         <>
@@ -361,7 +939,7 @@ export function NodeStats() {
             {/* Block Height */}
             <StatCard
               icon={<Layers className="w-4 h-4" />}
-              label="ブロック高"
+              label={t('stats.blockHeight')}
               value={formatHeight(stats.chain?.height)}
               color="text-emerald-400"
             />
@@ -369,7 +947,7 @@ export function NodeStats() {
             {/* Finalization */}
             <StatCard
               icon={<Shield className="w-4 h-4" />}
-              label="ファイナライズ高"
+              label={t('stats.finalizedHeight')}
               value={formatHeight(stats.chain?.latestFinalizedBlock?.height)}
               sub={
                 stats.chain?.latestFinalizedBlock
@@ -382,7 +960,7 @@ export function NodeStats() {
             {/* Peer count */}
             <StatCard
               icon={<Users className="w-4 h-4" />}
-              label="ピア数"
+              label={t('stats.peerCount')}
               value={stats.peers ? String(stats.peers.count) : '—'}
               color="text-sky-400"
             />
@@ -390,7 +968,7 @@ export function NodeStats() {
             {/* Node version */}
             <StatCard
               icon={<Server className="w-4 h-4" />}
-              label="ノードバージョン"
+              label={t('stats.nodeVersion')}
               value={formatVersion(stats.node?.version)}
               sub={stats.node?.friendlyName || undefined}
               color="text-amber-400"
@@ -415,15 +993,15 @@ export function NodeStats() {
             {/* Roles */}
             <StatCard
               icon={<Wifi className="w-4 h-4" />}
-              label="ノードロール"
-              value={roleLabel(stats.node?.roles)}
+              label={t('stats.nodeRole')}
+              value={roleLabel(stats.node?.roles, t)}
               color="text-teal-400"
             />
 
             {/* Chain Score */}
             <StatCard
               icon={<BarChart3 className="w-4 h-4" />}
-              label="チェーンスコア"
+              label={t('stats.chainScore')}
               value={
                 stats.chain?.scoreHigh && stats.chain?.scoreLow
                   ? `${stats.chain.scoreHigh.slice(0, 8)}…`
@@ -440,10 +1018,10 @@ export function NodeStats() {
           {/* ── Node Identity ── */}
           {stats.node && (
             <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 text-xs space-y-1.5">
-              <div className="text-zinc-500 font-medium mb-2">ノード情報</div>
+              <div className="text-zinc-500 font-medium mb-2">{t('stats.nodeInfo')}</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
                 <div>
-                  <span className="text-zinc-500">Public Key: </span>
+                  <span className="text-zinc-500">{t('stats.publicKey')} </span>
                   <span className="text-zinc-300 font-mono">{shortKey(stats.node.publicKey)}</span>
                 </div>
                 <div>
@@ -451,15 +1029,15 @@ export function NodeStats() {
                   <span className="text-zinc-300 font-mono">{shortKey(stats.node.nodePublicKey)}</span>
                 </div>
                 <div>
-                  <span className="text-zinc-500">Host: </span>
+                  <span className="text-zinc-500">{t('stats.host')} </span>
                   <span className="text-zinc-300">{stats.node.host || '—'}</span>
                 </div>
                 <div>
-                  <span className="text-zinc-500">Port: </span>
+                  <span className="text-zinc-500">{t('stats.port')} </span>
                   <span className="text-zinc-300">{stats.node.port ?? '—'}</span>
                 </div>
                 <div className="md:col-span-2">
-                  <span className="text-zinc-500">Generation Hash: </span>
+                  <span className="text-zinc-500">{t('stats.genHash')} </span>
                   <span className="text-zinc-300 font-mono break-all">
                     {stats.node.networkGenerationHashSeed || '—'}
                   </span>
@@ -477,7 +1055,7 @@ export function NodeStats() {
               >
                 <span className="flex items-center gap-2">
                   <Users className="w-4 h-4 text-sky-400" />
-                  接続ピア一覧 ({stats.peers.count})
+                  {t('stats.peers')} ({stats.peers.count})
                 </span>
                 {peersOpen ? (
                   <ChevronUp className="w-4 h-4" />
@@ -490,11 +1068,11 @@ export function NodeStats() {
                   <table className="w-full text-xs">
                     <thead className="text-zinc-500 bg-zinc-900/50 sticky top-0">
                       <tr>
-                        <th className="text-left px-4 py-2 font-medium">Host</th>
-                        <th className="text-left px-4 py-2 font-medium">Name</th>
-                        <th className="text-left px-4 py-2 font-medium">Version</th>
-                        <th className="text-left px-4 py-2 font-medium">Roles</th>
-                        <th className="text-left px-4 py-2 font-medium">Health</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerHost')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerName')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerVersion')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerRoles')}</th>
+                        <th className="text-left px-4 py-2 font-medium">{t('stats.peerHealth')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-800/50">
@@ -505,7 +1083,7 @@ export function NodeStats() {
                           </td>
                           <td className="px-4 py-2 text-zinc-400">{peer.friendlyName || '—'}</td>
                           <td className="px-4 py-2 text-zinc-400">{formatVersion(peer.version)}</td>
-                          <td className="px-4 py-2 text-zinc-400">{roleLabel(peer.roles)}</td>
+                          <td className="px-4 py-2 text-zinc-400">{roleLabel(peer.roles, t)}</td>
                           <td className="px-4 py-2">
                             <HealthDot status="up" />
                           </td>
@@ -521,7 +1099,10 @@ export function NodeStats() {
       )}
 
       {/* ── Storage usage (always shown if data available) ── */}
-      {storage && <StorageIndicator data={storage} />}
+      {storage && <StorageIndicator data={storage} networkState={networkState} />}
+
+      {/* ── Certificate expiration (always shown if data available) ── */}
+      {certInfo && <CertificateIndicator data={certInfo} networkState={networkState} onRenewed={fetchStats} />}
     </div>
   );
 }

@@ -1,11 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execSync, type ChildProcess } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import yaml from 'js-yaml';
+import archiver from 'archiver';
+import AdmZip from 'adm-zip';
 
 // =============================================================================
 // Setup
@@ -16,7 +19,46 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ noServer: true });
+
+// Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
+server.on('upgrade', (request: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer) => {
+  if (request.url === '/ws') {
+    // Proxy WebSocket to Symbol REST gateway for Explorer block notifications
+    wss.handleUpgrade(request, socket, head, (clientWs) => {
+      const upstream = new WebSocket(`ws://${NODE_REST_HOST}:${NODE_REST_PORT}/ws`);
+
+      upstream.on('open', () => {
+        // Relay: upstream → client
+        // Send as text (not binary) so the browser receives a string
+        // instead of a Blob.  symbol-sdk's Listener.js does JSON.parse()
+        // on event.data, which fails when it receives a Blob.
+        upstream.on('message', (data, isBinary) => {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            const msg = isBinary ? data : data.toString();
+            clientWs.send(msg, { binary: isBinary });
+          }
+        });
+        // Relay: client → upstream
+        clientWs.on('message', (data, isBinary) => {
+          if (upstream.readyState === WebSocket.OPEN) {
+            const msg = isBinary ? data : data.toString();
+            upstream.send(msg, { binary: isBinary });
+          }
+        });
+      });
+
+      clientWs.on('close', () => { try { upstream.close(); } catch {} });
+      upstream.on('close', () => { try { if (clientWs.readyState === WebSocket.OPEN) clientWs.close(); } catch {} });
+      upstream.on('error', () => { try { clientWs.close(); } catch {} });
+    });
+  } else {
+    // Our own log/status WebSocket
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  }
+});
 
 const SHARED_DIR = path.resolve(__dirname, '../shared');
 const PRESET_PATH = path.join(SHARED_DIR, 'custom-preset.yml');
@@ -33,6 +75,18 @@ const SEED_DIR = path.join(SHARED_DIR, 'seed');  // imported seed files from net
 // Ensure shared directory exists
 if (!fs.existsSync(SHARED_DIR)) {
   fs.mkdirSync(SHARED_DIR, { recursive: true });
+}
+
+/**
+ * Read and JSON-parse a file, stripping UTF-8 BOM (\uFEFF) if present.
+ * Windows tools (PowerShell, Notepad, etc.) sometimes prepend a BOM to
+ * UTF-8 files.  Node's JSON.parse rejects the BOM with a syntax error,
+ * which caused the silent-catch in several places to swallow the metadata
+ * and fall back to default values in the UI.
+ */
+function parseJsonFile(filePath: string): any {
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  return JSON.parse(content);
 }
 
 // =============================================================================
@@ -168,6 +222,54 @@ async function waitForNodeHealth(timeoutSec: number): Promise<void> {
 
   broadcastLog(`[HealthCheck] ⚠️  Timed out after ${timeoutSec}s – node may still be starting.\n`);
   broadcastLog(`[HealthCheck] Check manually: http://localhost:${NODE_REST_PORT}/node/health\n`);
+
+  // ── Crash detection: check api-node-0 logs for known fatal errors ──
+  try {
+    const { execSync } = await import('child_process');
+    const logs = execSync('docker logs api-node-0 --tail 60 2>&1 || true', {
+      timeout: 10_000,
+      stdio: 'pipe',
+    }).toString();
+
+    // Pattern 1: harvesting outflows / importance mismatch
+    const importanceMatch = logs.match(
+      /harvesting outflows \((\d+)\) do not add up to power ten multiple of expected importance \((\d+)\)/
+    );
+    if (importanceMatch) {
+      const outflows = importanceMatch[1];
+      const importance = importanceMatch[2];
+      broadcastLog(`\n[Error] ❌ ノード起動失敗: totalChainImportance の設定エラー\n`);
+      broadcastLog(`[Error]   harvesting outflows = ${outflows}\n`);
+      broadcastLog(`[Error]   totalChainImportance = ${importance}\n`);
+      broadcastLog(`[Error]   制約: outflows ÷ totalChainImportance が 10 の冪乗（1, 10, 100, ...）でなければなりません。\n`);
+      broadcastLog(`[Error]   修正方法: 設定画面で totalChainImportance を ${outflows} に変更し、\n`);
+      broadcastLog(`[Error]   完全初期化 → 再起動してください。\n\n`);
+    }
+
+    // Pattern 2: generation hash mismatch
+    if (logs.includes('invalid generation hash proof')) {
+      broadcastLog(`\n[Error] ❌ ノード起動失敗: nemesis ブロックの generation hash 不一致\n`);
+      broadcastLog(`[Error]   完全初期化して再起動してください。\n\n`);
+    }
+
+    // Pattern 4: nemesis public key mismatch
+    const nemesisPkMismatch = logs.includes('nemesis public key does not match network');
+    if (nemesisPkMismatch) {
+      broadcastLog(`\n[Error] ❌ ノード起動失敗: nemesis 公開鍵がネットワークと一致しません\n`);
+      broadcastLog(`[Error]   nemesis ブロックの署名者公開鍵が、ノードのネットワーク設定と異なっています。\n`);
+      broadcastLog(`[Error]   原因: 別のネットワークの nemesis seed / データが混在している可能性があります。\n`);
+      broadcastLog(`[Error]   修正方法: 完全初期化（Full Reset）を実行し、正しいネットワーク設定で再起動してください。\n`);
+      broadcastLog(`[Error]   Join モードの場合は、接続先ホストの共有パッケージを再取得してください。\n\n`);
+    }
+
+    // Pattern 3: generic fatal
+    if (logs.includes('<fatal>') && !importanceMatch && !logs.includes('invalid generation hash proof') && !nemesisPkMismatch) {
+      const fatalLines = logs.split('\n').filter(l => l.includes('<fatal>') || l.includes('std::exception::what'));
+      for (const line of fatalLines.slice(0, 3)) {
+        broadcastLog(`[Error] ${line.trim()}\n`);
+      }
+    }
+  } catch { /* log check failed — not critical */ }
 }
 
 // Poll every 10 seconds
@@ -240,9 +342,9 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
   if (flat.symbolServerImage) doc.symbolServerImage = flat.symbolServerImage;
   if (flat.symbolRestImage) doc.symbolRestImage = flat.symbolRestImage;
   if (flat.symbolServerToolsImage) doc.symbolServerToolsImage = flat.symbolServerToolsImage;
-  if (flat.symbolExplorerImage) doc.symbolExplorerImage = flat.symbolExplorerImage;
-  if (flat.symbolFaucetImage) doc.symbolFaucetImage = flat.symbolFaucetImage;
-  if (flat.symbolAgentImage) doc.symbolAgentImage = flat.symbolAgentImage;
+  // Note: symbolExplorerImage, symbolFaucetImage, symbolAgentImage are intentionally
+  // NOT written to the bootstrap preset. Explorer is managed by ExplorerManager
+  // (bootarou/explorer-smd build), not via the official symbolplatform image.
 
   // ── Nodes / Gateways ──
   if (flat.nodes) doc.nodes = flat.nodes;
@@ -255,6 +357,20 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
       return rest;
     });
     doc.gateways = cleanGateways;
+  } else if (flat.nodes && Array.isArray(flat.nodes)) {
+    // Auto-fix: assembly-dual.yml defaults to apiNodeName='node'. If the first
+    // node is renamed (e.g. to 'api-node-0'), the gateway config still references
+    // 'node' and bootstrap fails trying to scan nodes/node/server-config/resources.
+    // Override the gateway to reference the actual node name.
+    const firstNodeName = (flat.nodes[0] as Record<string, unknown>)?.name as string | undefined;
+    if (firstNodeName && firstNodeName !== 'node') {
+      doc.gateways = [{
+        name: 'rest-gateway',
+        apiNodeName: firstNodeName,
+        apiNodeHost: firstNodeName,
+        apiNodeBrokerHost: 'broker',
+      }];
+    }
   }
 
   // ── networkProperties (nested structure) ──
@@ -265,6 +381,12 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
   if (flat.nemesisSignerPublicKey) networkProps.nemesisSignerPublicKey = flat.nemesisSignerPublicKey;
   if (flat.nodeEqualityStrategy) networkProps.nodeEqualityStrategy = flat.nodeEqualityStrategy;
   if (flat.epochAdjustment) networkProps.epochAdjustment = flat.epochAdjustment;
+  // networkType / networkIdentifier: write into networkProperties so that
+  // bootstrapPresetToFlat() can read them back on next load, and also
+  // promote to top-level below so mustache templates pick them up.
+  if (flat.networkType) networkProps.networkType = flat.networkType;
+  if (flat.networkIdentifier !== undefined && flat.networkIdentifier !== null && flat.networkIdentifier !== '')
+    networkProps.networkIdentifier = flat.networkIdentifier;
 
   // Chain sub-section
   const chain: Record<string, unknown> = {};
@@ -338,6 +460,131 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     doc.faucet = { port: flat.faucetPort ?? 4000, amount: flat.faucetAmount ?? 500000000 };
   }
 
+  // ── Inflation schedule (custom/private networks) ──
+  if (Array.isArray(flat.inflation) && flat.inflation.length > 0) {
+    const inflObj: Record<string, unknown> = {};
+    for (const entry of flat.inflation as { startHeight: number; amount: string }[]) {
+      inflObj[`starting-at-height-${entry.startHeight}`] = entry.amount;
+    }
+    doc.inflation = inflObj;
+  }
+
+  // ── Nemesis mosaics (bootstrap only) ──
+  if (flat.baseNamespace) doc.baseNamespace = flat.baseNamespace;
+  let singleCurrencyMode = false;
+  if (Array.isArray(flat.nemesisMosaics) && flat.nemesisMosaics.length > 0) {
+    // Ensure supply values are plain numbers (strip apostrophe formatting)
+    const sanitizedMosaics = flat.nemesisMosaics.map((m: any) => {
+      const copy = { ...m };
+      if (typeof copy.supply === 'string') {
+        const stripped = copy.supply.replace(/'/g, '');
+        if (/^\d+$/.test(stripped)) {
+          copy.supply = parseInt(stripped, 10);
+        }
+      }
+      return copy;
+    });
+    doc.nemesis = { mosaics: sanitizedMosaics };
+
+    // Single-currency mode: when only 1 mosaic is defined, harvestingMosaicId
+    // should equal currencyMosaicId.  However, symbol-bootstrap's _.merge()
+    // merges arrays by index, so the base preset's 2nd mosaic (harvest) survives.
+    // To work around this: (1) set totalChainImportance = currency supply so
+    // nemgen balances are correct, (2) after config, patch harvestingMosaicId.
+    if (sanitizedMosaics.length === 1) {
+      singleCurrencyMode = true;
+    }
+  }
+
+  // ── Top-level field overrides ──
+  // symbol-bootstrap's mustache templates read fields from the top level of the
+  // merged preset (e.g. {{{toAmount initialCurrencyAtomicUnits}}}). Setting them
+  // only under networkProperties.chain does NOT override the base preset's
+  // top-level values.  We therefore duplicate every chain / plugin field that
+  // could be overridden by the user at the document root so that the mustache
+  // templates pick them up.
+  const topLevelOverrideKeys = [
+    // chain section
+    'enableVerifiableState', 'enableVerifiableReceipts',
+    'blockGenerationTargetTime', 'blockTimeSmoothingFactor',
+    'maxBlockFutureTime',
+    'importanceGrouping', 'importanceActivityPercentage',
+    'maxRollbackBlocks', 'maxDifficultyBlocks',
+    'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
+    'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'maxMosaicAtomicUnits', 'totalChainImportance',
+    'initialCurrencyAtomicUnits',
+    'minHarvesterBalance', 'maxHarvesterBalance',
+    'minVoterBalance', 'votingSetGrouping',
+    'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',
+    'harvestBeneficiaryPercentage', 'harvestNetworkPercentage',
+    // plugin section
+    'maxTransactionsPerAggregate', 'maxCosignaturesPerAggregate',
+    'enableStrictCosignatureCheck', 'enableBondedAggregateSupport',
+    'maxBondedTransactionLifetime',
+    'lockedFundsPerAggregate', 'maxHashLockDuration',
+    'maxSecretLockDuration', 'minProofSize', 'maxProofSize',
+    'maxValueSize',
+    'maxMosaicsPerAccount', 'maxMosaicDuration', 'maxMosaicDivisibility',
+    'mosaicRentalFee',
+    'maxNamespacesPerAccount', 'maxNameSize', 'maxNamespaceDepth',
+    'maxChildNamespaces', 'minNamespaceDuration', 'maxNamespaceDuration',
+    'namespaceGracePeriodDuration', 'reservedRootNamespaceNames',
+    'rootNamespaceRentalFeePerBlock', 'childNamespaceRentalFee',
+    'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
+    'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
+    'maxMessageSize',
+  ];
+  for (const k of topLevelOverrideKeys) {
+    if (flat[k] !== undefined && flat[k] !== null && flat[k] !== '') {
+      // symbol-bootstrap reads top-level fields as-is (no apostrophe stripping).
+      // Values like "50'000'000'000'000" must be converted to plain numbers so
+      // that internal arithmetic (Math.min, Math.floor etc.) works correctly.
+      const raw = flat[k];
+      if (typeof raw === 'string' && /^\d[\d']*$/.test(raw)) {
+        const num = Number(raw.replace(/'/g, ''));
+        doc[k] = isNaN(num) ? raw : num;
+      } else {
+        doc[k] = raw;
+      }
+    }
+  }
+
+  // ── Single-currency mode: totalChainImportance must equal currency supply ──
+  // When only one nemesis mosaic is defined, we force harvestingMosaicId =
+  // currencyMosaicId after `symbol-bootstrap config`.  Catapult validates that
+  // totalChainImportance equals the total supply of the harvesting mosaic in
+  // the nemesis block.  Since the harvesting mosaic IS the currency mosaic in
+  // this mode, totalChainImportance must be the currency supply.
+  if (singleCurrencyMode) {
+    const mosaics = ((doc.nemesis as Record<string, unknown>)?.mosaics) as any[];
+    if (mosaics?.length >= 1) {
+      const rawSupply = mosaics[0].supply;
+      const numericSupply = typeof rawSupply === 'number'
+        ? rawSupply
+        : Number(String(rawSupply).replace(/'/g, ''));
+      if (!isNaN(numericSupply)) {
+        doc.totalChainImportance = numericSupply;
+        const np = doc.networkProperties as Record<string, unknown> | undefined;
+        if (np?.chain) {
+          (np.chain as Record<string, unknown>).totalChainImportance = String(numericSupply);
+        }
+
+        // Ensure maxHarvesterBalance is at least the total supply.
+        // In single-currency mode the harvesting mosaic IS the currency mosaic,
+        // so accounts may hold a large share of the total supply.  If
+        // maxHarvesterBalance is left at the default (50 000 000 000 000) these
+        // accounts would exceed the cap and fail canHarvest().
+        if (!flat.maxHarvesterBalance) {
+          doc.maxHarvesterBalance = numericSupply;
+          if (np?.chain) {
+            (np.chain as Record<string, unknown>).maxHarvesterBalance = String(numericSupply);
+          }
+        }
+      }
+    }
+  }
+
   return doc;
 }
 
@@ -356,7 +603,8 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
   const topKeys = [
     'privateKeySecurityMode',
     'symbolServerImage', 'symbolRestImage', 'symbolServerToolsImage',
-    'symbolExplorerImage', 'symbolFaucetImage', 'symbolAgentImage',
+    // symbolExplorerImage/symbolFaucetImage/symbolAgentImage excluded:
+    // Explorer is managed by ExplorerManager (SMD build)
     'nodes', 'gateways',
   ];
   for (const k of topKeys) {
@@ -366,8 +614,15 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
   // Flatten networkProperties
   const np = doc.networkProperties as Record<string, unknown> | undefined;
   if (np) {
-    if (np.nemesisGenerationHashSeed) flat.nemesisGenerationHashSeed = np.nemesisGenerationHashSeed;
-    if (np.epochAdjustment) flat.epochAdjustment = np.epochAdjustment;
+    // Top-level network identity keys
+    const npTopKeys = [
+      'nemesisGenerationHashSeed', 'nemesisSignerPublicKey',
+      'nodeEqualityStrategy', 'epochAdjustment',
+      'networkIdentifier', 'networkType',
+    ];
+    for (const k of npTopKeys) {
+      if (np[k] !== undefined && np[k] !== null && np[k] !== '') flat[k] = np[k];
+    }
 
     const chain = np.chain as Record<string, unknown> | undefined;
     if (chain) Object.assign(flat, chain);
@@ -389,6 +644,26 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
     if (fau.amount) flat.faucetAmount = fau.amount;
   }
 
+  // Flatten inflation
+  const infl = doc.inflation as Record<string, unknown> | undefined;
+  if (infl && typeof infl === 'object' && !Array.isArray(infl)) {
+    const entries = Object.entries(infl)
+      .map(([k, v]) => {
+        const m = k.match(/starting-at-height-(\d+)/);
+        return m ? { startHeight: Number(m[1]), amount: String(v) } : null;
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.startHeight - b.startHeight);
+    flat.inflation = entries;
+  }
+
+  // Flatten nemesis mosaics
+  if (doc.baseNamespace) flat.baseNamespace = doc.baseNamespace;
+  const nemesis = doc.nemesis as Record<string, unknown> | undefined;
+  if (nemesis?.mosaics && Array.isArray(nemesis.mosaics)) {
+    flat.nemesisMosaics = nemesis.mosaics;
+  }
+
   return flat;
 }
 
@@ -407,11 +682,18 @@ app.post('/api/preset', (req, res) => {
       networkType: configData.networkType ?? 'privateTest',
       networkIdentifier: configData.networkIdentifier ?? 168,
       networkName: configData.networkName ?? '',
-      friendlyName: configData.friendlyName ?? '',
     };
     // Persist source node URL for peer discovery on start
     if (configData.sourceNodeUrl) {
       uiMeta.sourceNodeUrl = String(configData.sourceNodeUrl);
+    }
+    // Persist Docker Host Mode setting
+    if (configData.dockerHostMode !== undefined) {
+      uiMeta.dockerHostMode = !!configData.dockerHostMode;
+    }
+    // Persist inflation entries for config-inflation.properties patching
+    if (Array.isArray(configData.inflation)) {
+      uiMeta.inflation = configData.inflation;
     }
     fs.writeFileSync(UI_META_PATH, JSON.stringify(uiMeta, null, 2), 'utf8');
 
@@ -441,11 +723,87 @@ app.get('/api/preset', (req, res) => {
       }
 
       // Merge in UI metadata (preset, assembly, etc.)
+      // Note: meta is merged FIRST so that flat (from custom-preset.yml) takes
+      // precedence for any keys that exist in both.
       if (fs.existsSync(UI_META_PATH)) {
         try {
-          const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf8'));
+          const meta = parseJsonFile(UI_META_PATH);
           flat = { ...meta, ...flat };
         } catch { /* ignore corrupt meta */ }
+      }
+
+      // ── Authoritative values from generated config-network.properties ──
+      // custom-preset.yml / .ui-meta.json store the values the USER entered at
+      // config time, which may differ from what symbol-bootstrap actually wrote
+      // during nemesis generation.  Fields like generationHashSeed and
+      // networkIdentifier are computed / chosen by bootstrap and MUST be read
+      // from the generated config to avoid showing stale / wrong values.
+      // If the user saves the preset while stale values are shown, they would
+      // overwrite the correct settings and break the network on next start.
+      const generatedConfigPath = path.join(TARGET_DIR, 'nodes');
+      if (fs.existsSync(generatedConfigPath)) {
+        const nodeDirs = fs.readdirSync(generatedConfigPath);
+        for (const nodeDir of nodeDirs) {
+          const cfgPath = path.join(generatedConfigPath, nodeDir, 'server-config', 'resources', 'config-network.properties');
+          if (!fs.existsSync(cfgPath)) continue;
+          const cfgContent = fs.readFileSync(cfgPath, 'utf-8');
+
+          // networkIdentifier / networkType
+          // Bootstrap writes the symbolic name (testnet, mainnet, private, privateTest)
+          const idMatch = cfgContent.match(/^identifier\s*=\s*(\S+)/m);
+          if (idMatch) {
+            const rawId = idMatch[1].trim();
+            const NAME_TO_ID: Record<string, number> = {
+              mainnet: 104, testnet: 152, private: 120, privateTest: 168,
+            };
+            if (NAME_TO_ID[rawId] !== undefined) {
+              flat.networkIdentifier = NAME_TO_ID[rawId];
+              flat.networkType = rawId;
+            } else if (/^[0-9A-Fa-f]+$/.test(rawId)) {
+              flat.networkIdentifier = parseInt(rawId, 16);
+            } else if (/^\d+$/.test(rawId)) {
+              flat.networkIdentifier = parseInt(rawId, 10);
+            }
+          }
+
+          // generationHashSeed — bootstrap rewrites this during nemesis generation.
+          // The value in custom-preset.yml (nemesisGenerationHashSeed) is the
+          // SEED used as INPUT to nemgen, not the final hash in the nemesis block.
+          // The actual value that nodes use to verify blocks is generationHashSeed
+          // in config-network.properties.
+          const ghMatch = cfgContent.match(/^generationHashSeed\s*=\s*(\S+)/m);
+          if (ghMatch) {
+            flat.nemesisGenerationHashSeed = ghMatch[1].trim();
+          }
+
+          // nemesisSignerPublicKey — may also differ after bootstrap processing
+          const nspkMatch = cfgContent.match(/^nemesisSignerPublicKey\s*=\s*(\S+)/m);
+          if (nspkMatch) {
+            flat.nemesisSignerPublicKey = nspkMatch[1].trim();
+          }
+
+          // Sink addresses — generated by bootstrap from the nemesis signer key.
+          // They are NOT stored in custom-preset.yml, so without this block the UI
+          // would show blank fields for all three "Fee Sink" categories (harvesting,
+          // mosaic, namespace).  Read them from config-network.properties so the
+          // user sees the actual running values.  If saved back via POST /api/preset
+          // they are written to the YAML and bootstrap will use them as-is on the
+          // next run (safe, because they are the same values bootstrap would derive).
+          const sinkAddressFields: Array<[string, string]> = [
+            ['harvestNetworkFeeSinkAddressV1', 'harvestNetworkFeeSinkAddressV1'],
+            ['harvestNetworkFeeSinkAddress',   'harvestNetworkFeeSinkAddress'],
+            ['mosaicRentalFeeSinkAddressV1',   'mosaicRentalFeeSinkAddressV1'],
+            ['mosaicRentalFeeSinkAddress',     'mosaicRentalFeeSinkAddress'],
+            ['namespaceRentalFeeSinkAddressV1','namespaceRentalFeeSinkAddressV1'],
+            ['namespaceRentalFeeSinkAddress',  'namespaceRentalFeeSinkAddress'],
+          ];
+          for (const [propKey, flatKey] of sinkAddressFields) {
+            const m = cfgContent.match(new RegExp(`^${propKey}\\s*=\\s*(\\S+)`, 'm'));
+            if (m) flat[flatKey] = m[1].trim();
+          }
+
+          break; // Only need one node
+        }
       }
 
       res.json(flat);
@@ -527,6 +885,196 @@ app.get('/api/addresses/download', (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// =============================================================================
+// Address Viewer — Decrypt private keys & fetch balances
+// =============================================================================
+
+const ENCRYPT_PREFIX = 'ENCRYPTED:';
+
+/**
+ * Decrypt a single ENCRYPTED: value using symbol-bootstrap's CryptoUtils scheme.
+ * Algorithm: PBKDF2(SHA-256, 1024 iterations, 32-byte key) + AES-256-CBC (PKCS7).
+ * Data format: salt(32 hex) + iv(32 hex) + ciphertext(base64)
+ */
+function decryptPrivateKey(encryptedValue: string, password: string): string {
+  const data = encryptedValue.startsWith(ENCRYPT_PREFIX)
+    ? encryptedValue.slice(ENCRYPT_PREFIX.length)
+    : encryptedValue;
+
+  const saltHex = data.substr(0, 32);
+  const ivHex = data.substr(32, 32);
+  const cipherB64 = data.substring(64);
+
+  const salt = Buffer.from(saltHex, 'hex');
+  const iv = Buffer.from(ivHex, 'hex');
+  const key = crypto.pbkdf2Sync(password, salt, 1024, 32, 'sha256');
+
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  let decrypted = decipher.update(Buffer.from(cipherB64, 'base64'));
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  return decrypted.toString('utf8');
+}
+
+/**
+ * Recursively walk an addresses object and decrypt all ENCRYPTED: privateKey fields.
+ */
+function decryptAddressesObj(obj: any, password: string): any {
+  if (Array.isArray(obj)) {
+    return obj.map((item) => decryptAddressesObj(item, password));
+  }
+  if (obj && typeof obj === 'object') {
+    const result: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === 'privateKey' && typeof value === 'string' && value.startsWith(ENCRYPT_PREFIX)) {
+        result[key] = decryptPrivateKey(value, password);
+      } else {
+        result[key] = decryptAddressesObj(value, password);
+      }
+    }
+    return result;
+  }
+  return obj;
+}
+
+// Decrypt addresses with password
+app.post('/api/addresses/decrypt', (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ error: 'Password is required.' });
+  }
+
+  const addressPath = path.join(TARGET_DIR, 'addresses.yml');
+  try {
+    if (!fs.existsSync(addressPath)) {
+      return res.status(404).json({ error: 'Addresses file not found. Start the network first.' });
+    }
+    const file = fs.readFileSync(addressPath, 'utf8');
+    const data = yaml.load(file) as any;
+    const decrypted = decryptAddressesObj(data, password);
+    res.json(decrypted);
+  } catch (err: any) {
+    // Decryption failure typically means wrong password
+    if (err.code === 'ERR_OSSL_BAD_DECRYPT' || err.message?.includes('bad decrypt') || err.message?.includes('wrong final block')) {
+      return res.status(401).json({ error: 'Incorrect password.' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch balances for all addresses from REST Gateway
+app.get('/api/addresses/balances', async (_req, res) => {
+  const addressPath = path.join(TARGET_DIR, 'addresses.yml');
+  try {
+    if (!fs.existsSync(addressPath)) {
+      return res.status(404).json({ error: 'Addresses file not found.' });
+    }
+    const file = fs.readFileSync(addressPath, 'utf8');
+    const data = yaml.load(file) as any;
+
+    // Collect all addresses from the structure
+    const addressList: { label: string; address: string }[] = [];
+
+    // nemesisSigner
+    if (data.nemesisSigner?.address) {
+      addressList.push({ label: 'nemesisSigner', address: data.nemesisSigner.address });
+    }
+
+    // nodes
+    if (Array.isArray(data.nodes)) {
+      data.nodes.forEach((node: any, ni: number) => {
+        const nodeName = node.name || `node${ni}`;
+        for (const keyType of ['main', 'transport', 'remote', 'vrf']) {
+          if (node[keyType]?.address) {
+            addressList.push({ label: `${nodeName}.${keyType}`, address: node[keyType].address });
+          }
+        }
+      });
+    }
+
+    // mosaics
+    if (Array.isArray(data.mosaics)) {
+      data.mosaics.forEach((mosaic: any) => {
+        const mosaicLabel = mosaic.name || mosaic.id || 'mosaic';
+        if (Array.isArray(mosaic.accounts)) {
+          mosaic.accounts.forEach((acc: any, ai: number) => {
+            if (acc.address) {
+              addressList.push({ label: `${mosaicLabel}[${ai}]`, address: acc.address });
+            }
+          });
+        }
+      });
+    }
+
+    // Fetch balances from REST gateway
+    const restUrl = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
+    const balances: Record<string, { mosaics: any[]; publicKey: string; importance: string } | { error: string }> = {};
+
+    await Promise.all(
+      addressList.map(async ({ address }) => {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const r = await fetch(`${restUrl}/accounts/${address}`, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (r.ok) {
+            const body = await r.json() as any;
+            balances[address] = {
+              mosaics: body.account?.mosaics || [],
+              publicKey: body.account?.publicKey || '',
+              importance: body.account?.importance || '0',
+            };
+          } else {
+            balances[address] = { error: `HTTP ${r.status}` };
+          }
+        } catch {
+          balances[address] = { error: 'REST gateway unreachable' };
+        }
+      }),
+    );
+
+    res.json({ addresses: addressList, balances });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Docker environment detection
+// =============================================================================
+
+/**
+ * Detect whether Docker is running via Docker Desktop (Windows/Mac) or natively
+ * on Linux.  Docker Desktop runs containers inside a WSL2/HyperKit VM, which
+ * means network_mode:host exposes ports only inside the VM — NOT on the LAN.
+ * This endpoint lets the UI warn users before they enable Docker Host Mode.
+ */
+let _dockerEnvCache: { isDockerDesktop: boolean; os: string } | null = null;
+
+function detectDockerDesktop(): { isDockerDesktop: boolean; os: string } {
+  if (_dockerEnvCache) return _dockerEnvCache;
+  try {
+    const info = execSync('docker info --format "{{.OperatingSystem}}|||{{.OSType}}|||{{.Name}}"', {
+      encoding: 'utf-8',
+      timeout: 10_000,
+    }).trim();
+    const [operatingSystem = '', , hostName = ''] = info.split('|||');
+    // Docker Desktop signatures:
+    //   OperatingSystem contains "Docker Desktop"
+    //   Hostname is "docker-desktop" (WSL2 backend)
+    const isDD =
+      /docker desktop/i.test(operatingSystem) ||
+      /docker-desktop/i.test(hostName);
+    _dockerEnvCache = { isDockerDesktop: isDD, os: operatingSystem };
+  } catch {
+    _dockerEnvCache = { isDockerDesktop: false, os: 'unknown' };
+  }
+  return _dockerEnvCache;
+}
+
+app.get('/api/docker-env', (_req, res) => {
+  res.json(detectDockerDesktop());
 });
 
 // =============================================================================
@@ -636,6 +1184,542 @@ app.get('/api/node-stats', async (_req, res) => {
 });
 
 // =============================================================================
+// Explorer: nodeWatch-compatible proxy for private/custom networks
+// =============================================================================
+// The bootarou/explorer-smd frontend requires nodeWatch API for node discovery.
+// Private/custom networks don't have a nodeWatch instance, so we provide a
+// compatible proxy that returns the local REST gateway info.
+
+/**
+ * Build a single nodeWatch-format entry from the local REST gateway.
+ * @param requestHost - the Host header from the incoming HTTP request
+ *   (e.g. "192.168.1.10:4000" or "localhost:4000").
+ *   The returned `endpoint` will use this so the Explorer's browser-side
+ *   REST/WS connections go back through the same host the user accessed.
+ */
+async function buildNodeWatchEntry(requestHost?: string, forwardedHost?: string): Promise<Record<string, unknown> | null> {
+  const base = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
+  const timeout = 5000;
+  const safeFetch = async (p: string) => {
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), timeout);
+      const r = await fetch(`${base}${p}`, { signal: ac.signal });
+      clearTimeout(t);
+      return r.ok ? await r.json() : null;
+    } catch { return null; }
+  };
+
+  const [nodeInfo, chainInfo, nodeServer] = await Promise.all([
+    safeFetch('/node/info'),
+    safeFetch('/chain/info'),
+    safeFetch('/node/server'),
+  ]);
+  if (!nodeInfo) return null;
+
+  const fin = chainInfo?.latestFinalizedBlock;
+
+  // Determine the endpoint URL that the Explorer's browser will use for
+  // REST & WebSocket.  When the request was forwarded from the Explorer
+  // container's /api/ proxy, x-forwarded-host carries the original browser
+  // host (e.g. "192.168.0.31:8090").  We return it as-is so REST/WS calls
+  // stay same-origin — the Explorer's server.js proxies them to the manager.
+  const mPort = process.env.PORT || 4000;
+  let effectiveHost: string;
+  if (forwardedHost) {
+    effectiveHost = forwardedHost;
+  } else {
+    effectiveHost = requestHost || `localhost:${mPort}`;
+  }
+  const endpointUrl = `http://${effectiveHost}`;
+  // hostname only (strip port) for the "host" field
+  const hostOnly = effectiveHost.replace(/:\d+$/, '');
+
+  return {
+    endpoint: endpointUrl,
+    mainPublicKey: nodeInfo.publicKey ?? '',
+    name: nodeInfo.friendlyName || nodeInfo.host || 'Local Node',
+    version: nodeInfo.version != null ? String(nodeInfo.version) : '0',
+    roles: nodeInfo.roles ?? 3,
+    height: chainInfo?.height ?? '0',
+    finalizedEpoch: fin?.finalizationEpoch ?? 0,
+    finalizedHash: fin?.hash ?? '',
+    finalizedHeight: fin?.height ?? '0',
+    finalizedPoint: fin?.finalizationPoint ?? 0,
+    host: hostOnly,
+    port: nodeInfo.port ?? 7900,
+    networkGenerationHashSeed: nodeInfo.networkGenerationHashSeed ?? '',
+    restVersion: nodeServer?.serverInfo?.restVersion ?? '',
+    isHealthy: true,
+    isSslEnabled: true,   // must be true so Explorer includes this node (getAPINodeList filters by isSslEnabled); endpoint starts with http:// so WS will be ws:// not wss://
+    geoLocation: null,
+  };
+}
+
+app.get('/api/explorer-proxy/api/symbol/nodes/api', async (req, res) => {
+  const entry = await buildNodeWatchEntry(req.headers.host, req.headers['x-forwarded-host'] as string);
+  if (!entry) return res.json([]);
+  const entries = [entry];
+  // If user configured an external host, add a second entry so
+  // the Explorer node list works from both localhost and external IP.
+  if (explorerExternalHost) {
+    // Use the same port as the primary entry (Explorer port if via proxy, manager port otherwise)
+    const primaryPort = (() => { try { return new URL(entry.endpoint as string).port; } catch { return String(process.env.PORT || 4000); } })();
+    const extEntry = await buildNodeWatchEntry(`${explorerExternalHost}:${primaryPort}`);
+    if (extEntry) {
+      extEntry.name = `${extEntry.name} (external)`;
+      // Avoid duplicate if the dynamic entry already matches
+      if (extEntry.endpoint !== entry.endpoint) entries.push(extEntry);
+    }
+  }
+  res.json(entries);
+});
+
+app.get('/api/explorer-proxy/api/symbol/nodes/peer', async (_req, res) => {
+  res.json([]);
+});
+
+app.get('/api/explorer-proxy/api/symbol/nodes/mainPublicKey/:pk', async (req, res) => {
+  const entry = await buildNodeWatchEntry(req.headers.host, req.headers['x-forwarded-host'] as string);
+  entry ? res.json(entry) : res.status(404).json({ message: 'Node not found' });
+});
+
+app.get('/api/explorer-proxy/api/symbol/nodes/count', async (_req, res) => {
+  const count = explorerExternalHost ? 2 : 1;
+  res.json([{ date: new Date().toISOString().split('T')[0], count }]);
+});
+
+// =============================================================================
+// Explorer: compute Symbol namespace ID from fully-qualified name
+// =============================================================================
+// Algorithm: For each dot-separated part, SHA3-256(parentId_LE8 + utf8(part)),
+// take first 8 bytes as uint64 LE, set high bit (bit 63).
+function computeNamespaceId(fullyQualifiedName: string): string {
+  const parts = fullyQualifiedName.split('.');
+  let parentId = BigInt(0);
+  for (const part of parts) {
+    const hash = crypto.createHash('sha3-256');
+    const parentBytes = Buffer.alloc(8);
+    parentBytes.writeBigUInt64LE(parentId);
+    hash.update(parentBytes);
+    hash.update(Buffer.from(part, 'utf-8'));
+    const digest = hash.digest();
+    let id = digest.readBigUInt64LE(0);
+    id = id | BigInt('0x8000000000000000');
+    parentId = id;
+  }
+  return parentId.toString(16).toUpperCase().padStart(16, '0');
+}
+
+app.get('/api/explorer/namespace-id', (req, res) => {
+  const name = (req.query.name as string || '').trim();
+  if (!name) return res.json({ error: 'name parameter required' });
+  try {
+    const namespaceId = computeNamespaceId(name);
+    res.json({ name, namespaceId });
+  } catch (err: any) {
+    res.json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Explorer: Docker image build & container lifecycle
+// =============================================================================
+const EXPLORER_IMAGE = 'symbol-explorer-local';
+const EXPLORER_CONTAINER = 'symbol-explorer';
+const EXPLORER_REPO = 'https://github.com/bootarou/explorer-smd.git';
+const EXPLORER_BRANCH = 'main';
+let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
+/** Network name displayed in the Explorer header (persisted across restarts) */
+let explorerNetworkName = '';
+/** User-configured external host/IP so Explorer node list works from outside */
+let explorerExternalHost = '';
+
+// Detect pre-existing image at startup
+(async () => {
+  try {
+    const { execSync } = await import('child_process');
+    const id = execSync(`docker images -q ${EXPLORER_IMAGE}`, { encoding: 'utf-8' }).trim();
+    if (id) explorerBuildStatus = 'built';
+  } catch { /* ignore */ }
+})();
+
+app.get('/api/explorer/status', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const imageExists = !!execSync(`docker images -q ${EXPLORER_IMAGE}`, { encoding: 'utf-8' }).trim();
+    let containerRunning = false;
+    try {
+      const s = execSync(
+        `docker inspect -f '{{.State.Running}}' ${EXPLORER_CONTAINER} 2>/dev/null`,
+        { encoding: 'utf-8' },
+      ).trim();
+      containerRunning = s === 'true';
+    } catch { /* container doesn't exist */ }
+
+    let status = 'not-built';
+    if (explorerBuildStatus === 'building') status = 'building';
+    else if (containerRunning) status = 'running';
+    else if (imageExists) status = 'stopped';
+
+    res.json({ status, imageExists, containerRunning });
+  } catch (err: any) {
+    res.json({ status: 'error', error: err.message });
+  }
+});
+
+app.post('/api/explorer/build', async (_req, res) => {
+  if (explorerBuildStatus === 'building') {
+    return res.json({ success: false, error: 'Build already in progress' });
+  }
+  explorerBuildStatus = 'building';
+  broadcastLog('[Explorer] Building image from bootarou/explorer-smd (main branch) ...\n');
+  broadcast('EXPLORER_STATUS', { status: 'building' });
+
+  // The main branch does not contain a Dockerfile (it's designed for GitHub
+  // Pages), so we generate one on the fly that clones the main branch and
+  // performs the build inside the container.
+  const dockerfile = [
+    'FROM node:lts-alpine AS builder',
+    'RUN apk add --no-cache python3 make g++ git',
+    'ENV NODE_OPTIONS="--dns-result-order=ipv4first --openssl-legacy-provider"',
+    'WORKDIR /app',
+    `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} .`,
+    // GitHub Pages uses publicPath '/explorer-smd/' but Docker serves from '/'
+    "RUN sed -i \"s|'/explorer-smd/'|'/'|\" vue.config.js",
+    // Local dev has no TLS: force ws:// instead of wss:// in httpToWssUrl
+    "RUN sed -i \"s|'3000' === url.port ? 'ws:' : 'wss:'|'ws:'|\" src/helper.js",
+    'RUN npm install && npm run build && mv dist www',
+    // --- Same-origin proxy wrapper ---
+    // The original server.js serves static files + /config on port 4000.
+    // We rename it, shift to port 4001, and create a thin proxy wrapper on
+    // port 4000 that forwards API / REST / WebSocket to symbol-manager
+    // while passing everything else (static files, /config) to the original.
+    // This keeps the browser on a single origin (e.g. 192.168.0.31:8090)
+    // so no CORS issues arise.
+    "RUN mv server.js _server.js && sed -i 's/const PORT = 4000/const PORT = 4001/' _server.js",
+    `RUN cat > server.js << 'PROXYEOF'
+const http=require("http");
+const MH=process.env.PROXY_HOST||"symbol-manager";
+const MP=+(process.env.PROXY_PORT||4000);
+const RE=/^\\/(api|node|chain|blocks?|transactions?|transactionStatus|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|lock|secretlock|hashlock)(\\\/|$|\\?)/;
+require("./_server");
+function px(h,p,q,r,x){var o={hostname:h,port:p,path:q.url,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
+var srv=http.createServer(function(q,r){RE.test(q.url)?px(MH,MP,q,r,{"x-forwarded-host":q.headers.host}):px("127.0.0.1",4001,q,r)});
+srv.on("upgrade",function(q,s){var o={hostname:MH,port:MP,path:q.url,method:q.method,headers:q.headers};var p=http.request(o);p.on("upgrade",function(r,ps){var h="HTTP/1.1 101 Switching Protocols\\r\\n";Object.keys(r.headers).forEach(function(k){h+=k+": "+r.headers[k]+"\\r\\n"});h+="\\r\\n";s.write(h);ps.pipe(s);s.pipe(ps)});p.on("error",function(){s.end()});p.end()});
+srv.listen(4000);console.log("Explorer proxy on 4000, original on 4001");
+PROXYEOF`,
+    '',
+    'FROM node:lts-alpine AS runner',
+    'WORKDIR /app',
+    'COPY --from=builder /app /app',
+    'EXPOSE 4000',
+    'CMD ["npm", "start"]',
+  ].join('\n');
+
+  const proc = spawn('docker', ['build', '-t', EXPLORER_IMAGE, '-f', '-', '.'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: '/tmp',
+  });
+  // Feed Dockerfile via stdin
+  proc.stdin?.write(dockerfile);
+  proc.stdin?.end();
+
+  proc.stdout?.on('data', (d: Buffer) => broadcastLog(d.toString()));
+  proc.stderr?.on('data', (d: Buffer) => broadcastLog(d.toString()));
+
+  proc.on('close', (code) => {
+    if (code === 0) {
+      explorerBuildStatus = 'built';
+      broadcastLog('[Explorer] ✅ Image built successfully!\n');
+      broadcast('EXPLORER_STATUS', { status: 'stopped' });
+    } else {
+      explorerBuildStatus = 'error';
+      broadcastLog(`[Explorer] ❌ Build failed (exit code ${code})\n`);
+      broadcast('EXPLORER_STATUS', { status: 'error', message: `Build failed (${code})` });
+    }
+  });
+
+  res.json({ success: true, message: 'Build started' });
+});
+
+// ---------------------------------------------------------------------------
+// Explorer: internal helpers (used by API routes AND automatic restart)
+// ---------------------------------------------------------------------------
+
+/** Read namespace & divisibility from custom-preset.yml for Explorer config */
+function readExplorerNamespaceFromPreset(): { namespaceName: string; divisibility: string } {
+  const defaults = { namespaceName: 'symbol.xym', divisibility: '6' };
+  try {
+    if (!fs.existsSync(PRESET_PATH)) return defaults;
+    const content = fs.readFileSync(PRESET_PATH, 'utf-8');
+    const doc = yaml.load(content) as Record<string, unknown>;
+    const ns = doc?.baseNamespace ? String(doc.baseNamespace) : defaults.namespaceName;
+    const nemesis = doc?.nemesis as Record<string, unknown> | undefined;
+    const mosaics = nemesis?.mosaics as any[] | undefined;
+    const div = mosaics?.[0]?.divisibility != null
+      ? String(mosaics[0].divisibility)
+      : defaults.divisibility;
+    return { namespaceName: ns, divisibility: div };
+  } catch {
+    return defaults;
+  }
+}
+
+/** Start (or restart) the Explorer container with the given namespace config */
+async function startExplorerContainer(
+  namespaceName: string,
+  divisibility: string,
+  port = 8090,
+  networkName = '',
+  externalHost = '',
+): Promise<void> {
+  const { execSync, spawnSync } = await import('child_process');
+
+  // Persist network name for proxy injection (default to baseNamespace)
+  explorerNetworkName = networkName || namespaceName.split('.')[0] || '';
+  // Persist external host so nodeWatch entries include it
+  explorerExternalHost = externalHost;
+
+  const namespaceId = computeNamespaceId(namespaceName);
+  broadcastLog(`[Explorer] Namespace: ${namespaceName} → ID: ${namespaceId}\n`);
+
+  // Remove stale container
+  try { execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`); } catch { /* ok */ }
+
+  const managerPort = process.env.PORT || 4000;
+  const nodeWatchUrl = '/api/explorer-proxy';
+  const endpoints = JSON.stringify({ marketData: '', nodeWatch: nodeWatchUrl });
+  const networkConfig = JSON.stringify({
+    namespaceName,
+    namespaceId,
+    divisibility: String(divisibility),
+  });
+
+  broadcastLog(`[Explorer] Config: nodeWatch=${nodeWatchUrl}, ns=${namespaceName} (${namespaceId}), div=${divisibility}\n`);
+
+  const args = [
+    'run', '-d',
+    '--name', EXPLORER_CONTAINER,
+    '-p', `${port}:4000`,
+    '--network', 'docker_default',
+    '-e', `apiNodePort=${managerPort}`,
+    '-e', `endpoints=${endpoints}`,
+    '-e', `networkConfig=${networkConfig}`,
+    EXPLORER_IMAGE,
+  ];
+  const r = spawnSync('docker', args, { encoding: 'utf-8', timeout: 30_000 });
+  if (r.status !== 0) throw new Error(r.stderr || 'docker run failed');
+
+  broadcastLog(`[Explorer] ✅ Started on port ${port}\n`);
+  broadcast('EXPLORER_STATUS', { status: 'running' });
+}
+
+/** Check if the Explorer container is currently running */
+function isExplorerRunning(): boolean {
+  try {
+    const { execSync } = require('child_process');
+    const s = execSync(
+      `docker inspect -f '{{.State.Running}}' ${EXPLORER_CONTAINER} 2>/dev/null`,
+      { encoding: 'utf-8' },
+    ).trim();
+    return s === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/** Stop and remove Explorer container + optionally remove image */
+async function cleanupExplorer(removeImage = false): Promise<void> {
+  const { execSync } = await import('child_process');
+  try {
+    execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`);
+    broadcastLog('[Explorer] Container removed\n');
+  } catch { /* container didn't exist */ }
+  if (removeImage) {
+    try {
+      execSync(`docker rmi ${EXPLORER_IMAGE} 2>/dev/null`);
+      explorerBuildStatus = 'none';
+      broadcastLog('[Explorer] Image removed\n');
+    } catch { /* image didn't exist */ }
+  }
+  broadcast('EXPLORER_STATUS', { status: removeImage ? 'not-built' : 'stopped' });
+}
+
+app.post('/api/explorer/start', async (req, res) => {
+  try {
+    const {
+      namespaceName = 'symbol.xym',
+      divisibility = '6',
+      port = 8090,
+      networkName = '',
+      externalHost = '',
+    } = req.body || {};
+
+    await startExplorerContainer(namespaceName, divisibility, port, networkName, externalHost);
+    res.json({ success: true, port });
+  } catch (err: any) {
+    broadcastLog(`[Explorer] ❌ Start failed: ${err.message}\n`);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/explorer/stop', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    execSync(`docker rm -f ${EXPLORER_CONTAINER} 2>/dev/null`);
+    broadcastLog('[Explorer] Stopped.\n');
+    broadcast('EXPLORER_STATUS', { status: 'stopped' });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// =============================================================================
+// Certificate info endpoint — reads TLS cert expiration from PEM files
+// =============================================================================
+app.get('/api/certificate-info', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+
+    /** Helper: read notBefore / notAfter from a PEM file via openssl */
+    const readCert = (pemPath: string): {
+      exists: boolean;
+      notBefore: string | null;
+      notAfter: string | null;
+      daysRemaining: number | null;
+    } => {
+      if (!fs.existsSync(pemPath)) {
+        return { exists: false, notBefore: null, notAfter: null, daysRemaining: null };
+      }
+      try {
+        const out = execSync(
+          `openssl x509 -noout -startdate -enddate -in "${pemPath}"`,
+          { encoding: 'utf-8', timeout: 5000 },
+        ).trim();
+        // Parse: notBefore=Feb 28 13:15:09 2026 GMT  /  notAfter=Mar 10 13:15:09 2027 GMT
+        let notBefore: string | null = null;
+        let notAfter: string | null = null;
+        for (const line of out.split('\n')) {
+          const m = line.match(/^(notBefore|notAfter)=(.+)$/);
+          if (m) {
+            if (m[1] === 'notBefore') notBefore = m[2].trim();
+            if (m[1] === 'notAfter') notAfter = m[2].trim();
+          }
+        }
+        let daysRemaining: number | null = null;
+        if (notAfter) {
+          const expiry = new Date(notAfter).getTime();
+          daysRemaining = Math.floor((expiry - Date.now()) / (1000 * 60 * 60 * 24));
+        }
+        return { exists: true, notBefore, notAfter, daysRemaining };
+      } catch {
+        return { exists: true, notBefore: null, notAfter: null, daysRemaining: null };
+      }
+    };
+
+    const nodeCertDir = path.join(TARGET_DIR, 'nodes', 'api-node-0', 'cert');
+    const gatewayCertDir = path.join(TARGET_DIR, 'gateways', 'rest-gateway', 'api-node-config', 'cert');
+
+    const nodeCert = readCert(path.join(nodeCertDir, 'node.crt.pem'));
+    const caCert = readCert(path.join(nodeCertDir, 'ca.cert.pem'));
+    const restNodeCert = readCert(path.join(gatewayCertDir, 'node.crt.pem'));
+    const restCaCert = readCert(path.join(gatewayCertDir, 'rest-ca.cert.pem'));
+
+    // Also read preset config values for reference
+    let presetNodeDays: number | null = null;
+    let presetCaDays: number | null = null;
+    try {
+      if (fs.existsSync(PRESET_PATH)) {
+        const raw = fs.readFileSync(PRESET_PATH, 'utf-8');
+        const m1 = raw.match(/nodeCertificateExpirationInDays\s*:\s*(\d+)/);
+        const m2 = raw.match(/caCertificateExpirationInDays\s*:\s*(\d+)/);
+        if (m1) presetNodeDays = Number(m1[1]);
+        if (m2) presetCaDays = Number(m2[1]);
+      }
+    } catch { /* ignore */ }
+
+    res.json({
+      available: nodeCert.exists || caCert.exists,
+      nodeCert,
+      caCert,
+      restNodeCert,
+      restCaCert,
+      preset: {
+        nodeCertificateExpirationInDays: presetNodeDays,
+        caCertificateExpirationInDays: presetCaDays,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Certificate renewal endpoint
+// Runs `symbol-bootstrap renewCertificates` then regenerates REST gateway cert.
+// Requires: node stopped, password.
+// =============================================================================
+app.post('/api/certificate-renew', async (req, res) => {
+  try {
+    const { password, force } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'PASSWORD_REQUIRED' });
+    }
+
+    // Node must be stopped
+    if (networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
+      return res.status(409).json({ error: 'NODE_RUNNING' });
+    }
+
+    // Certificate files must exist
+    const nodeCertDir = path.join(TARGET_DIR, 'nodes', 'api-node-0', 'cert');
+    if (!fs.existsSync(path.join(nodeCertDir, 'node.crt.pem'))) {
+      return res.status(404).json({ error: 'NO_CERTIFICATES' });
+    }
+
+    broadcastLog('[Cert] Starting certificate renewal...\n');
+
+    // Run symbol-bootstrap renewCertificates
+    const args = [`--password=${password}`];
+    if (force) args.push('--force');
+
+    try {
+      await runBootstrapCommand('renewCertificates', args, {
+        stateWhileRunning: 'stopping',   // reuse a transient state
+        stateOnSuccess: 'stopped',
+      });
+      broadcastLog('[Cert] ✅ Node certificates renewed via symbol-bootstrap\n');
+    } catch (err: any) {
+      broadcastLog(`[Cert] ⚠️  renewCertificates failed: ${err.message}\n`);
+      networkStatus.state = 'stopped';
+      broadcastStatus();
+      return res.status(500).json({ error: 'RENEW_FAILED', message: err.message });
+    }
+
+    // Re-sync REST gateway certificate (must match api-node after renewal)
+    try {
+      broadcastLog('[Cert] Re-syncing REST gateway certificate...\n');
+      generateRestGatewayCert(TARGET_DIR, true);
+      broadcastLog('[Cert] ✅ REST gateway certificate re-synced\n');
+    } catch (err: any) {
+      broadcastLog(`[Cert] ⚠️  REST gateway cert sync failed: ${err.message}\n`);
+      // Non-fatal: node cert was already renewed
+    }
+
+    broadcastLog('[Cert] ✅ Certificate renewal complete. Please restart the node.\n');
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.json({ success: true });
+  } catch (err: any) {
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // Storage usage endpoint — returns disk usage for TARGET_DIR
 // =============================================================================
 app.get('/api/storage', async (_req, res) => {
@@ -710,8 +1794,594 @@ app.get('/api/storage', async (_req, res) => {
 });
 
 // =============================================================================
+// Storage volumes — list available filesystems & change TARGET_DIR
+// =============================================================================
+
+/**
+ * GET /api/storage/volumes — returns a list of filesystem mount points with
+ * total / available space so the user can pick one with enough room.
+ */
+app.get('/api/storage/volumes', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const dfOut = execSync(
+      `df -BG --output=target,fstype,size,avail,pcent 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 5000 },
+    ).trim();
+
+    const lines = dfOut.split('\n').slice(1); // skip header
+    const volumes: Array<{
+      mountPoint: string;
+      fsType: string;
+      totalGB: number;
+      availGB: number;
+      usedPercent: number;
+    }> = [];
+
+    // FS types to skip (virtual / tiny)
+    const SKIP_FS = new Set(['tmpfs', 'devtmpfs', 'proc', 'sysfs', 'cgroup', 'cgroup2', 'devpts']);
+
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 5) continue;
+      const [mount, fsType, sizeStr, availStr, pctStr] = parts;
+      if (SKIP_FS.has(fsType)) continue;
+      const totalGB = parseInt(sizeStr) || 0;
+      const availGB = parseInt(availStr) || 0;
+      const usedPercent = parseInt(pctStr) || 0;
+      if (totalGB === 0) continue;
+      volumes.push({ mountPoint: mount, fsType, totalGB, availGB, usedPercent });
+    }
+
+    // De-duplicate: if multiple mounts resolve to the same filesystem (same
+    // size+avail), keep the shorter path.
+    const seen = new Map<string, typeof volumes[0]>();
+    for (const v of volumes) {
+      const key = `${v.totalGB}-${v.availGB}`;
+      const existing = seen.get(key);
+      if (!existing || v.mountPoint.length < existing.mountPoint.length) {
+        seen.set(key, v);
+      }
+    }
+
+    res.json({
+      currentTargetDir: TARGET_DIR,
+      volumes: [...seen.values()].sort((a, b) => b.availGB - a.availGB),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/storage/target — update SYMBOL_TARGET_DIR in the host .env file.
+ * Body: { "targetDir": "/new/path" }
+ *
+ * - Rejects if the node is not stopped.
+ * - If the current TARGET_DIR contains data, rsync it to the new path first.
+ * - The .env file is mounted at /app/host-env.  After writing, the user must
+ *   restart docker compose for the new mount to take effect.
+ */
+app.post('/api/storage/target', async (req, res) => {
+  try {
+    const { targetDir } = req.body;
+    if (!targetDir || typeof targetDir !== 'string') {
+      return res.status(400).json({ error: 'targetDir is required' });
+    }
+
+    // ── Guard: must be stopped ───────────────────────────────────────────
+    if (networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
+      return res.status(409).json({
+        error: 'NODE_RUNNING',
+        message: 'Node must be stopped before changing the storage path.',
+      });
+    }
+
+    const cleanPath = path.resolve(targetDir); // normalise
+
+    // Don't allow changing to the same path
+    if (cleanPath === path.resolve(TARGET_DIR)) {
+      return res.status(400).json({ error: 'SAME_PATH', message: 'New path is the same as current.' });
+    }
+
+    // ── Guard: reject dangerous system paths ──────────────────────────────
+    const FORBIDDEN_PATHS = ['/', '/bin', '/boot', '/dev', '/etc', '/lib', '/lib64', '/proc', '/run', '/sbin', '/sys', '/tmp', '/usr', '/var/run'];
+    if (FORBIDDEN_PATHS.includes(cleanPath)) {
+      return res.status(400).json({
+        error: 'FORBIDDEN_PATH',
+        message: `Cannot use system path "${cleanPath}" as storage directory.`,
+      });
+    }
+
+    // ── Ensure destination exists ────────────────────────────────────────
+    try {
+      if (!fs.existsSync(cleanPath)) {
+        fs.mkdirSync(cleanPath, { recursive: true });
+      }
+    } catch { /* may fail for unmounted paths */ }
+
+    // ── Copy existing data if any ────────────────────────────────────────
+    let dataCopied = false;
+    const oldDir = path.resolve(TARGET_DIR);
+    const hasData = fs.existsSync(oldDir) && fs.readdirSync(oldDir).length > 0;
+    if (hasData) {
+      try {
+        const { execSync } = await import('child_process');
+        // Use cp -a for atomic copy with attributes; rsync may not be installed
+        // in all images. Trailing / on source ensures contents are copied, not dir itself.
+        const cmd = `cp -a "${oldDir}/." "${cleanPath}/"`;
+        broadcast('TERMINAL', `[storage] Copying data: ${oldDir} → ${cleanPath} ...`);
+        execSync(cmd, { timeout: 600_000, stdio: 'pipe' });
+        broadcast('TERMINAL', `[storage] Data copy complete.`);
+        dataCopied = true;
+      } catch (cpErr: any) {
+        broadcast('TERMINAL', `[storage] Copy failed: ${cpErr.message}`);
+        return res.status(500).json({
+          error: 'COPY_FAILED',
+          message: `Data copy failed: ${cpErr.message}`,
+        });
+      }
+    }
+
+    // ── Update .env ──────────────────────────────────────────────────────
+    const hostEnvPath = '/app/host-env';
+    const fallbackPath = path.join(SHARED_DIR, '.env.local');
+    let writtenTo = '';
+    const envContent = `# Auto-generated by Symbol Manager UI\nSYMBOL_TARGET_DIR=${cleanPath}\n`;
+
+    if (fs.existsSync(hostEnvPath)) {
+      let existing = fs.readFileSync(hostEnvPath, 'utf-8');
+      if (/^SYMBOL_TARGET_DIR=/m.test(existing)) {
+        existing = existing.replace(/^SYMBOL_TARGET_DIR=.*/m, `SYMBOL_TARGET_DIR=${cleanPath}`);
+      } else {
+        existing = existing.trimEnd() + `\nSYMBOL_TARGET_DIR=${cleanPath}\n`;
+      }
+      fs.writeFileSync(hostEnvPath, existing, 'utf-8');
+      writtenTo = 'host-env';
+    } else {
+      fs.writeFileSync(fallbackPath, envContent, 'utf-8');
+      writtenTo = 'shared';
+    }
+
+    res.json({
+      success: true,
+      writtenTo,
+      dataCopied,
+      newTargetDir: cleanPath,
+      message: 'SYMBOL_TARGET_DIR updated. Please restart docker compose to apply.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Docker Image Management — list, export (docker save), import (docker load)
+// =============================================================================
+
+/**
+ * DELETE /api/storage/directory — remove an unused data directory.
+ * Body: { "dirPath": "/opt/old-data" }
+ *
+ * Safety guards:
+ * - Must be under /opt/ (not system dirs)
+ * - Cannot delete the current TARGET_DIR
+ * - Node must be stopped
+ */
+app.delete('/api/storage/directory', async (req, res) => {
+  try {
+    const { dirPath } = req.body;
+    if (!dirPath || typeof dirPath !== 'string') {
+      return res.status(400).json({ error: 'dirPath is required' });
+    }
+
+    const cleanPath = path.resolve(dirPath);
+
+    // Guard: node must be stopped
+    if (networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
+      return res.status(409).json({
+        error: 'NODE_RUNNING',
+        message: 'Node must be stopped before deleting directories.',
+      });
+    }
+
+    // Guard: must be under /opt/ to prevent system damage
+    if (!cleanPath.startsWith('/opt/') || cleanPath === '/opt') {
+      return res.status(400).json({
+        error: 'FORBIDDEN_PATH',
+        message: `Only directories under /opt/ can be deleted. Got: ${cleanPath}`,
+      });
+    }
+
+    // Guard: cannot delete current target
+    if (cleanPath === path.resolve(TARGET_DIR)) {
+      return res.status(400).json({
+        error: 'IS_CURRENT',
+        message: 'Cannot delete the currently active storage directory.',
+      });
+    }
+
+    // Guard: path must exist
+    if (!fs.existsSync(cleanPath)) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: `Path does not exist: ${cleanPath}` });
+    }
+
+    // Perform recursive delete
+    const { execSync } = await import('child_process');
+    broadcast('TERMINAL', `[storage] Deleting directory: ${cleanPath} ...`);
+    execSync(`rm -rf "${cleanPath}"`, { timeout: 120_000, stdio: 'pipe' });
+    broadcast('TERMINAL', `[storage] Directory deleted: ${cleanPath}`);
+
+    res.json({ success: true, deleted: cleanPath });
+  } catch (err: any) {
+    broadcast('TERMINAL', `[storage] Delete failed: ${err.message}`);
+    res.status(500).json({ error: 'DELETE_FAILED', message: err.message });
+  }
+});
+
+/**
+ * GET /api/images — list Symbol-related Docker images on the host.
+ */
+app.get('/api/images', async (_req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const raw = execSync(
+      `docker images --format '{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.ID}}\t{{.CreatedSince}}'`,
+      { encoding: 'utf-8', timeout: 15_000 },
+    ).trim();
+
+    const images = raw
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [repository, tag, size, id, created] = line.split('\t');
+        return { repository, tag, size, id: id?.slice(0, 12), created, fullName: `${repository}:${tag}` };
+      })
+      .filter(
+        (img) =>
+          img.repository.includes('symbol') ||
+          img.repository.includes('catapult') ||
+          img.repository.includes('mongo') ||
+          img.repository === EXPLORER_IMAGE,
+      );
+
+    res.json({ images });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/images/export?image=repo:tag — stream `docker save` as a .tar download.
+ * Images are 1-2 GB — streamed directly without temp files.
+ */
+app.get('/api/images/export', (req, res) => {
+  const image = String(req.query.image || '');
+  if (!image) { res.status(400).json({ error: 'image parameter required' }); return; }
+
+  // Basic security: allow only reasonable Docker image names
+  if (!/^[\w./_-]+:[\w./_-]+$/.test(image)) {
+    res.status(400).json({ error: 'Invalid image name' }); return;
+  }
+
+  const safeName = image.replace(/[/:]/g, '_');
+  res.setHeader('Content-Type', 'application/x-tar');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}.tar"`);
+  res.setHeader('Transfer-Encoding', 'chunked');
+
+  broadcastLog(`[Images] Exporting ${image} ...\n`);
+
+  const cp = spawn('docker', ['save', image], { shell: true });
+  cp.stdout.pipe(res);
+
+  cp.stderr.on('data', (d: Buffer) => {
+    broadcastLog(`[Images] ${d.toString()}`);
+  });
+
+  cp.on('close', (code) => {
+    if (code === 0) {
+      broadcastLog(`[Images] ✅ Export complete: ${image}\n`);
+    } else {
+      broadcastLog(`[Images] ❌ Export failed (exit ${code})\n`);
+      if (!res.headersSent) res.status(500).end();
+    }
+  });
+
+  cp.on('error', (err) => {
+    broadcastLog(`[Images] ❌ Export error: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).end();
+  });
+
+  // If client aborts the download, kill the docker save process
+  req.on('close', () => { cp.kill(); });
+});
+
+/**
+ * POST /api/images/import — stream request body (raw .tar) into `docker load`.
+ * Send with Content-Type: application/octet-stream.
+ * express.json() ignores non-JSON content-types, so req is still a readable stream.
+ */
+app.post('/api/images/import', (req, res) => {
+  broadcastLog('[Images] Importing Docker image from tar...\n');
+
+  const cp = spawn('docker', ['load'], { shell: true });
+  let output = '';
+
+  req.pipe(cp.stdin);
+
+  cp.stdout.on('data', (d: Buffer) => {
+    output += d.toString();
+    broadcastLog(`[Images] ${d.toString()}`);
+  });
+
+  cp.stderr.on('data', (d: Buffer) => {
+    output += d.toString();
+    broadcastLog(`[Images] ${d.toString()}`);
+  });
+
+  cp.on('close', (code) => {
+    if (code === 0) {
+      broadcastLog(`[Images] ✅ Import complete\n`);
+      res.json({ success: true, output: output.trim() });
+    } else {
+      broadcastLog(`[Images] ❌ Import failed\n`);
+      res.status(500).json({ error: output.trim() || 'docker load failed' });
+    }
+  });
+
+  cp.on('error', (err) => {
+    broadcastLog(`[Images] ❌ Import error: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
+// =============================================================================
 // Patch: add missing properties that symbol-bootstrap 1.1.10 omits
 // =============================================================================
+
+/**
+ * Pre-patch symbol-bootstrap mustache templates so that nemgen (which runs
+ * inside `symbol-bootstrap config`) sees all required properties.
+ * This must be called BEFORE `symbol-bootstrap config`.
+ */
+function resolveBootstrapTemplateDirs(): string[] {
+  const { execSync } = require('child_process') as typeof import('child_process');
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+
+  const addDir = (dir: string, label: string) => {
+    const real = fs.realpathSync(dir);
+    if (seen.has(real)) return;
+    seen.add(real);
+    dirs.push(real);
+    broadcastLog(`[Pre-Patch] Template dir (${label}): ${real}\n`);
+  };
+
+  // Strategy 0: require.resolve
+  try {
+    const pkgJson = require.resolve('symbol-bootstrap/package.json');
+    const candidate = path.join(path.dirname(pkgJson), 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'require.resolve');
+  } catch { /* fall through */ }
+
+  // Strategy 1: npm root -g (canonical install location — most important)
+  try {
+    const npmRoot = execSync('npm root -g', { timeout: 5_000, stdio: 'pipe' }).toString().trim();
+    const candidate = path.join(npmRoot, 'symbol-bootstrap', 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'npm root -g');
+  } catch { /* fall through */ }
+
+  // Strategy 1b: npx cache — runBootstrapCommand() uses `npx -y symbol-bootstrap`
+  //   so the ACTUAL templates used at runtime live in the npx cache, NOT the
+  //   global install dir.  This is the single most important location to patch.
+  try {
+    const homeDir = process.env.HOME || '/root';
+    const npxCacheDir = path.join(homeDir, '.npm', '_npx');
+    if (fs.existsSync(npxCacheDir)) {
+      for (const sub of fs.readdirSync(npxCacheDir)) {
+        const candidate = path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'config', 'node', 'resources');
+        if (fs.existsSync(candidate)) addDir(candidate, 'npx cache');
+      }
+    }
+  } catch { /* fall through */ }
+
+  // Strategy 2: find ALL config-node.properties.mustache on disk
+  //   symbol-bootstrap's JS code may run from the npm cache (git-clone*),
+  //   NOT from the global install dir.  We must patch every copy.
+  try {
+    const found = execSync(
+      'find / -path /proc -prune -o -path /sys -prune -o -name "config-node.properties.mustache" -print 2>/dev/null',
+      { timeout: 15_000, stdio: 'pipe' }
+    ).toString().trim();
+    for (const line of found.split('\n')) {
+      const f = line.trim();
+      if (f) addDir(path.dirname(f), 'find');
+    }
+  } catch { /* fall through */ }
+
+  // Strategy 3: resolve from `which symbol-bootstrap` binary location
+  try {
+    const binPath = execSync('which symbol-bootstrap 2>/dev/null || true', { timeout: 5_000, stdio: 'pipe' }).toString().trim();
+    if (binPath && fs.existsSync(binPath)) {
+      const realBin = fs.realpathSync(binPath);
+      const pkgRoot = path.resolve(path.dirname(realBin), '..', '..', 'lib', 'node_modules', 'symbol-bootstrap');
+      const candidate = path.join(pkgRoot, 'config', 'node', 'resources');
+      if (fs.existsSync(candidate)) addDir(candidate, 'which');
+    }
+  } catch { /* fall through */ }
+
+  // Fallback
+  if (dirs.length === 0) {
+    const fallback = '/usr/local/lib/node_modules/symbol-bootstrap/config/node/resources';
+    broadcastLog(`[Pre-Patch] Template dir (fallback): ${fallback}\n`);
+    dirs.push(fallback);
+  }
+
+  return dirs;
+}
+
+function patchMustacheTemplates(version: CatapultVersionDef) {
+  const templateDirs = resolveBootstrapTemplateDirs();
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${version.configPatches.length}, template dirs: ${templateDirs.length}\n`);
+
+  for (const templateDir of templateDirs) {
+  for (const patch of version.configPatches) {
+    const templatePath = path.join(templateDir, patch.file + '.mustache');
+    if (!fs.existsSync(templatePath)) {
+      broadcastLog(`[Pre-Patch] ⚠️  Template not found: ${templatePath}\n`);
+      continue;
+    }
+
+    let content = fs.readFileSync(templatePath, 'utf-8');
+    let patched = false;
+
+    for (const [key, defaultValue] of Object.entries(patch.props)) {
+      // Check if key already exists OUTSIDE of mustache conditional blocks.
+      // Keys inside {{#...}}...{{/...}} blocks may not be rendered, so we
+      // must not treat them as "already present".
+      const unconditional = content.replace(/\{\{#[^}]+\}\}[\s\S]*?\{\{\/[^}]+\}\}/g, '');
+      const keyRegex = new RegExp(`^\\s*${key}\\s*=`, 'm');
+      if (keyRegex.test(unconditional)) continue;
+
+      // Find the section and insert at the end of it (before next section)
+      const sectionIdx = content.indexOf(patch.section);
+      if (sectionIdx === -1) continue;
+
+      // Find the next real section header or mustache conditional block start
+      // after the target section — insert before whichever comes first.
+      const afterSection = content.slice(sectionIdx);
+      const nextRealSection = afterSection.search(/\n\[(?![{#/])/);
+      const nextMustacheBlock = afterSection.search(/\n\{\{#/);
+      let nextBoundary: number;
+      if (nextRealSection === -1 && nextMustacheBlock === -1) {
+        nextBoundary = -1;
+      } else if (nextRealSection === -1) {
+        nextBoundary = nextMustacheBlock;
+      } else if (nextMustacheBlock === -1) {
+        nextBoundary = nextRealSection;
+      } else {
+        nextBoundary = Math.min(nextRealSection, nextMustacheBlock);
+      }
+      const insertPos = nextBoundary !== -1
+        ? sectionIdx + nextBoundary
+        : content.length;
+
+      content =
+        content.slice(0, insertPos).trimEnd() +
+        `\n${key} = ${defaultValue}\n` +
+        (nextBoundary !== -1 ? '\n' : '') +
+        content.slice(insertPos).trimStart();
+      patched = true;
+    }
+
+    if (patched) {
+      fs.writeFileSync(templatePath, content, 'utf-8');
+      broadcastLog(`[Pre-Patch] ✅ Patched: ${templateDir}/${patch.file}.mustache (${patch.section})\n`);
+      // Verify the patch was written correctly
+      const verify = fs.readFileSync(templatePath, 'utf-8');
+      for (const key of Object.keys(patch.props)) {
+        const ok = new RegExp(`^\\s*${key}\\s*=`, 'm').test(verify);
+        broadcastLog(`[Pre-Patch]    ${key}: ${ok ? '✅ present' : '❌ MISSING'}\n`);
+      }
+    } else {
+      broadcastLog(`[Pre-Patch] ✅ ${templateDir}/${patch.file}.mustache already OK\n`);
+    }
+  }
+  } // end for templateDirs
+}
+
+/**
+ * Single-currency mode: patch BOTH the base preset and the mustache template
+ * so that only ONE mosaic exists and harvestingMosaicId = currencyMosaicId.
+ *
+ * Problem: symbol-bootstrap's _.merge() merges arrays by INDEX, so the base
+ * preset's 2nd mosaic ("harvest") always survives even when the user defines
+ * only 1 mosaic.  AddressesService then sees mosaics.length > 1 and generates
+ * a separate harvestingMosaicId (nonce=1), which gets baked into the nemesis
+ * block.  Post-hoc config patching cannot undo that.
+ *
+ * Fix (two-pronged):
+ *  A. Trim the base preset's mosaics array to 1 element BEFORE config runs.
+ *     This makes _.merge() produce only the user's single mosaic.
+ *     AddressesService sees mosaics.length === 1 and sets
+ *     harvestingMosaicId = currencyMosaicId automatically.
+ *  B. Patch the mustache template so that config-network.properties also
+ *     outputs harvestingMosaicId = currencyMosaicId (belt-and-suspenders).
+ */
+function patchMustacheForSingleCurrency(): void {
+  // Determine if single-currency mode from custom-preset.yml
+  let isSingleCurrency = false;
+  try {
+    const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const nemesis = doc?.nemesis as Record<string, unknown> | undefined;
+    const mosaics = nemesis?.mosaics as any[] | undefined;
+    isSingleCurrency = Array.isArray(mosaics) && mosaics.length === 1;
+  } catch { /* ignore */ }
+
+  const templateDirs = resolveBootstrapTemplateDirs();
+
+  for (const templateDir of templateDirs) {
+    // templateDir points to e.g. .../symbol-bootstrap/config/node/resources
+    // We need the package root → go up 3 levels from config/node/resources
+    const pkgRoot = path.resolve(templateDir, '..', '..', '..');
+
+    // ── Part A: Patch base preset's mosaics array ──
+    const basePresetPath = path.join(pkgRoot, 'presets', 'bootstrap', 'network.yml');
+    if (fs.existsSync(basePresetPath)) {
+      const baseDoc = yaml.load(fs.readFileSync(basePresetPath, 'utf-8')) as Record<string, unknown>;
+      const baseNemesis = baseDoc?.nemesis as Record<string, unknown> | undefined;
+      const baseMosaics = baseNemesis?.mosaics as any[] | undefined;
+
+      if (isSingleCurrency && baseMosaics && baseMosaics.length > 1) {
+        // Trim to 1 mosaic so _.merge() cannot resurrect the 2nd
+        baseNemesis!.mosaics = baseMosaics.slice(0, 1);
+        fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
+        broadcastLog(`[Pre-Patch] Single-currency: trimmed base preset mosaics to 1 (was ${baseMosaics.length}) in ${basePresetPath}\n`);
+      } else if (!isSingleCurrency && baseMosaics && baseMosaics.length < 2) {
+        // Restore default harvest mosaic if switching back to dual-currency
+        const defaultHarvest = {
+          name: 'harvest',
+          divisibility: 3,
+          duration: 0,
+          supply: 15000000,
+          isTransferable: true,
+          isSupplyMutable: true,
+          isRestrictable: false,
+          accounts: 2,
+        };
+        baseMosaics.push(defaultHarvest);
+        fs.writeFileSync(basePresetPath, yaml.dump(baseDoc, { lineWidth: -1 }), 'utf-8');
+        broadcastLog(`[Pre-Patch] Restored harvest mosaic in base preset (dual-currency mode) in ${basePresetPath}\n`);
+      }
+    }
+
+    // ── Part B: Patch mustache template ──
+    const templatePath = path.join(templateDir, 'config-network.properties.mustache');
+    if (!fs.existsSync(templatePath)) continue;
+
+    let content = fs.readFileSync(templatePath, 'utf-8');
+
+    if (isSingleCurrency) {
+      // Replace harvestingMosaicId to use currencyMosaicId value
+      const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
+      const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
+      if (content.includes(original)) {
+        content = content.replace(original, patched);
+        fs.writeFileSync(templatePath, content, 'utf-8');
+        broadcastLog(`[Pre-Patch] Single-currency: harvestingMosaicId → currencyMosaicId in ${templatePath}\n`);
+      }
+    } else {
+      // Restore the original template if it was previously patched
+      const patched  = 'harvestingMosaicId = {{{toHex currencyMosaicId}}}';
+      const original = 'harvestingMosaicId = {{{toHex harvestingMosaicId}}}';
+      if (content.includes(patched)) {
+        content = content.replace(patched, original);
+        fs.writeFileSync(templatePath, content, 'utf-8');
+        broadcastLog(`[Pre-Patch] Restored harvestingMosaicId in ${templatePath} (dual-currency mode)\n`);
+      }
+    }
+  } // end for templateDirs
+}
 
 /** Describes a set of missing properties to inject into a specific section of a .properties file. */
 interface PropertiesPatch {
@@ -754,6 +2424,16 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
         },
       },
     ],
+    // nodeEqualityStrategy belongs ONLY in config-network.properties.
+    // In some bootstrap versions the broker config template accidentally puts
+    // it in config-node.properties too, which makes the broker binary crash
+    // with "configuration bag has unexpected number of properties".
+    removeProps: [
+      {
+        file: 'config-node.properties',
+        keys: ['nodeEqualityStrategy'],
+      },
+    ],
   },
   {
     id: 'v2',
@@ -782,31 +2462,34 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
 
 /** Resolve which version def to use from the custom-preset YAML */
 function resolveVersion(): CatapultVersionDef {
-  // Try reading catapultVersion from ui-meta
+  // Primary: use symbolServerImage from the saved custom-preset.yml.
+  // This is always accurate — it is set from the actual image tag chosen
+  // during Join or Config, and does not depend on nodeInfo.version parsing.
+  try {
+    if (fs.existsSync(PRESET_PATH)) {
+      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+      const img = String(doc.symbolServerImage ?? '');
+      broadcastLog(`[resolveVersion] custom-preset symbolServerImage=${img}\n`);
+      for (const ver of CATAPULT_VERSIONS) {
+        const tag = ver.serverImage.split(':')[1];
+        if (tag && img.includes(tag)) {
+          broadcastLog(`[resolveVersion] Matched from symbolServerImage: ${ver.id} (tag=${tag})\n`);
+          return ver;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Secondary: catapultVersion field in ui-meta.json
+  // (can be stale/incorrect if Join detected version as v2 when node.version=0)
   try {
     if (fs.existsSync(UI_META_PATH)) {
-      const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+      const meta = parseJsonFile(UI_META_PATH);
       broadcastLog(`[resolveVersion] ui-meta catapultVersion=${meta.catapultVersion}\n`);
       const ver = CATAPULT_VERSIONS.find(v => v.id === meta.catapultVersion);
       if (ver) {
         broadcastLog(`[resolveVersion] Matched from ui-meta: ${ver.id}\n`);
         return ver;
-      }
-    }
-  } catch { /* ignore */ }
-
-  // Fallback: try to match by symbolServerImage in the preset YAML
-  try {
-    if (fs.existsSync(PRESET_PATH)) {
-      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-      const img = String(doc.symbolServerImage ?? '');
-      broadcastLog(`[resolveVersion] Fallback: YAML symbolServerImage=${img}\n`);
-      for (const ver of CATAPULT_VERSIONS) {
-        const tag = ver.serverImage.split(':')[1];
-        if (img.includes(tag)) {
-          broadcastLog(`[resolveVersion] Matched from YAML: ${ver.id} (tag=${tag})\n`);
-          return ver;
-        }
       }
     }
   } catch { /* ignore */ }
@@ -834,6 +2517,20 @@ async function ensurePatchedImage(version: CatapultVersionDef): Promise<string> 
       if (doc.symbolServerImage) baseImage = String(doc.symbolServerImage);
     }
   } catch { /* use version default */ }
+
+  // If the preset already has a patched tag (e.g. from a shared package export),
+  // recover the original image name so we can pull it from Docker Hub.
+  if (baseImage.startsWith('symbol-server-patched:')) {
+    const origTag = baseImage.split(':')[1] ?? 'latest';
+    baseImage = `symbolplatform/symbol-server:${origTag}`;
+    broadcastLog(`[Setup] Recovered original image from patched tag: ${baseImage}\n`);
+    // Also fix the preset YAML so it doesn't keep the patched name
+    try {
+      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+      doc.symbolServerImage = baseImage;
+      fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+    } catch { /* best effort */ }
+  }
 
   // Derive patched tag: "symbolplatform/symbol-server:gcc-1.0.3.9" → "symbol-server-patched:gcc-1.0.3.9"
   const tag = baseImage.split(':')[1] ?? 'latest';
@@ -1071,8 +2768,1089 @@ function forceCorrectDockerComposeImages(targetDir: string) {
     } else {
       broadcastLog(`[Patch] docker-compose.yml images already correct ✓\n`);
     }
+
+    // ------------------------------------------------------------------
+    // Normalise the api-node container / service name to "api-node-0".
+    // symbol-bootstrap may name it "node" (single-node) or "api-node-0"
+    // (multi-node). REST gateway's rest.json always targets "api-node-0",
+    // so ensure docker-compose also uses that name.
+    // ------------------------------------------------------------------
+    const doc = yaml.load(content) as Record<string, unknown>;
+    const services = (doc as any)?.services ?? {};
+    if (services['node'] && !services['api-node-0']) {
+      broadcastLog(`[Patch] Renaming docker-compose service "node" → "api-node-0"...\n`);
+
+      // 1. Rename the service key
+      content = content.replace(/^(\s{4})node:/m, '$1api-node-0:');
+      // 2. Rename container_name: node → api-node-0
+      content = content.replace(/container_name:\s*node\b/, 'container_name: api-node-0');
+      // 3. Update volumes path: ../nodes/node → ../nodes/api-node-0
+      content = content.replace(/\.\.\/nodes\/node/g, '../nodes/api-node-0');
+      // 4. Update depends_on references
+      content = content.replace(/(depends_on:\s*\n\s+-\s+)node\b/g, '$1api-node-0');
+
+      fs.writeFileSync(composePath, content, 'utf-8');
+
+      // 5. Rename the actual nodes directory on disk
+      const oldNodeDir = path.join(targetDir, 'nodes', 'node');
+      const newNodeDir = path.join(targetDir, 'nodes', 'api-node-0');
+      if (fs.existsSync(oldNodeDir) && !fs.existsSync(newNodeDir)) {
+        fs.renameSync(oldNodeDir, newNodeDir);
+        broadcastLog(`[Patch] Renamed nodes/node → nodes/api-node-0\n`);
+      }
+
+      broadcastLog(`[Patch] docker-compose.yml service name normalised ✓\n`);
+    }
+
+    // ------------------------------------------------------------------
+    // Patch config-node.properties: host must be 0.0.0.0 (not 127.0.0.1 or localhost)
+    // so that REST Gateway (in sibling container, different Docker network)
+    // can connect to the node via Docker-to-host networking.
+    // ------------------------------------------------------------------
+    const nodesDir = path.join(targetDir, 'nodes');
+    broadcastLog(`[Patch] Looking for config-node.properties in: ${nodesDir}\n`);
+    if (fs.existsSync(nodesDir)) {
+      let hostPatched = 0;
+      try {
+        const items = fs.readdirSync(nodesDir);
+        broadcastLog(`[Patch] Found nodes: ${items.join(', ')}\n`);
+        for (const nodeName of items) {
+          const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-node.properties');
+          broadcastLog(`[Patch] Checking: ${configPath}\n`);
+          if (fs.existsSync(configPath)) {
+            let configContent = fs.readFileSync(configPath, 'utf-8');
+            const oldContent = configContent;
+            // Match both "127.0.0.1" and "localhost" (symbol-bootstrap may use either)
+            configContent = configContent.replace(/^host\s*=\s*(127\.0\.0\.1|localhost)\s*$/m, 'host = 0.0.0.0');
+            if (configContent !== oldContent) {
+              fs.writeFileSync(configPath, configContent, 'utf-8');
+              hostPatched++;
+              const oldVal = oldContent.match(/^host\s*=\s*(\S+)\s*$/m)?.[1] || '?';
+              broadcastLog(`[Patch] ${nodeName}: host = ${oldVal} → host = 0.0.0.0\n`);
+            }
+          }
+        }
+      } catch (err: any) {
+        broadcastLog(`[Patch] Error patching nodes dir: ${err.message}\n`);
+      }
+      if (hostPatched > 0) {
+        broadcastLog(`[Patch] config-node.properties host patched (${hostPatched} files) ✓\n`);
+      }
+    }
   } catch (e: any) {
     broadcastLog(`[Patch] Warning: could not patch docker-compose.yml: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remove hostname: api-node-0 from the rest-gateway service in docker-compose.yml.
+//
+// When symbol-bootstrap generates docker-compose.yml for a join-network node,
+// it assigns `hostname: api-node-0` to the rest-gateway service.  Docker then
+// writes "<rest-gateway-ip>  api-node-0" into the container's /etc/hosts, which
+// takes priority over Docker DNS.  As a result rest-gateway resolves "api-node-0"
+// to its OWN IP (172.20.0.25) instead of the real api-node-0 (172.20.0.4), and
+// every connection attempt fails with ECONNREFUSED.
+//
+// Fix: remove the hostname line so Docker DNS correctly resolves api-node-0.
+// ---------------------------------------------------------------------------
+function patchRestGatewayHostname(targetDir: string): void {
+  const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  try {
+    const content = fs.readFileSync(composePath, 'utf-8');
+
+    // ── Parse YAML to inspect rest-gateway service ──
+    let doc: any;
+    try {
+      doc = yaml.load(content);
+    } catch (parseErr: any) {
+      broadcastLog(`[Patch] Cannot parse docker-compose.yml: ${parseErr.message}\n`);
+      return;
+    }
+
+    const restGw = doc?.services?.['rest-gateway'];
+    const restGwHostname = String(restGw?.hostname ?? '');
+    broadcastLog(`[Patch] rest-gateway hostname in YAML: "${restGwHostname || 'not set'}"\n`);
+
+    // Check for the problematic hostname AND aliases.
+    // symbol-bootstrap sets both `hostname: api-node-0` and
+    // `networks.default.aliases: [api-node-0]` on the rest-gateway
+    // service.  Both cause /etc/hosts inside rest-gateway to map
+    // "api-node-0" to its own IP, so it tries to connect to itself
+    // on port 7900 instead of the real catapult container.
+    const restGwAliases: string[] = restGw?.networks?.default?.aliases ?? [];
+    const hasHostname = (restGwHostname === 'api-node-0');
+    const hasAlias = restGwAliases.includes('api-node-0');
+
+    if (!hasHostname && !hasAlias) {
+      broadcastLog('[Patch] rest-gateway: no hostname/alias=api-node-0 found (skipped)\n');
+      return;
+    }
+
+    // ── Determine actual service indent level from raw text ──
+    const lines = content.split('\n');
+    let serviceIndentLen = -1;
+    for (const line of lines) {
+      const m = line.match(/^(\s+)rest-gateway:\s*$/);
+      if (m) {
+        serviceIndentLen = m[1].length;
+        break;
+      }
+    }
+
+    if (serviceIndentLen === -1) {
+      broadcastLog('[Patch] Warning: could not locate rest-gateway: line in raw text\n');
+      return;
+    }
+    broadcastLog(`[Patch] Detected service indent: ${serviceIndentLen} spaces\n`);
+
+    // ── Remove hostname: api-node-0 AND aliases: [api-node-0] ──
+    // We do a two-pass line filter:
+    //  1. Track which top-level service block we're in
+    //  2. Inside rest-gateway, remove:
+    //     - `hostname: api-node-0`
+    //     - The `- api-node-0` line inside aliases:
+    //       (plus the `aliases:` key itself if it becomes empty)
+    const serviceLineRe = new RegExp(`^\\s{${serviceIndentLen}}[\\w-]+:\\s*$`);
+    let inRestGateway = false;
+    let inAliases = false;
+    let aliasIndent = 0;
+    const patchedLines: string[] = [];
+    let patched = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (serviceLineRe.test(line)) {
+        inRestGateway = line.trimStart().startsWith('rest-gateway:');
+        inAliases = false;
+      }
+
+      if (!inRestGateway) {
+        patchedLines.push(line);
+        continue;
+      }
+
+      // Remove `hostname: api-node-0` (quoted or unquoted)
+      if (/^\s+hostname:\s*['"]?api-node-0['"]?\s*$/.test(line)) {
+        broadcastLog('[Patch] Removing hostname: api-node-0 from rest-gateway\n');
+        patched = true;
+        continue;
+      }
+
+      // Track aliases: block
+      const aliasKeyMatch = line.match(/^(\s+)aliases:\s*$/);
+      if (aliasKeyMatch) {
+        inAliases = true;
+        aliasIndent = aliasKeyMatch[1].length;
+        // Don't emit this line yet; we'll decide below whether to keep it
+        // after scanning all alias items.  For simplicity, always remove
+        // the aliases: line and any `- api-node-0` entries.
+        // If there are OTHER aliases, they'll be kept, and we'll re-emit
+        // aliases: before them.
+        const remaining: string[] = [];
+        let j = i + 1;
+        while (j < lines.length) {
+          const nextLine = lines[j];
+          // Still inside aliases array?  Check for list item at deeper indent.
+          if (nextLine.match(/^\s+- /)) {
+            const itemIndent = nextLine.search(/\S/);
+            if (itemIndent > aliasIndent) {
+              // This is an alias entry
+              if (/^\s+- \s*['"]?api-node-0['"]?\s*$/.test(nextLine)) {
+                broadcastLog('[Patch] Removing alias: api-node-0 from rest-gateway networks\n');
+                patched = true;
+                j++;
+                continue;
+              } else {
+                remaining.push(nextLine);
+                j++;
+                continue;
+              }
+            }
+          }
+          break;
+        }
+        // Re-emit aliases: with remaining entries (if any)
+        if (remaining.length > 0) {
+          patchedLines.push(line);  // keep `aliases:`
+          for (const r of remaining) patchedLines.push(r);
+        } else {
+          patched = true;  // aliases block fully removed
+        }
+        i = j - 1;  // advance past the aliases block
+        inAliases = false;
+        continue;
+      }
+
+      patchedLines.push(line);
+    }
+
+    if (patched) {
+      fs.writeFileSync(composePath, patchedLines.join('\n'), 'utf-8');
+      broadcastLog('[Patch] rest-gateway hostname/alias patch applied ✓\n');
+    } else {
+      broadcastLog('[Patch] Warning: YAML confirmed hostname/alias but line filter found no match\n');
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] Warning: could not patch rest-gateway hostname: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Add stop_grace_period: 120s to api-node-0 and api-node-0-broker services in
+// docker-compose.yml.  symbol-bootstrap generates no stop_grace_period, so
+// Docker uses the default 10 s.  A node that is actively syncing thousands of
+// blocks cannot flush catapult state in 10 s → Docker sends SIGKILL → lock
+// files are not cleaned up.  120 s gives catapult enough time to shut down
+// gracefully so the next Start does not fail with stale lock files.
+// ---------------------------------------------------------------------------
+function patchStopGracePeriod(targetDir: string): void {
+  const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  try {
+    const content = fs.readFileSync(composePath, 'utf-8');
+    const lines = content.split('\n');
+    const targetServices = new Set(['api-node-0', 'api-node-0-broker']);
+    let currentService: string | null = null;
+    let serviceIndent = '';
+    const patchedLines: string[] = [];
+    let patchedCount = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Detect top-level service block (4-space indent service names)
+      const serviceMatch = line.match(/^(\s{4})([\w-]+):\s*$/);
+      if (serviceMatch) {
+        currentService = serviceMatch[2];
+        serviceIndent = serviceMatch[1];
+      }
+
+      patchedLines.push(line);
+
+      // After service name line, check next lines for existing stop_grace_period
+      if (currentService && targetServices.has(currentService) && serviceMatch) {
+        // Look ahead: does this service block already have stop_grace_period?
+        let alreadyPatched = false;
+        for (let j = i + 1; j < lines.length; j++) {
+          const ahead = lines[j];
+          // New service block starts → stop looking
+          if (/^\s{4}[\w-]+:\s*$/.test(ahead)) break;
+          if (/stop_grace_period/.test(ahead)) {
+            alreadyPatched = true;
+            break;
+          }
+        }
+        if (!alreadyPatched) {
+          patchedLines.push(`${serviceIndent}    stop_grace_period: 120s`);
+          patchedCount++;
+          broadcastLog(`[Patch] Added stop_grace_period: 120s to service: ${currentService}\n`);
+        }
+      }
+    }
+
+    if (patchedCount > 0) {
+      fs.writeFileSync(composePath, patchedLines.join('\n'), 'utf-8');
+      broadcastLog(`[Patch] stop_grace_period patch applied to ${patchedCount} service(s) ✓\n`);
+    } else {
+      broadcastLog(`[Patch] stop_grace_period: already present in all target services (skipped)\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] Warning: could not patch stop_grace_period: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Docker Host Mode: patch docker-compose.yml so api-node-0 and broker run
+// with network_mode: host instead of the default bridge network.
+//
+// This eliminates Docker DNAT — external peers connect directly to catapult
+// and their real IP addresses are preserved.  Required for 3+ node networks
+// where bidirectional peer connections need correct source IPs.
+//
+// Changes when enabled:
+//   1. api-node-0 & broker: add network_mode: "host", remove ports/networks
+//   2. db: expose 27017 on 127.0.0.1 so host-network containers can reach it
+//   3. config-database.properties: databaseUri → mongodb://127.0.0.1
+//   4. rest.json: apiNode.host → bridge gateway IP (rest-gw on bridge reaches catapult on host)
+//   5. localNetworks: skip Docker subnet prefix (no DNAT means no need)
+// ---------------------------------------------------------------------------
+function isDockerHostMode(): boolean {
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'));
+      return !!meta.dockerHostMode;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+function patchDockerHostMode(targetDir: string): void {
+  const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+  if (!fs.existsSync(composePath)) return;
+
+  const hostMode = isDockerHostMode();
+
+  // ─── Rollback: if Host Mode is OFF but compose still has network_mode: host ──
+  if (!hostMode) {
+    try {
+      const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
+      if (!doc?.services) return;
+
+      let needsWrite = false;
+
+      for (const svcName of ['api-node-0', 'api-node-0-broker', 'broker']) {
+        const svc = doc.services[svcName];
+        if (!svc || svc.network_mode !== 'host') continue;
+
+        // Remove network_mode: host → container reverts to default bridge
+        delete svc.network_mode;
+        needsWrite = true;
+        broadcastLog(`[HostMode] ↩️  ${svcName}: removed network_mode=host (rollback to bridge)\n`);
+
+        // Restore default ports for api-node-0
+        if (svcName === 'api-node-0') {
+          if (!svc.ports || !svc.ports.some((p: string) => String(p).includes('7900'))) {
+            if (!svc.ports) svc.ports = [];
+            svc.ports.push('7900:7900');
+            broadcastLog(`[HostMode] ↩️  ${svcName}: restored port 7900:7900\n`);
+          }
+        }
+      }
+
+      // Restore db: remove localhost-only 27017 port if it was added by host mode
+      const dbSvc = doc.services['db'];
+      if (dbSvc?.ports) {
+        const idx = dbSvc.ports.findIndex((p: string) =>
+          String(p) === '127.0.0.1:27017:27017'
+        );
+        if (idx >= 0) {
+          dbSvc.ports.splice(idx, 1);
+          if (dbSvc.ports.length === 0) delete dbSvc.ports;
+          needsWrite = true;
+          broadcastLog('[HostMode] ↩️  db: removed 127.0.0.1:27017:27017 (rollback)\n');
+        }
+      }
+
+      if (needsWrite) {
+        fs.writeFileSync(composePath, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+        broadcastLog('[HostMode] ✅ docker-compose.yml rolled back to bridge mode\n');
+
+        // Also rollback config-database.properties: mongodb://127.0.0.1 → mongodb://db
+        const nodesDir = path.join(targetDir, 'nodes');
+        if (fs.existsSync(nodesDir)) {
+          for (const nodeName of fs.readdirSync(nodesDir)) {
+            for (const configDir of ['server-config', 'broker-config']) {
+              const dbCfgPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-database.properties');
+              if (!fs.existsSync(dbCfgPath)) continue;
+              let content = fs.readFileSync(dbCfgPath, 'utf-8');
+              if (/databaseUri\s*=.*127\.0\.0\.1/.test(content)) {
+                content = content.replace(
+                  /^(databaseUri\s*=\s*).+$/m,
+                  '$1mongodb://db:27017'
+                );
+                fs.writeFileSync(dbCfgPath, content, 'utf-8');
+                broadcastLog(`[HostMode] ↩️  ${nodeName}/${configDir}: databaseUri → mongodb://db:27017\n`);
+              }
+            }
+          }
+        }
+        // rest.json apiNode.host is handled by patchRestJsonApiNodeHost() which
+        // already runs in the start flow and resets it to "api-node-0".
+      }
+    } catch (e: any) {
+      broadcastLog(`[HostMode] ⚠️  Rollback failed: ${e.message}\n`);
+    }
+    return; // Host mode is OFF — nothing more to do
+  }
+
+  // ─── Forward: Host Mode is ON — apply patches ────────────────────────────
+
+  broadcastLog('[HostMode] 🖧 Docker Host Mode enabled — patching docker-compose.yml...\n');
+
+  try {
+    const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
+    if (!doc?.services) return;
+
+    // --- 1. Patch api-node-0 and api-node-0-broker → network_mode: "host" ---
+    // Service names vary by symbol-bootstrap version/assembly:
+    //   - "api-node-0-broker" (some assemblies)
+    //   - "broker" (dual assembly)
+    // Patch whichever exists.
+    for (const svcName of ['api-node-0', 'api-node-0-broker', 'broker']) {
+      const svc = doc.services[svcName];
+      if (!svc) continue;
+
+      svc.network_mode = 'host';
+      delete svc.ports;
+      delete svc.networks;
+
+      // depends_on must remain so Docker starts db first
+      broadcastLog(`[HostMode]   ${svcName}: network_mode=host, removed ports/networks\n`);
+    }
+
+    // --- 2. Patch db: expose 27017 on localhost only ---
+    const dbSvc = doc.services['db'];
+    if (dbSvc) {
+      // Ensure ports array exists and includes localhost binding
+      if (!dbSvc.ports) dbSvc.ports = [];
+      const hasMongoPort = dbSvc.ports.some((p: string) =>
+        String(p).includes('27017')
+      );
+      if (!hasMongoPort) {
+        dbSvc.ports.push('127.0.0.1:27017:27017');
+        broadcastLog('[HostMode]   db: added port 127.0.0.1:27017:27017\n');
+      }
+    }
+
+    // --- 3. Patch rest-gateway: keep on bridge but connect to host via host.docker.internal ---
+    // rest-gateway needs to stay on bridge (it needs the Docker DNS for db).
+    // It connects to catapult via apiNode.host — patched separately in rest.json.
+
+    // Write patched compose
+    fs.writeFileSync(composePath, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+    broadcastLog('[HostMode] ✅ docker-compose.yml patched for host network mode\n');
+
+    // --- 4. Patch config-database.properties: databaseUri → mongodb://127.0.0.1 ---
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (fs.existsSync(nodesDir)) {
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        for (const configDir of ['server-config', 'broker-config']) {
+          const dbCfgPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-database.properties');
+          if (!fs.existsSync(dbCfgPath)) continue;
+          let content = fs.readFileSync(dbCfgPath, 'utf-8');
+          const oldMatch = content.match(/^(databaseUri\s*=\s*)(.+)$/m);
+          if (oldMatch && !oldMatch[2].includes('127.0.0.1')) {
+            content = content.replace(
+              /^(databaseUri\s*=\s*).+$/m,
+              '$1mongodb://127.0.0.1:27017'
+            );
+            fs.writeFileSync(dbCfgPath, content, 'utf-8');
+            broadcastLog(`[HostMode]   ${nodeName}/${configDir}: databaseUri → mongodb://127.0.0.1:27017\n`);
+          }
+        }
+      }
+    }
+
+    // --- 5. Patch rest.json: apiNode.host → bridge gateway IP ---
+    //
+    // rest-gateway stays on the bridge network (docker_default) while api-node-0
+    // runs with network_mode: host (Linux VM's network namespace).
+    //
+    // On Docker Desktop for Windows, host.docker.internal → 192.168.65.254
+    // (the Windows host), NOT the Linux VM where catapult actually listens.
+    // Bridge containers can reach host-network containers via the bridge
+    // gateway IP (e.g. 172.20.0.1) — this is the Linux VM's interface on
+    // the docker_default bridge.
+    //
+    // We dynamically discover this gateway IP via `docker network inspect`.
+    // Fallback order: gateway IP → 172.20.0.1 → host.docker.internal
+    let bridgeGatewayIp = 'host.docker.internal'; // fallback
+    try {
+      // Find the compose-project network (typically named "docker_default")
+      const composeNetworkName = 'docker_default';
+      const inspectJson = execSync(
+        `docker network inspect ${composeNetworkName} --format "{{range .IPAM.Config}}{{.Gateway}}{{end}}" 2>/dev/null || true`,
+        { encoding: 'utf-8', timeout: 10_000 },
+      ).trim();
+      if (inspectJson && /^\d+\.\d+\.\d+\.\d+$/.test(inspectJson)) {
+        bridgeGatewayIp = inspectJson;
+        broadcastLog(`[HostMode]   Bridge gateway IP discovered: ${bridgeGatewayIp}\n`);
+      } else {
+        // Gateway not explicitly set — derive from subnet (x.x.x.0/24 → x.x.x.1)
+        const subnetJson = execSync(
+          `docker network inspect ${composeNetworkName} --format "{{range .IPAM.Config}}{{.Subnet}}{{end}}" 2>/dev/null || true`,
+          { encoding: 'utf-8', timeout: 10_000 },
+        ).trim();
+        const subnetMatch = subnetJson.match(/^(\d+\.\d+\.\d+)\.\d+\//);
+        if (subnetMatch) {
+          bridgeGatewayIp = `${subnetMatch[1]}.1`;
+          broadcastLog(`[HostMode]   Bridge gateway IP derived from subnet ${subnetJson}: ${bridgeGatewayIp}\n`);
+        } else {
+          broadcastLog(`[HostMode]   ⚠️ Could not determine bridge gateway IP, falling back to host.docker.internal\n`);
+        }
+      }
+    } catch (e: any) {
+      broadcastLog(`[HostMode]   ⚠️ Bridge gateway discovery failed: ${e.message}, falling back to host.docker.internal\n`);
+    }
+
+    const gwDir = path.join(targetDir, 'gateways');
+    if (fs.existsSync(gwDir)) {
+      for (const gwName of fs.readdirSync(gwDir)) {
+        const candidates = [
+          path.join(gwDir, gwName, 'rest.json'),
+          path.join(gwDir, gwName, 'userconfig', 'resources', 'rest.json'),
+        ];
+        for (const restJsonPath of candidates) {
+          if (!fs.existsSync(restJsonPath)) continue;
+          try {
+            const obj = JSON.parse(fs.readFileSync(restJsonPath, 'utf-8'));
+            let changed = false;
+
+            // apiNode.host → bridge gateway IP so rest-gw (bridge) can reach catapult (host)
+            if (obj?.apiNode?.host && obj.apiNode.host !== bridgeGatewayIp) {
+              const oldHost = obj.apiNode.host;
+              obj.apiNode.host = bridgeGatewayIp;
+              changed = true;
+              broadcastLog(`[HostMode]   rest.json (${gwName}): apiNode.host ${oldHost} → ${bridgeGatewayIp}\n`);
+            }
+
+            // db.url → mongodb://db:27017 (rest-gw is on bridge, db is also on bridge)
+            // No change needed for db — rest-gateway and db are both on the bridge network.
+
+            if (changed) {
+              fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
+            }
+          } catch (e: any) {
+            broadcastLog(`[HostMode]   Warning: could not patch ${restJsonPath}: ${e.message}\n`);
+          }
+        }
+      }
+    }
+
+    broadcastLog('[HostMode] ✅ All host mode patches applied\n');
+  } catch (e: any) {
+    broadcastLog(`[HostMode] ⚠️  Patch failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fix rest.json apiNode.host when symbol-bootstrap hardcodes a Docker IP.
+//
+// symbol-bootstrap writes the api-node-0 container IP (e.g. 172.20.0.25) into
+// gateways/rest-gateway/rest.json at `apiNode.host` during `config`.  After a
+// Full Reset Docker IPAM may assign that same IP to rest-gateway itself, so
+// rest-gateway ends up connecting to its own port 7900 → ECONNREFUSED.
+//
+// Fix: replace any non-hostname value (IP address or wrong hostname) with the
+// stable container name "api-node-0" so Docker DNS always resolves correctly.
+// ---------------------------------------------------------------------------
+function patchRestJsonApiNodeHost(targetDir: string): void {
+  const gatewaysDir = path.join(targetDir, 'gateways');
+  if (!fs.existsSync(gatewaysDir)) {
+    broadcastLog('[Patch] gateways/ not found, skipping rest.json apiNode.host patch\n');
+    return;
+  }
+
+  // Walk every sub-directory under gateways/ and patch all rest.json files.
+  // (symbol-bootstrap may generate multiple gateway dirs in future.)
+  let patchedCount = 0;
+  try {
+    for (const gwName of fs.readdirSync(gatewaysDir)) {
+      // Check both known locations: direct and userconfig/resources
+      const candidates = [
+        path.join(gatewaysDir, gwName, 'rest.json'),
+        path.join(gatewaysDir, gwName, 'userconfig', 'resources', 'rest.json'),
+      ];
+      for (const restJsonPath of candidates) {
+        if (!fs.existsSync(restJsonPath)) continue;
+        try {
+          const raw = fs.readFileSync(restJsonPath, 'utf-8');
+          const obj = JSON.parse(raw);
+          const current: string = obj?.apiNode?.host ?? '';
+          broadcastLog(`[Patch] rest.json (${gwName}) apiNode.host = "${current}"\n`);
+
+          // Only patch if the host looks like an IP address (not already a hostname)
+          const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(current.trim());
+          const isWrongHost = current.trim() !== '' && current.trim() !== 'api-node-0';
+
+          if (isIp) {
+            obj.apiNode.host = 'api-node-0';
+            fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host ${current} → api-node-0 ✓\n`);
+            patchedCount++;
+          } else if (isWrongHost) {
+            // Unexpected hostname — patch defensively
+            obj.apiNode.host = 'api-node-0';
+            fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host "${current}" → api-node-0 (unexpected value, patched) ✓\n`);
+            patchedCount++;
+          } else {
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host already correct (skipped)\n`);
+          }
+        } catch (e: any) {
+          broadcastLog(`[Patch] Warning: could not patch ${restJsonPath}: ${e.message}\n`);
+        }
+      }
+    }
+    if (patchedCount === 0) {
+      broadcastLog('[Patch] rest.json apiNode.host: all gateways already correct\n');
+    } else {
+      broadcastLog(`[Patch] rest.json apiNode.host: patched ${patchedCount} file(s) ✓\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] Warning: rest.json patch failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Promote networkProperties.chain.* / plugin.* values to the document root
+// of custom-preset.yml.
+//
+// symbol-bootstrap generates config-network.properties via mustache templates
+// that read FLAT (top-level) keys from the merged preset.  A deep-merge of
+//   customPreset.networkProperties.chain.blockGenerationTargetTime: 30s
+// on top of
+//   basePreset.blockGenerationTargetTime: 15s
+// does NOT update the base preset's top-level value; only the nested path is
+// set.  We must duplicate every chain/plugin key at the document root so
+// bootstrap's mustache templates can pick them up.
+//
+// This must be called BEFORE `symbol-bootstrap config`.
+//
+// Exceptions:
+//   currencyMosaicId, harvestingMosaicId — managed by backfillMosaicIds()
+//   after nemesis generation.  We do not promote them here to avoid
+//   bootstrapping with a stale ID from a previous run.
+// ---------------------------------------------------------------------------
+function normalizePresetTopLevelOverrides(presetPath: string): void {
+  if (!fs.existsSync(presetPath)) return;
+  try {
+    const content = fs.readFileSync(presetPath, 'utf-8');
+    const doc = yaml.load(content) as Record<string, unknown>;
+    if (!doc || typeof doc !== 'object') return;
+
+    const SKIP_KEYS = new Set(['currencyMosaicId', 'harvestingMosaicId']);
+    let promoted = 0;
+
+    const np = doc.networkProperties as Record<string, unknown> | undefined;
+    if (np) {
+      const promoteSection = (section: Record<string, unknown> | undefined) => {
+        if (!section) return;
+        for (const [k, v] of Object.entries(section)) {
+          if (SKIP_KEYS.has(k)) continue;
+          if (v === undefined || v === null || v === '') continue;
+          // Convert quoted-number strings like "8'998'999'998'000'000" to Number
+          // so bootstrap arithmetic (Math.min/floor etc.) works correctly.
+          let topVal: unknown = v;
+          if (typeof v === 'string' && /^\d[\d']*$/.test(v)) {
+            const num = Number(v.replace(/'/g, ''));
+            if (!isNaN(num)) topVal = num;
+          }
+          doc[k] = topVal;
+          promoted++;
+        }
+      };
+      promoteSection(np.chain as Record<string, unknown> | undefined);
+      promoteSection(np.plugin as Record<string, unknown> | undefined);
+    }
+
+    if (promoted > 0) {
+      fs.writeFileSync(presetPath, yaml.dump(doc, { lineWidth: 120, noRefs: true }), 'utf-8');
+      broadcastLog(`[Preset] ✅ Promoted ${promoted} networkProperties.chain/plugin keys to top level\n`);
+    } else {
+      broadcastLog('[Preset] No chain/plugin keys needed promotion\n');
+    }
+
+    // ── Also promote networkType / networkIdentifier from ui-meta ──────────
+    // symbol-bootstrap bootstrap preset defaults to networkType: 152 (testnet).
+    // If the user chose a different type (e.g. private/privateTest) it must be
+    // written to the preset top-level so bootstrap config uses the right value.
+    try {
+      if (fs.existsSync(UI_META_PATH)) {
+        const meta = parseJsonFile(UI_META_PATH);
+        // Map networkType string → symbol-bootstrap network name
+        // symbol-bootstrap recognises: testnet, mainnet, private, privateTest
+        const NI_TO_BOOTSTRAP: Record<number, string> = {
+          104: 'mainnet', 152: 'testnet', 120: 'private', 168: 'privateTest',
+        };
+        const ID_TO_BOOTSTRAP: Record<string, string> = {
+          mainnet: 'mainnet', testnet: 'testnet',
+          private: 'private', privateTest: 'privateTest',
+        };
+        let bootstrapNetworkName: string | null = null;
+        if (meta.networkType && ID_TO_BOOTSTRAP[meta.networkType as string]) {
+          bootstrapNetworkName = ID_TO_BOOTSTRAP[meta.networkType as string];
+        } else if (meta.networkIdentifier !== undefined) {
+          bootstrapNetworkName = NI_TO_BOOTSTRAP[Number(meta.networkIdentifier)] ?? null;
+        }
+        if (bootstrapNetworkName) {
+          // Read + re-write with networkIdentifier promoted
+          const docCur = yaml.load(fs.readFileSync(presetPath, 'utf-8')) as Record<string, unknown>;
+          docCur.networkIdentifier = bootstrapNetworkName;
+          fs.writeFileSync(presetPath, yaml.dump(docCur, { lineWidth: 120, noRefs: true }), 'utf-8');
+          broadcastLog(`[Preset] ✅ Promoted networkIdentifier = ${bootstrapNetworkName} to top level\n`);
+        }
+      }
+    } catch (e: any) {
+      broadcastLog(`[Preset] ⚠️  Could not promote networkIdentifier: ${e.message}\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Preset] ⚠️  normalizePresetTopLevelOverrides failed: ${e.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read the actual currency mosaic ID from the generated nemesis seed block.
+//
+// Background: symbol-bootstrap config generates config-network.properties
+// with currencyMosaicId = ID of the base-preset's standalone "currency"
+// mosaic (nonce=0, computed from nemesisSigner address).
+// But when a custom baseNamespace is set (e.g. "bootarou"), nemgen creates
+// "bootarou:point" as a NAMESPACE-SCOPED mosaic whose ID is computed via
+// SHA3-256 from the namespace path — a completely different value.
+// The catapult server checks that the sum of harvestingMosaicId outflows
+// in the nemesis block receipts equals totalChainImportance.  If
+// harvestingMosaicId points at the wrong mosaic, outflows = 0 → crash.
+//
+// This function reads nemesis/seed/00000/00001.dat and extracts the mosaic
+// ID from any EmbeddedMosaicDefinitionTransaction (type 0x414D) whose body
+// is consistent with non-zero supply.  If found, that ID is the true
+// currencyMosaicId that matches what is actually in the nemesis block.
+// ---------------------------------------------------------------------------
+function readMosaicIdFromNemesisSeed(targetDir: string): string {
+  const datPath = path.join(targetDir, 'nemesis', 'seed', '00000', '00001.dat');
+  if (!fs.existsSync(datPath)) return '';
+
+  try {
+    const data = fs.readFileSync(datPath);
+    const MOSAIC_DEF_TYPE = 0x414D;
+    // Transaction header layout (catapult):
+    //   size(4) reserved(4) signature(64) signerPublicKey(32) reserved2(4)
+    //   version(1) network(1) type(2)   → total header = 112 bytes
+    // EmbeddedMosaicDefinitionTransaction body (after header):
+    //   nonce(4) mosaicId(8) flags(1) divisibility(1) duration(8)
+    const HEADER_SIZE = 112;
+    // Regular (non-embedded) transaction body layout:
+    //   fee (8) + deadline (8) + [tx-specific body]
+    // MosaicDefinitionTransaction-specific body (after fee+deadline):
+    //   id (8) ← this is what we want
+    //   duration (8)
+    //   nonce (4)
+    //   flags (1)
+    //   divisibility (1)
+    const FEE_DEADLINE_SIZE = 16;  // fee(8) + deadline(8) before tx-specific body
+    const ids: bigint[] = [];
+
+    for (let offset = 0; offset + HEADER_SIZE + FEE_DEADLINE_SIZE + 8 <= data.length; offset++) {
+      const txType = data.readUInt16LE(offset + 110);
+      if (txType !== MOSAIC_DEF_TYPE) continue;
+
+      const txSize = data.readUInt32LE(offset);
+      if (txSize < HEADER_SIZE || txSize > data.length - offset) continue;
+
+      // mosaicId is at: header + fee(8) + deadline(8)
+      const idLo = data.readUInt32LE(offset + HEADER_SIZE + FEE_DEADLINE_SIZE);
+      const idHi = data.readUInt32LE(offset + HEADER_SIZE + FEE_DEADLINE_SIZE + 4);
+      if (idLo === 0 && idHi === 0) continue;
+      const id = (BigInt(idHi) << 32n) | BigInt(idLo);
+      ids.push(id);
+      // Advance past this transaction to avoid re-scanning its bytes
+      offset += txSize - 1;
+    }
+
+    if (ids.length === 0) return '';
+
+    // Use the last found mosaic ID — the namespace-scoped mosaic is defined
+    // after the standalone bootstrap "currency" mosaic in the block.
+    const chosen = ids[ids.length - 1];
+    const hex = chosen.toString(16).toUpperCase().padStart(16, '0');
+    const formatted = "0x" + hex.match(/.{1,4}/g)!.join("'");
+    broadcastLog(`[MosaicID] Detected mosaic IDs in nemesis block: ${ids.map(id => '0x'+id.toString(16).toUpperCase().padStart(16,'0')).join(', ')}\n`);
+    broadcastLog(`[MosaicID] Using last (namespace) mosaic ID: ${formatted}\n`);
+    return formatted;
+  } catch (e: any) {
+    broadcastLog(`[MosaicID] ⚠️  Could not read mosaic ID from nemesis seed: ${e.message}\n`);
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read generated MosaicIDs from config-network.properties after
+// symbol-bootstrap config and write them back to custom-preset.yml.
+// This is needed because bootstrap preset auto-generates the IDs from the
+// nemesis signer + nonce, and we need them in custom-preset.yml for export
+// and display in the UI.
+// ---------------------------------------------------------------------------
+function backfillMosaicIds(targetDir: string): void {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) {
+    broadcastLog('[MosaicID] No nodes directory found — skipping MosaicID backfill\n');
+    return;
+  }
+
+  // ── Join-network mode detection ─────────────────────────────────────────
+  // When the user applied a JoinNetwork config, the correct currencyMosaicId
+  // and harvestingMosaicId (from the source node) are already in
+  // custom-preset.yml under networkProperties.chain.  symbol-bootstrap config
+  // recomputes mosaic IDs locally from the join PC's own nemesisSigner key,
+  // which produces DIFFERENT IDs.  If we let backfillMosaicIds read from
+  // config-network.properties (bootstrap's local computation) and write back,
+  // the correct IDs are overwritten with wrong ones.
+  //
+  // Fix: in join-node mode, treat the IDs in custom-preset.yml as authoritative
+  // and use them to PATCH config-network.properties instead of the other way around.
+  let isJoinNode = false;
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      isJoinNode = !!(meta.sourceNodeUrl);
+    }
+  } catch { /* ignore */ }
+
+  let currencyId = '';
+  let harvestId = '';
+
+  // Determine whether user configured single-currency mode (only 1 mosaic)
+  let userMosaicCount = 2; // default: dual
+  let presetDoc: Record<string, unknown> | null = null;
+  try {
+    presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const nemesis = presetDoc?.nemesis as Record<string, unknown> | undefined;
+    if (nemesis?.mosaics && Array.isArray(nemesis.mosaics)) {
+      userMosaicCount = nemesis.mosaics.length;
+    }
+  } catch { /* ignore */ }
+
+  if (isJoinNode) {
+    // ── Join mode: read authoritative IDs from custom-preset.yml ───────────
+    // These were fetched from the source node during JoinNetwork config apply.
+    // Patch config-network.properties to match — without touching custom-preset.yml.
+    const npJoin = (presetDoc?.networkProperties as Record<string, unknown> | undefined) ?? {};
+    const chainJoin = (npJoin.chain as Record<string, unknown> | undefined) ?? {};
+    const joinCurrency = String(chainJoin.currencyMosaicId ?? '').trim();
+    const joinHarvest  = String(chainJoin.harvestingMosaicId ?? '').trim();
+    if (joinCurrency || joinHarvest) {
+      broadcastLog(`[MosaicID] Join-node mode: using IDs from custom-preset.yml\n`);
+      broadcastLog(`[MosaicID]   currencyMosaicId  = ${joinCurrency || '(not set)'}\n`);
+      broadcastLog(`[MosaicID]   harvestingMosaicId = ${joinHarvest || '(not set)'}\n`);
+      const patchMosaicFile = (cfgPath: string): void => {
+        if (!fs.existsSync(cfgPath)) return;
+        let c = fs.readFileSync(cfgPath, 'utf-8');
+        if (joinCurrency) c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m,  `$1${joinCurrency}`);
+        if (joinHarvest)  c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${joinHarvest}`);
+        fs.writeFileSync(cfgPath, c, 'utf-8');
+        broadcastLog(`[MosaicID] Patched mosaic IDs in ${path.relative(targetDir, cfgPath)}\n`);
+      };
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        for (const configDir of ['server-config', 'broker-config']) {
+          patchMosaicFile(path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties'));
+        }
+      }
+      const gwDirJoin = path.join(targetDir, 'gateways');
+      if (fs.existsSync(gwDirJoin)) {
+        for (const gw of fs.readdirSync(gwDirJoin)) {
+          patchMosaicFile(path.join(gwDirJoin, gw, 'api-node-config', 'config-network.properties'));
+        }
+      }
+      broadcastLog('[MosaicID] ✅ config-network.properties patched with join-network mosaic IDs\n');
+    } else {
+      broadcastLog('[MosaicID] Join-node mode but no mosaic IDs in custom-preset.yml — falling through to bootstrap backfill\n');
+      isJoinNode = false;  // fall through to normal backfill logic below
+    }
+
+    if (isJoinNode) return;  // skip bootstrap backfill entirely in join mode
+  }
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const configPath = path.join(nodesDir, nodeName, 'server-config', 'resources', 'config-network.properties');
+    if (!fs.existsSync(configPath)) continue;
+
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const cm = content.match(/currencyMosaicId\s*=\s*(\S+)/);
+    const hm = content.match(/harvestingMosaicId\s*=\s*(\S+)/);
+    if (cm) currencyId = cm[1];
+    if (hm) harvestId = hm[1];
+    break; // Only need one node
+  }
+
+  if (!currencyId && !harvestId) {
+    broadcastLog('[MosaicID] No MosaicIDs found in generated config\n');
+    return;
+  }
+
+  // Single-currency mode: when user defined only 1 mosaic, harvestingMosaicId
+  // should equal currencyMosaicId.  symbol-bootstrap's _.merge() merges arrays
+  // by index, so the base preset's 2nd harvest mosaic survives and generates a
+  // separate ID (nonce=1).  We override it here after config.
+  if (userMosaicCount <= 1 && currencyId) {
+    // When a custom baseNamespace is configured (e.g. "bootarou"), nemgen
+    // generates "bootarou:point" as a namespace-scoped mosaic.  Its ID is
+    // derived from the namespace path via SHA3-256 — completely different from
+    // the bootstrap-computed standalone "currency" mosaic ID that ends up in
+    // config-network.properties.  Read the TRUE mosaic ID directly from the
+    // generated nemesis block to avoid the mismatch.
+    const nemesisMosaicId = readMosaicIdFromNemesisSeed(targetDir);
+    if (nemesisMosaicId) {
+      broadcastLog(`[MosaicID] Single-currency: overriding currencyMosaicId/harvestingMosaicId with nemesis-derived ID: ${nemesisMosaicId}\n`);
+      currencyId = nemesisMosaicId;
+    } else {
+      broadcastLog(`[MosaicID] Single-currency: could not read nemesis mosaic ID — using config-derived currencyMosaicId\n`);
+    }
+    broadcastLog(`[MosaicID] Single-currency mode: forcing harvestingMosaicId = currencyMosaicId = ${currencyId}\n`);
+    harvestId = currencyId;
+
+    // Read currency supply for totalChainImportance patch
+    let currencySupply = '';
+    try {
+      const nemesis = presetDoc?.nemesis as Record<string, unknown> | undefined;
+      const mosaics = nemesis?.mosaics as any[] | undefined;
+      if (mosaics?.[0]?.supply != null) {
+        currencySupply = String(mosaics[0].supply).replace(/'/g, '');
+      }
+    } catch { /* ignore */ }
+    // Format with apostrophes for catapult config compatibility
+    const formattedSupply = currencySupply
+      ? currencySupply.replace(/\B(?=(\d{3})+(?!\d))/g, "'")
+      : '';
+
+    // Patch config-network.properties in all nodes & brokers
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties');
+        if (!fs.existsSync(configPath)) continue;
+        let content = fs.readFileSync(configPath, 'utf-8');
+        content = content.replace(
+          /currencyMosaicId\s*=\s*\S+/,
+          `currencyMosaicId = ${currencyId}`,
+        );
+        content = content.replace(
+          /harvestingMosaicId\s*=\s*\S+/,
+          `harvestingMosaicId = ${currencyId}`,
+        );
+        if (formattedSupply) {
+          content = content.replace(
+            /totalChainImportance\s*=\s*\S+/,
+            `totalChainImportance = ${formattedSupply}`,
+          );
+          // maxHarvesterBalance must be >= largest account balance.
+          // In single-currency mode accounts can hold a large share of the
+          // total supply, easily exceeding the default 50'000'000'000'000.
+          content = content.replace(
+            /maxHarvesterBalance\s*=\s*\S+/,
+            `maxHarvesterBalance = ${formattedSupply}`,
+          );
+        }
+        fs.writeFileSync(configPath, content, 'utf-8');
+        broadcastLog(`[MosaicID] Patched harvestingMosaicId${formattedSupply ? ' + totalChainImportance + maxHarvesterBalance' : ''} in ${nodeName}/${configDir}\n`);
+      }
+    }
+
+    // Also patch gateway api-node-config copies
+    const gwDir = path.join(targetDir, 'gateways');
+    if (fs.existsSync(gwDir)) {
+      for (const gwName of fs.readdirSync(gwDir)) {
+        const gwConfigPath = path.join(gwDir, gwName, 'api-node-config', 'config-network.properties');
+        if (!fs.existsSync(gwConfigPath)) continue;
+        let gwContent = fs.readFileSync(gwConfigPath, 'utf-8');
+        gwContent = gwContent.replace(
+          /currencyMosaicId\s*=\s*\S+/,
+          `currencyMosaicId = ${currencyId}`,
+        );
+        gwContent = gwContent.replace(
+          /harvestingMosaicId\s*=\s*\S+/,
+          `harvestingMosaicId = ${currencyId}`,
+        );
+        if (formattedSupply) {
+          gwContent = gwContent.replace(
+            /totalChainImportance\s*=\s*\S+/,
+            `totalChainImportance = ${formattedSupply}`,
+          );
+          gwContent = gwContent.replace(
+            /maxHarvesterBalance\s*=\s*\S+/,
+            `maxHarvesterBalance = ${formattedSupply}`,
+          );
+        }
+        fs.writeFileSync(gwConfigPath, gwContent, 'utf-8');
+        broadcastLog(`[MosaicID] Patched gateway ${gwName}/api-node-config\n`);
+      }
+    }
+  }
+
+  broadcastLog(`[MosaicID] Generated: currencyMosaicId=${currencyId}, harvestingMosaicId=${harvestId}\n`);
+
+  // Write to custom-preset.yml
+  try {
+    const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    if (!doc.networkProperties) doc.networkProperties = {};
+    const np = doc.networkProperties as Record<string, unknown>;
+    if (!np.chain) np.chain = {};
+    const chain = np.chain as Record<string, unknown>;
+
+    if (currencyId) chain.currencyMosaicId = currencyId;
+    if (harvestId) chain.harvestingMosaicId = harvestId;
+
+    // Single-currency: also write totalChainImportance = currency supply
+    if (userMosaicCount <= 1 && currencyId) {
+      const nemesis = doc?.nemesis as Record<string, unknown> | undefined;
+      const mosaics = nemesis?.mosaics as any[] | undefined;
+      if (mosaics?.[0]?.supply != null) {
+        const supply = String(mosaics[0].supply).replace(/'/g, '');
+        chain.totalChainImportance = supply;
+        doc.totalChainImportance = Number(supply);
+      }
+    }
+
+    // Also set top-level for mustache templates
+    if (currencyId) doc.currencyMosaicId = currencyId;
+    if (harvestId) doc.harvestingMosaicId = harvestId;
+
+    // Backfill nemesisGenerationHashSeed from generated preset.yml
+    // This ensures custom-preset.yml always contains the generation hash for export
+    const generatedPresetPath = path.join(targetDir, 'preset.yml');
+    if (fs.existsSync(generatedPresetPath)) {
+      try {
+        const genDoc = yaml.load(fs.readFileSync(generatedPresetPath, 'utf-8')) as Record<string, unknown>;
+        if (genDoc.nemesisGenerationHashSeed && !np.nemesisGenerationHashSeed) {
+          np.nemesisGenerationHashSeed = genDoc.nemesisGenerationHashSeed;
+          broadcastLog(`[MosaicID] Backfilled nemesisGenerationHashSeed: ${genDoc.nemesisGenerationHashSeed}\n`);
+        }
+        if (genDoc.nemesisSignerPublicKey && !np.nemesisSignerPublicKey) {
+          np.nemesisSignerPublicKey = genDoc.nemesisSignerPublicKey;
+          broadcastLog(`[MosaicID] Backfilled nemesisSignerPublicKey\n`);
+        }
+      } catch (e: any) {
+        broadcastLog(`[MosaicID] ⚠️  Could not read generated preset for backfill: ${e.message}\n`);
+      }
+    }
+
+    // ── Patch generationHashSeed in config-network.properties ──────────────
+    // After symbol-bootstrap config (especially with --upgrade), config-network.properties
+    // may still hold an old genesis hash from a previous bootstrap run.  When the user
+    // applied a Join-Network config the correct hash is already in np.nemesisGenerationHashSeed.
+    // We enforce it here so the catapult server always boots with the right hash.
+    //
+    // This is safe for own-network nodes too: backfillMosaicIds just set
+    // np.nemesisGenerationHashSeed = bootstrap-generated hash (same value that's
+    // already in config-network.properties), so the patch is idempotent.
+    const targetGenHash = (np.nemesisGenerationHashSeed as string | undefined)?.trim()?.toUpperCase();
+    if (targetGenHash) {
+      const patchGenHashFile = (cfgPath: string): void => {
+        if (!fs.existsSync(cfgPath)) return;
+        let cfgContent = fs.readFileSync(cfgPath, 'utf-8');
+        const m = cfgContent.match(/^generationHashSeed\s*=\s*(\S+)/m);
+        if (!m) return;
+        const existing = m[1].trim().toUpperCase();
+        if (existing === targetGenHash) return;   // already correct — no-op
+        cfgContent = cfgContent.replace(
+          /^(generationHashSeed\s*=\s*)\S+/m,
+          `$1${targetGenHash}`,
+        );
+        fs.writeFileSync(cfgPath, cfgContent, 'utf-8');
+        broadcastLog(`[GenerationHash] Corrected generationHashSeed: ${existing} → ${targetGenHash}\n`);
+      };
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        for (const configDir of ['server-config', 'broker-config']) {
+          patchGenHashFile(path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties'));
+        }
+      }
+      // gateways/ may not exist yet (created in Step 4 compose), but patch if present
+      const gwDirForHash = path.join(targetDir, 'gateways');
+      if (fs.existsSync(gwDirForHash)) {
+        for (const gwName of fs.readdirSync(gwDirForHash)) {
+          patchGenHashFile(path.join(gwDirForHash, gwName, 'api-node-config', 'config-network.properties'));
+        }
+      }
+    }
+
+    fs.writeFileSync(PRESET_PATH, yaml.dump(doc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
+    broadcastLog('[MosaicID] ✅ Backfilled MosaicIDs and network properties to custom-preset.yml\n');
+  } catch (e: any) {
+    broadcastLog(`[MosaicID] ⚠️ Failed to backfill: ${e.message}\n`);
   }
 }
 
@@ -1193,6 +3971,278 @@ interface PeerEntry {
   metadata: { name: string; roles: string };
 }
 
+function dedupePeerEntries(entries: PeerEntry[]): PeerEntry[] {
+  const byKey = new Set<string>();
+  const byEndpoint = new Set<string>();
+  const out: PeerEntry[] = [];
+  for (const entry of entries) {
+    const endpointKey = `${entry.endpoint.host}:${entry.endpoint.port}`;
+    if (entry.publicKey && byKey.has(entry.publicKey)) continue;
+    if (byEndpoint.has(endpointKey)) continue;
+    if (entry.publicKey) byKey.add(entry.publicKey);
+    byEndpoint.add(endpointKey);
+    out.push(entry);
+  }
+  return out;
+}
+
+function writePeerFiles(targetDir: string, p2pPeers: PeerEntry[], apiPeers: PeerEntry[], infoMessage: string): void {
+  const p2pJson = JSON.stringify({
+    _info: infoMessage,
+    knownPeers: p2pPeers,
+  }, null, 2);
+
+  const apiJson = JSON.stringify({
+    _info: infoMessage,
+    knownPeers: apiPeers,
+  }, null, 2);
+
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) {
+    broadcastLog(`[Peers] ⚠️  No nodes directory found at ${nodesDir}\n`);
+    return;
+  }
+
+  let filesWritten = 0;
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    for (const configDir of ['server-config', 'broker-config']) {
+      const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
+      if (!fs.existsSync(resourcesDir)) continue;
+
+      const p2pPath = path.join(resourcesDir, 'peers-p2p.json');
+      const apiPath = path.join(resourcesDir, 'peers-api.json');
+
+      if (fs.existsSync(p2pPath)) {
+        fs.writeFileSync(p2pPath, p2pJson, 'utf-8');
+        filesWritten++;
+      }
+      if (fs.existsSync(apiPath)) {
+        fs.writeFileSync(apiPath, apiJson, 'utf-8');
+        filesWritten++;
+      }
+    }
+  }
+
+  broadcastLog(`[Peers] ✅ Wrote ${filesWritten} peer files (${p2pPeers.length} p2p, ${apiPeers.length} api peers)\n`);
+}
+
+function readManualPeerUrlsFromPreset(presetPath: string): string[] {
+  try {
+    if (!fs.existsSync(presetPath)) return [];
+    const doc = yaml.load(fs.readFileSync(presetPath, 'utf-8')) as Record<string, unknown>;
+    const nodes = doc?.nodes;
+    if (!Array.isArray(nodes)) return [];
+
+    const urls = new Set<string>();
+    for (const node of nodes as Record<string, unknown>[]) {
+      const raw = node?.peerNodeUrls;
+      if (typeof raw !== 'string') continue;
+      for (const part of raw.split(/[\n,]/)) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        urls.add(trimmed);
+      }
+    }
+    return [...urls];
+  } catch {
+    return [];
+  }
+}
+
+function normalizePeerRestUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `http://${trimmed}`;
+}
+
+function readExistingPeers(targetDir: string): { p2p: PeerEntry[]; api: PeerEntry[] } {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return { p2p: [], api: [] };
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const resourcesDir = path.join(nodesDir, nodeName, 'server-config', 'resources');
+    const p2pPath = path.join(resourcesDir, 'peers-p2p.json');
+    const apiPath = path.join(resourcesDir, 'peers-api.json');
+    if (!fs.existsSync(p2pPath) && !fs.existsSync(apiPath)) continue;
+
+    const read = (filePath: string): PeerEntry[] => {
+      try {
+        if (!fs.existsSync(filePath)) return [];
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { knownPeers?: PeerEntry[] };
+        return Array.isArray(parsed.knownPeers) ? parsed.knownPeers : [];
+      } catch {
+        return [];
+      }
+    };
+
+    return {
+      p2p: read(p2pPath),
+      api: read(apiPath),
+    };
+  }
+
+  return { p2p: [], api: [] };
+}
+
+async function fetchPeerEntriesFromManualUrls(urls: string[]): Promise<PeerEntry[]> {
+  const collected: PeerEntry[] = [];
+
+  for (const rawUrl of urls) {
+    const base = normalizePeerRestUrl(rawUrl);
+    if (!base) continue;
+    let parsedHost = '';
+    try {
+      parsedHost = new URL(base).hostname;
+    } catch {
+      broadcastLog(`[Peers] ⚠️  Invalid peer URL: ${rawUrl}\n`);
+      continue;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const r = await fetch(`${base}/node/info`, { signal: controller.signal });
+      if (!r.ok) {
+        broadcastLog(`[Peers] ⚠️  ${base}/node/info returned HTTP ${r.status}\n`);
+        continue;
+      }
+      const nodeInfo = await r.json() as Record<string, any>;
+      const entry: PeerEntry = {
+        publicKey: String(nodeInfo.publicKey ?? ''),
+        endpoint: {
+          host: parsedHost,
+          port: Number(nodeInfo.port ?? 7900),
+        },
+        metadata: {
+          name: String(nodeInfo.friendlyName || parsedHost),
+          roles: rolesToString(Number(nodeInfo.roles ?? 1)),
+        },
+      };
+      if (!entry.publicKey || !entry.endpoint.host) {
+        broadcastLog(`[Peers] ⚠️  Skipping ${base} (missing publicKey/host)\n`);
+        continue;
+      }
+      collected.push(entry);
+    } catch (e: any) {
+      broadcastLog(`[Peers] ⚠️  Could not fetch peer from ${base}: ${e.message}\n`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return dedupePeerEntries(collected);
+}
+
+async function mergeManualPeerUrlsIntoPeerFiles(targetDir: string, manualUrls: string[]): Promise<void> {
+  if (manualUrls.length === 0) return;
+  broadcastLog(`[Peers] Fetching manual peers from ${manualUrls.length} URL(s)...\n`);
+
+  const fetched = await fetchPeerEntriesFromManualUrls(manualUrls);
+  if (fetched.length === 0) {
+    broadcastLog('[Peers] ⚠️  No valid peers fetched from manual URLs\n');
+    return;
+  }
+
+  const existing = readExistingPeers(targetDir);
+  // NOTE: fetched entries come FIRST so that a changed key for the same
+  //       endpoint (peer rebuilt with new keypair) overwrites the stale entry.
+  const mergedP2p = dedupePeerEntries([
+    ...fetched.filter((p) => p.metadata.roles.includes('Peer')),
+    ...existing.p2p,
+  ]);
+  const mergedApi = dedupePeerEntries([
+    ...fetched.filter((p) => p.metadata.roles.includes('Api')),
+    ...existing.api,
+  ]);
+
+  writePeerFiles(
+    targetDir,
+    mergedP2p,
+    mergedApi,
+    'this file contains a list of peers — auto-generated from source/manual peers',
+  );
+}
+
+/**
+ * For each peer in the generated peers-p2p.json / peers-api.json, try to
+ * fetch their live public key from their REST endpoint (port 3000) and
+ * update the file if the key has changed.
+ *
+ * This handles the common case where a peer was rebuilt (docker compose
+ * build --no-cache + new symbol-bootstrap run) and got a new node keypair,
+ * while the local peers-p2p.json still holds the old key → Verify_Error.
+ *
+ * Non-fatal: if a peer's REST is unreachable the existing key is kept.
+ */
+async function refreshLivePeerKeys(targetDir: string): Promise<void> {
+  const existing = readExistingPeers(targetDir);
+  const allPeers = dedupePeerEntries([...existing.p2p, ...existing.api]);
+
+  if (allPeers.length === 0) return;
+
+  broadcastLog(`[Peers] 🔑 Refreshing live public keys for ${allPeers.length} configured peer(s)...\n`);
+
+  let anyUpdated = false;
+  const keyUpdates = new Map<string, string>(); // oldKey → newKey
+
+  for (const peer of allPeers) {
+    const host = peer.endpoint.host;
+    if (!host) continue;
+
+    const restUrl = `http://${host}:3000`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+
+    try {
+      const r = await fetch(`${restUrl}/node/info`, { signal: controller.signal });
+      if (!r.ok) {
+        broadcastLog(`[Peers] ⚠️  ${restUrl}/node/info → HTTP ${r.status}, keeping existing key\n`);
+        continue;
+      }
+      const nodeInfo = await r.json() as Record<string, any>;
+      const liveKey = String(nodeInfo.publicKey ?? '').toUpperCase();
+      const existingKey = (peer.publicKey ?? '').toUpperCase();
+
+      if (!liveKey) continue;
+
+      if (liveKey !== existingKey) {
+        broadcastLog(
+          `[Peers] 🔄 ${host}: key changed ${existingKey.slice(0, 8)}... → ${liveKey.slice(0, 8)}...\n`,
+        );
+        keyUpdates.set(existingKey, liveKey);
+        anyUpdated = true;
+      } else {
+        broadcastLog(`[Peers] ✓  ${host}: key unchanged\n`);
+      }
+    } catch (e: any) {
+      broadcastLog(`[Peers] ⚠️  ${restUrl} unreachable (${e.message}) — keeping existing key\n`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (!anyUpdated) {
+    broadcastLog('[Peers] ✅ All peer keys are up-to-date\n');
+    return;
+  }
+
+  const applyUpdates = (peers: PeerEntry[]): PeerEntry[] =>
+    peers.map((p) => ({
+      ...p,
+      publicKey: keyUpdates.get((p.publicKey ?? '').toUpperCase()) ?? p.publicKey,
+    }));
+
+  writePeerFiles(
+    targetDir,
+    applyUpdates(existing.p2p),
+    applyUpdates(existing.api),
+    'this file contains a list of peers — keys refreshed from live nodes',
+  );
+
+  broadcastLog(`[Peers] ✅ Peer key refresh complete — ${keyUpdates.size} key(s) updated\n`);
+}
+
 /**
  * Fetch /node/info and /node/peers from the source node URL, then build and
  * overwrite peers-p2p.json and peers-api.json for every node in the target.
@@ -1283,47 +4333,17 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
   broadcastLog(`[Peers] Discovered ${peerEntries.length} additional peers, total unique: ${allPeers.length}\n`);
 
   // Split into p2p peers (has Peer role) and api peers (has Api role)
-  const p2pPeers = allPeers.filter(p => p.metadata.roles.includes('Peer'));
-  const apiPeers = allPeers.filter(p => p.metadata.roles.includes('Api'));
+  const p2pPeers = allPeers.filter((p) => p.metadata.roles.includes('Peer'));
+  const apiPeers = allPeers.filter((p) => p.metadata.roles.includes('Api'));
 
-  const p2pJson = JSON.stringify({
-    _info: 'this file contains a list of peers — auto-generated from source node',
-    knownPeers: p2pPeers,
-  }, null, 2);
+  writePeerFiles(
+    targetDir,
+    p2pPeers,
+    apiPeers,
+    'this file contains a list of peers — auto-generated from source node',
+  );
 
-  const apiJson = JSON.stringify({
-    _info: 'this file contains a list of api peers — auto-generated from source node',
-    knownPeers: apiPeers,
-  }, null, 2);
-
-  // Overwrite peers files for every node (server-config and broker-config)
   const nodesDir = path.join(targetDir, 'nodes');
-  if (!fs.existsSync(nodesDir)) {
-    broadcastLog(`[Peers] ⚠️  No nodes directory found at ${nodesDir}\n`);
-    return;
-  }
-
-  let filesWritten = 0;
-  for (const nodeName of fs.readdirSync(nodesDir)) {
-    for (const configDir of ['server-config', 'broker-config']) {
-      const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
-      if (!fs.existsSync(resourcesDir)) continue;
-
-      const p2pPath = path.join(resourcesDir, 'peers-p2p.json');
-      const apiPath = path.join(resourcesDir, 'peers-api.json');
-
-      if (fs.existsSync(p2pPath)) {
-        fs.writeFileSync(p2pPath, p2pJson, 'utf-8');
-        filesWritten++;
-      }
-      if (fs.existsSync(apiPath)) {
-        fs.writeFileSync(apiPath, apiJson, 'utf-8');
-        filesWritten++;
-      }
-    }
-  }
-
-  broadcastLog(`[Peers] ✅ Wrote ${filesWritten} peer files (${p2pPeers.length} p2p, ${apiPeers.length} api peers)\n`);
 
   // -----------------------------------------------------------------------
   // Patch config-network.properties with ALL values from the source node.
@@ -1413,27 +4433,62 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
   }
 
   // -----------------------------------------------------------------------
-  // Patch config-inflation.properties: replace the public-testnet inflation
-  // schedule with zero-inflation.  The REST API does not expose inflation
-  // settings, but the public-testnet preset has a massive inflation schedule
-  // that causes ValidateConfiguration to fail when combined with the custom
-  // network's initialCurrencyAtomicUnits / maxMosaicAtomicUnits.
+  // Patch config-inflation.properties:
+  //   - For public networks (testnet/mainnet): KEEP the inflation schedule
+  //     generated by symbol-bootstrap because it contains hundreds of entries
+  //     that define harvesting rewards.  Without these, importance calculation
+  //     at the first importanceGrouping boundary block (e.g. block 5760)
+  //     will produce a hash mismatch (Failure_Core_Importance_Block_Mismatch).
+  //   - For custom/private networks: use the user-defined inflation schedule
+  //     from the UI (stored in .ui-meta.json). Falls back to zero-inflation
+  //     if no custom entries are configured.
   // -----------------------------------------------------------------------
-  const zeroInflation = '[inflation]\n\nstarting-at-height-2 = 0\n';
-  let inflationPatched = 0;
-
-  for (const nodeName of fs.readdirSync(nodesDir)) {
-    for (const configDir of ['server-config', 'broker-config']) {
-      const inflPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-inflation.properties');
-      if (fs.existsSync(inflPath)) {
-        fs.writeFileSync(inflPath, zeroInflation, 'utf-8');
-        inflationPatched++;
+  let isPublicNetwork = false;
+  let customInflationEntries: { startHeight: number; amount: string }[] = [];
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      const preset = (meta.preset ?? '').toLowerCase();
+      if (preset === 'testnet' || preset === 'mainnet') {
+        isPublicNetwork = true;
+      }
+      if (Array.isArray(meta.inflation)) {
+        customInflationEntries = meta.inflation;
       }
     }
-  }
+  } catch { /* ignore */ }
 
-  if (inflationPatched > 0) {
-    broadcastLog(`[Network] ✅ Reset config-inflation.properties to zero-inflation (${inflationPatched} files)\n`);
+  if (isPublicNetwork) {
+    broadcastLog(`[Network] ℹ️  Public network detected – keeping original config-inflation.properties\n`);
+  } else {
+    // Build config-inflation.properties from custom entries (or default zero-inflation)
+    let inflationContent = '[inflation]\n\n';
+    if (customInflationEntries.length > 0) {
+      // Sort by height and format each entry
+      const sorted = [...customInflationEntries].sort((a, b) => a.startHeight - b.startHeight);
+      for (const entry of sorted) {
+        inflationContent += `starting-at-height-${entry.startHeight} = ${entry.amount}\n`;
+      }
+    } else {
+      inflationContent += 'starting-at-height-2 = 0\n';
+    }
+
+    let inflationPatched = 0;
+
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const inflPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-inflation.properties');
+        if (fs.existsSync(inflPath)) {
+          fs.writeFileSync(inflPath, inflationContent, 'utf-8');
+          inflationPatched++;
+        }
+      }
+    }
+
+    if (inflationPatched > 0) {
+      const entryCount = customInflationEntries.length || 1;
+      broadcastLog(`[Network] ✅ config-inflation.properties を更新 (${entryCount} entries, ${inflationPatched} files)\n`);
+    }
   }
 }
 
@@ -1442,10 +4497,39 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
 // Docker network subnet so the REST gateway (running in a sibling container)
 // is treated as a local/trusted connection.  symbol-bootstrap only sets
 // "127.0.0.1" by default — the REST container connects from 172.20.0.x.
+//
+// IMPORTANT – catapult's config::IsLocalHost() performs a **prefix-match**
+// (std::memcmp on the raw string), NOT CIDR parsing.
+//   "172.20.0.0/24" (13 chars) can never match "172.20.0.25" (11 chars)
+//   because the host string is shorter than the pattern.
+// We must convert CIDR → prefix form  ("172.20.0.0/24" → "172.20.0.")
+// so that any IP in the subnet is correctly recognised as local and the
+// banning bypass in DispatcherService works.
 // =============================================================================
+
+/** Convert a CIDR subnet string to a prefix suitable for catapult's
+ *  IsLocalHost() prefix-match.  e.g. "172.20.0.0/24" → "172.20.0." */
+function cidrToPrefix(cidr: string): string {
+  const m = cidr.match(/^([\d.]+)\/(\d+)$/);
+  if (!m) return cidr;                       // not CIDR – return as-is
+  const octets = m[1].split('.');
+  const fullOctets = Math.floor(parseInt(m[2], 10) / 8);
+  if (fullOctets >= 4) return m[1];          // /32 – exact IP
+  return octets.slice(0, fullOctets).join('.') + '.';
+}
+
 function patchLocalNetworks(targetDir: string) {
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
+
+  // In Docker Host Mode, catapult runs directly on the host network.
+  // There is no Docker DNAT, so the Docker subnet prefix is not needed.
+  // REST gateway still runs on the bridge network and connects to catapult
+  // via host.docker.internal — no localNetworks entry needed for that.
+  const hostMode = isDockerHostMode();
+  if (hostMode) {
+    broadcastLog('[HostMode] Skipping Docker subnet localNetworks/trustedHosts patch (host network mode)\n');
+  }
 
   // Read the Docker subnet from docker-compose.yml (default 172.20.0.0/24)
   let subnet = '172.20.0.0/24';
@@ -1456,115 +4540,187 @@ function patchLocalNetworks(targetDir: string) {
     if (subnetMatch) subnet = subnetMatch[1];
   }
 
-  let patched = 0;
-  for (const nodeName of fs.readdirSync(nodesDir)) {
-    for (const configDir of ['server-config', 'broker-config']) {
-      const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-node.properties');
-      if (!fs.existsSync(configPath)) continue;
+  const prefix = cidrToPrefix(subnet);   // e.g. "172.20.0."
 
-      let content = fs.readFileSync(configPath, 'utf-8');
-      let changed = false;
+  // ── In Host Mode, skip adding Docker subnet prefix ──
+  // When catapult runs with network_mode: host, there is no Docker bridge
+  // network.  Peers connect via the real host IP, so the 172.20.0.x prefix
+  // is meaningless.  REST gateway still runs on the bridge network and
+  // connects to catapult via host.docker.internal; catapult sees this as
+  // 127.0.0.1, which is already in the default localNetworks/trustedHosts.
+  if (!hostMode) {
+    let patched = 0;
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const configPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-node.properties');
+        if (!fs.existsSync(configPath)) continue;
 
-      for (const key of ['trustedHosts', 'localNetworks']) {
-        const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
-        const match = content.match(regex);
-        if (match && !match[2].includes(subnet)) {
-          const oldVal = match[2].trim();
-          const newVal = oldVal ? `${oldVal}, ${subnet}` : subnet;
-          content = content.replace(regex, `$1${newVal}`);
-          changed = true;
+        let content = fs.readFileSync(configPath, 'utf-8');
+        let changed = false;
+
+        // Both trustedHosts and localNetworks need the Docker subnet prefix.
+        //
+        // trustedHosts: REST gateway (172.20.0.x) connects to catapult without
+        //   a full peer auth handshake.  Required for REST to work.
+        //
+        // localNetworks: REST gateway shares the same TLS cert as api-node-0 (same
+        //   identity key by design).  When the REST gateway connects, catapult must
+        //   classify it as "@_local_" (self-connection) to avoid an "in use identity
+        //   key" rejection.  This ONLY works if the connection comes from a
+        //   localNetworks-classified range.
+        //
+        // Peer identity conflict (join-PC through Docker DNAT):
+        //   When an external peer connects via the host's mapped port (e.g. :7900),
+        //   Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
+        //   With nodeEqualityStrategy = host, BOTH the local node AND the external
+        //   peer are "@_local_" → "in use identity key" rejection.
+        //   Fix: nodeEqualityStrategy = public-key (patched in config-network.properties
+        //   below).  With public-key, the external peer's different public key makes
+        //   it a distinct node even when its host is "@_local_".
+        for (const key of ['trustedHosts', 'localNetworks']) {
+          const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
+          const match = content.match(regex);
+          if (!match) continue;
+
+          let val = match[2].trim();
+
+          // Replace CIDR notation → prefix notation (idempotent)
+          if (val.includes(subnet)) {
+            val = val.replace(subnet, prefix);
+            changed = true;
+          }
+          // Ensure the prefix is present
+          if (!val.includes(prefix)) {
+            val = val ? `${val}, ${prefix}` : prefix;
+            changed = true;
+          }
+
+          if (changed) {
+            content = content.replace(regex, (_, keyPart: string) => `${keyPart}${val}`);
+          }
+        }
+
+        if (changed) {
+          fs.writeFileSync(configPath, content, 'utf-8');
+          patched++;
+          broadcastLog(`[Patch] Patched trustedHosts/localNetworks → prefix "${prefix}" in ${nodeName}/${configDir}\n`);
         }
       }
-
-      if (changed) {
-        fs.writeFileSync(configPath, content, 'utf-8');
-        patched++;
-        broadcastLog(`[Patch] Added Docker subnet ${subnet} to trustedHosts/localNetworks in ${nodeName}/${configDir}\n`);
-      }
+    }
+    if (patched > 0) {
+      broadcastLog(`[Patch] ✅ trustedHosts/localNetworks patched in ${patched} config files\n`);
     }
   }
-  if (patched > 0) {
-    broadcastLog(`[Patch] ✅ localNetworks patched in ${patched} config files\n`);
+
+  // ── Patch nodeEqualityStrategy = public-key in config-network.properties ──
+  // When an external peer (join-PC) connects to this node via the host's mapped
+  // port, Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
+  // This IP is inside localNetworks, so catapult labels that connection "@_local_".
+  // With nodeEqualityStrategy = host (the default), catapult rejects the peer
+  // because the "@_local_" host slot is already occupied by the local node itself.
+  // With nodeEqualityStrategy = public-key, each peer is identified by its key,
+  // not by host.  The external peer has a different key from the local node, so
+  // it is accepted as a new peer even though its host resolves to "@_local_".
+  // (The REST gateway, which shares the same key as the local node, is still
+  // accepted because same key + same host = self-connection, no conflict.)
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    for (const configDir of ['server-config', 'broker-config']) {
+      const cfgNetPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties');
+      if (!fs.existsSync(cfgNetPath)) continue;
+      let c = fs.readFileSync(cfgNetPath, 'utf-8');
+      const m = c.match(/^(nodeEqualityStrategy\s*=\s*)(\S+)/m);
+      if (!m) continue;
+      if (m[2].trim() === 'public-key') continue;
+      c = c.replace(/^(nodeEqualityStrategy\s*=\s*)\S+/m, '$1public-key');
+      fs.writeFileSync(cfgNetPath, c, 'utf-8');
+      broadcastLog(`[Patch] nodeEqualityStrategy = public-key in ${nodeName}/${configDir}\n`);
+    }
+  }
+  // Also patch gateways (api-node-config copy)
+  const gwDirNES = path.join(targetDir, 'gateways');
+  if (fs.existsSync(gwDirNES)) {
+    for (const gw of fs.readdirSync(gwDirNES)) {
+      const cfgPath = path.join(gwDirNES, gw, 'api-node-config', 'config-network.properties');
+      if (!fs.existsSync(cfgPath)) continue;
+      let c = fs.readFileSync(cfgPath, 'utf-8');
+      const m = c.match(/^(nodeEqualityStrategy\s*=\s*)(\S+)/m);
+      if (!m) continue;
+      if (m[2].trim() === 'public-key') continue;
+      c = c.replace(/^(nodeEqualityStrategy\s*=\s*)\S+/m, '$1public-key');
+      fs.writeFileSync(cfgPath, c, 'utf-8');
+      broadcastLog(`[Patch] nodeEqualityStrategy = public-key in gateways/${gw}\n`);
+    }
   }
 }
 
 // =============================================================================
-// Generate a separate TLS certificate for the REST gateway so its identity
-// (CA public key) differs from the api-node's.  Without this, the api-node
-// rejects the connection with "rejecting new host ... with in use identity key".
-// Uses child_process to call openssl (available in the DinD node:20 image).
+// Ensure the REST gateway's TLS cert directory has COPIES of the api-node's
+// cert files.  This is the standard symbol-bootstrap configuration: REST and
+// api-node share the same CA, so the REST gateway's identity key (CA public
+// key extracted from the TLS chain) matches the api-node's.
+//
+// Combined with the localNetworks prefix fix, the REST gateway's host is
+// mapped to "_local_" by NodeContainerSubscriberAdapter, and because the
+// identity key is the same as the local node's own, the NodeDataContainer
+// accepts the connection (same identity at same host = no conflict).
+//
+// This also means the banning bypass in DispatcherService fires for the
+// REST gateway (it is recognised as a local host), so even if a bad
+// transaction is pushed through the REST API, the gateway won't be banned.
 // =============================================================================
-function generateRestGatewayCert(targetDir: string) {
-  const { execSync } = require('child_process') as typeof import('child_process');
+function generateRestGatewayCert(targetDir: string, _forceRegen = false) {
   const gatewaysDir = path.join(targetDir, 'gateways');
   if (!fs.existsSync(gatewaysDir)) return;
 
   for (const gwName of fs.readdirSync(gatewaysDir)) {
     const certDir = path.join(gatewaysDir, gwName, 'api-node-config', 'cert');
-    if (!fs.existsSync(certDir)) continue;
+    if (!fs.existsSync(certDir)) {
+      fs.mkdirSync(certDir, { recursive: true });
+    }
 
-    // Find the api-node's CA cert to keep it as `ca.cert.pem` (server verification)
-    const apiCaCertPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'ca.cert.pem');
-    if (!fs.existsSync(apiCaCertPath)) {
-      broadcastLog(`[Cert] ⚠️  API-node CA cert not found, skipping REST cert generation\n`);
+    const apiCertDir = path.join(targetDir, 'nodes', 'api-node-0', 'cert');
+    if (!fs.existsSync(apiCertDir)) {
+      broadcastLog(`[Cert] ⚠️  API-node cert dir not found, skipping REST cert sync\n`);
       continue;
     }
 
-    // Check if REST already has a different cert (no need to regenerate)
-    const restKeyPath = path.join(certDir, 'node.key.pem');
-    const apiKeyPath = path.join(targetDir, 'nodes', 'api-node-0', 'cert', 'node.key.pem');
-    if (fs.existsSync(restKeyPath) && fs.existsSync(apiKeyPath)) {
-      const restKey = fs.readFileSync(restKeyPath);
-      const apiKey = fs.readFileSync(apiKeyPath);
-      if (!restKey.equals(apiKey)) {
-        broadcastLog(`[Cert] REST gateway already has a distinct certificate — skipping\n`);
-        continue;
+    // Files that the REST gateway needs (same as api-node)
+    const certFiles = ['ca.cert.pem', 'node.key.pem', 'node.crt.pem'];
+    let copied = 0;
+
+    for (const file of certFiles) {
+      const src = path.join(apiCertDir, file);
+      const dst = path.join(certDir, file);
+      if (!fs.existsSync(src)) continue;
+
+      // Copy if destination is missing or differs
+      const srcBuf = fs.readFileSync(src);
+      if (!fs.existsSync(dst) || !srcBuf.equals(fs.readFileSync(dst))) {
+        fs.writeFileSync(dst, srcBuf);
+        copied++;
       }
     }
 
-    broadcastLog(`[Cert] Generating separate TLS certificate for ${gwName}...\n`);
+    // Also copy node.full.crt.pem as node.crt.pem if node.crt.pem wasn't
+    // available but the full chain cert exists.
+    const fullCrtSrc = path.join(apiCertDir, 'node.full.crt.pem');
+    const crtDst = path.join(certDir, 'node.crt.pem');
+    if (!fs.existsSync(crtDst) && fs.existsSync(fullCrtSrc)) {
+      fs.copyFileSync(fullCrtSrc, crtDst);
+      copied++;
+    }
 
-    try {
-      const caKeyPath = path.join(certDir, 'ca.key.pem');
-      const restCaCertPath = path.join(certDir, 'rest-ca.cert.pem');
-      const csrPath = path.join(certDir, 'node.csr.pem');
+    // Clean up leftover files from previous separate-CA approach
+    for (const stale of ['rest-ca.key.pem', 'rest-ca.cert.pem',
+                          'rest-ca.cert.srl', 'node.csr.pem']) {
+      const p = path.join(certDir, stale);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
 
-      // Read certificate expiration days from preset (default: CA=7300, node=375)
-      let caCertDays = 7300;
-      let nodeCertDays = 375;
-      try {
-        if (fs.existsSync(PRESET_PATH)) {
-          const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-          if (presetDoc.caCertificateExpirationInDays) caCertDays = Number(presetDoc.caCertificateExpirationInDays);
-          if (presetDoc.nodeCertificateExpirationInDays) nodeCertDays = Number(presetDoc.nodeCertificateExpirationInDays);
-        }
-      } catch { /* use defaults */ }
-
-      // Generate new CA key + self-signed cert for REST
-      execSync(`openssl genpkey -algorithm ED25519 -out "${caKeyPath}"`, { stdio: 'pipe' });
-      execSync(`openssl req -new -x509 -key "${caKeyPath}" -out "${restCaCertPath}" -days ${caCertDays} -subj "/CN=${gwName}-account"`, { stdio: 'pipe' });
-
-      // Generate new node key + cert signed by REST CA
-      execSync(`openssl genpkey -algorithm ED25519 -out "${restKeyPath}"`, { stdio: 'pipe' });
-      execSync(`openssl req -new -key "${restKeyPath}" -out "${csrPath}" -subj "/CN=${gwName}"`, { stdio: 'pipe' });
-      execSync(`openssl x509 -req -in "${csrPath}" -CA "${restCaCertPath}" -CAkey "${caKeyPath}" -CAcreateserial -out "${path.join(certDir, 'node.crt.pem')}" -days ${nodeCertDays}`, { stdio: 'pipe' });
-
-      // node.crt.pem = REST node cert + REST CA cert (full chain for TLS client)
-      const nodeCert = fs.readFileSync(path.join(certDir, 'node.crt.pem'), 'utf-8');
-      const restCaCert = fs.readFileSync(restCaCertPath, 'utf-8');
-      fs.writeFileSync(path.join(certDir, 'node.crt.pem'), nodeCert.trimEnd() + '\n' + restCaCert, 'utf-8');
-
-      // ca.cert.pem = API-NODE's CA cert (for verifying the server's TLS cert)
-      fs.copyFileSync(apiCaCertPath, path.join(certDir, 'ca.cert.pem'));
-
-      // Clean up temporary files
-      for (const tmp of [csrPath, path.join(certDir, 'rest-ca.cert.srl')]) {
-        if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-      }
-
-      broadcastLog(`[Cert] ✅ REST gateway certificate generated for ${gwName}\n`);
-    } catch (e: any) {
-      broadcastLog(`[Cert] ⚠️  Failed to generate REST cert: ${e.message}\n`);
+    if (copied > 0) {
+      broadcastLog(`[Cert] ✅ Synced ${copied} cert file(s) from api-node-0 → ${gwName}\n`);
+    } else {
+      broadcastLog(`[Cert] ${gwName} certs already in sync with api-node-0\n`);
     }
   }
 }
@@ -1855,9 +5011,8 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), buildProofIndexDat(nemesisEntityHash));
 
   // --- Patch data/00000/ inside each node directory ---
-  const dataHeader = Buffer.alloc(800);
-  dataHeader.writeBigUInt64LE(BigInt(0), 0);
-  dataHeader.writeBigUInt64LE(BigInt(800), 8);
+  // Catapult block files are named by block height: 00001.dat = genesis block.
+  // No 800-byte offset header – write raw block element data.
 
   const nodesDir = path.join(targetDir, 'nodes');
   if (fs.existsSync(nodesDir)) {
@@ -1876,16 +5031,16 @@ async function installImportedSeed(targetDir: string): Promise<void> {
         if (fs.existsSync(p)) fs.rmSync(p, { force: true });
       }
 
-      // Write block storage files (800-byte header + payload)
-      fs.writeFileSync(path.join(dataDir00, '00000.dat'), Buffer.concat([dataHeader, elementBuf]));
-      fs.writeFileSync(path.join(dataDir00, '00000.stmt'), Buffer.concat([dataHeader, stmtBuf]));
+      // Write block storage files (raw block element, no header prefix)
+      // NOTE: catapult block files are named by block height: block 1 = 00001.dat
+      fs.writeFileSync(path.join(dataDir00, '00001.dat'), elementBuf);
+      fs.writeFileSync(path.join(dataDir00, '00001.stmt'), stmtBuf);
       fs.writeFileSync(path.join(dataDir00, 'hashes.dat'), hashesBuf);
 
       // Optional proof
       const proofSrc = path.join(seedSrc, '00001.proof');
       if (fs.existsSync(proofSrc)) {
-        fs.writeFileSync(path.join(dataDir00, '00000.proof'),
-          Buffer.concat([dataHeader, fs.readFileSync(proofSrc)]));
+        fs.writeFileSync(path.join(dataDir00, '00001.proof'), fs.readFileSync(proofSrc));
       }
       const phSrc = path.join(seedSrc, 'proof.heights.dat');
       if (fs.existsSync(phSrc)) {
@@ -2006,14 +5161,9 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   broadcastLog(`[Nemesis] ✅ Seed rebuilt: 00001.dat=${elementBuf.length}B, hashes.dat=64B\n`);
 
   // --- Also patch data/00000/ inside each node directory ---
-  //   The block storage format: 800-byte offset header + block element data
-  //   symbol-bootstrap 'config' already populated data/ from the (old) seed,
-  //   so we must overwrite data/00000/00000.dat with our new block element.
-  const dataHeader = Buffer.alloc(800);
-  dataHeader.writeBigUInt64LE(BigInt(0), 0);     // slot 0 unused
-  dataHeader.writeBigUInt64LE(BigInt(800), 8);   // offset of block-1 data
-
-  const datBlock = Buffer.concat([dataHeader, elementBuf]);
+  //   Catapult block files are named by block height: 00001.dat = block 1 (genesis).
+  //   We write raw block element data (no 800-byte offset header).
+  const datBlock = elementBuf;  // raw block element, no header
   const datHashes = Buffer.concat([hexToBuffer(meta.hash), hexToBuffer(meta.generationHash)]);
 
   const nodesDataDir = path.join(targetDir, 'nodes');
@@ -2028,7 +5178,6 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
       // Create the full data directory structure if missing
       fs.mkdirSync(dataDir00, { recursive: true });
 
-      const datPath = path.join(dataDir00, '00000.dat');
       const hashPath = path.join(dataDir00, 'hashes.dat');
 
       // ── Wipe stale state that was seeded from the base-preset nemesis ──
@@ -2047,18 +5196,16 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
         if (fs.existsSync(p)) fs.rmSync(p, { force: true });
       }
 
-      fs.writeFileSync(datPath, datBlock);
+      // Write block files: named by block height (block 1 = 00001.dat), no 800-byte header
+      fs.writeFileSync(path.join(dataDir00, '00001.dat'), datBlock);
       fs.writeFileSync(hashPath, datHashes);
 
-      // 00000.stmt – block storage format: 800-byte header + statement payload
-      // The statement for the nemesis block contains receipt data.  We build a
-      // minimal valid statement from the REST /statements API.
+      // 00001.stmt – raw statement payload (no 800-byte header)
       const stmtPayload = serializeNemesisStatements(txStmts, mosaicResolutions);
-      const stmtBuf = Buffer.concat([dataHeader, stmtPayload]);
-      fs.writeFileSync(path.join(dataDir00, '00000.stmt'), stmtBuf);
+      const stmtBuf = stmtPayload;
+      fs.writeFileSync(path.join(dataDir00, '00001.stmt'), stmtBuf);
 
-      // 00000.proof – block storage format proof
-      // Minimal proof entry: version(4) + round(epoch4+point4) + height(8) + hash(32) = 52
+      // 00001.proof – finalization proof entry (no 800-byte header)
       const proofPayload = Buffer.concat([
         writeUint32LE(52),            // entry size
         writeUint32LE(1),             // finalization epoch
@@ -2066,7 +5213,7 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
         writeUint64LE(1),             // height
         hexToBuffer(meta.hash),       // block hash
       ]);
-      fs.writeFileSync(path.join(dataDir00, '00000.proof'), Buffer.concat([dataHeader, proofPayload]));
+      fs.writeFileSync(path.join(dataDir00, '00001.proof'), proofPayload);
 
       // proof.heights.dat (no 800-byte header in this file)
       fs.writeFileSync(path.join(dataDir00, 'proof.heights.dat'),
@@ -2290,12 +5437,726 @@ app.delete('/api/seed', (_req, res) => {
 });
 
 // =============================================================================
+// Network Share endpoints — export / import as ZIP
+// =============================================================================
+
+/**
+ * Detect the host IP address for the sourceNodeHint.
+ * Tries multiple strategies:
+ *  1) Docker host gateway (inside container)
+ *  2) hostname -I (Linux)
+ *  3) Node.js os.networkInterfaces() fallback
+ */
+function detectHostIp(): string {
+  try {
+    const { execSync } = require('child_process');
+    // Strategy 1: Docker host gateway
+    try {
+      const gw = execSync("ip route | awk '/default/ {print $3}'", { encoding: 'utf-8', timeout: 3000 }).trim();
+      if (gw && gw !== '127.0.0.1') return gw;
+    } catch { /* ignore */ }
+    // Strategy 2: hostname -I
+    try {
+      const ips = execSync('hostname -I 2>/dev/null', { encoding: 'utf-8', timeout: 3000 }).trim().split(/\s+/);
+      const ext = ips.find((ip: string) => ip && !ip.startsWith('127.') && !ip.startsWith('172.'));
+      if (ext) return ext;
+      if (ips[0]) return ips[0];
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+
+  // Strategy 3: Node.js network interfaces
+  const os = require('os');
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const iface of nets[name] ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'YOUR_HOST_IP';
+}
+
+/** GET /api/share/status — check whether a shareable network exists */
+app.get('/api/share/status', (_req, res) => {
+  try {
+    const hasPreset = fs.existsSync(PRESET_PATH);
+    const hasMeta = fs.existsSync(UI_META_PATH);
+
+    // Seed can come from imported (shared/seed/) or generated (target/nemesis/seed/)
+    const importedSeed = path.join(SEED_DIR, '00000', '00001.dat');
+    const generatedSeed = path.join(TARGET_DIR, 'nemesis', 'seed', '00000', '00001.dat');
+    const hasSeed = fs.existsSync(importedSeed) || fs.existsSync(generatedSeed);
+    const seedSource: 'imported' | 'generated' | 'none' =
+      fs.existsSync(importedSeed) ? 'imported' :
+      fs.existsSync(generatedSeed) ? 'generated' : 'none';
+
+    // Read network name & generation hash for display
+    let networkName = '';
+    let generationHashSeed = '';
+    if (hasMeta) {
+      try {
+        const meta = parseJsonFile(UI_META_PATH);
+        networkName = meta.networkName || meta.friendlyName || '';
+      } catch { /* ignore */ }
+    }
+    if (hasPreset) {
+      try {
+        const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+        const np = doc?.networkProperties as Record<string, unknown> | undefined;
+        generationHashSeed = String(np?.nemesisGenerationHashSeed || '');
+      } catch { /* ignore */ }
+    }
+
+    const detectedIp = detectHostIp();
+
+    res.json({
+      canExport: hasPreset && hasSeed,
+      hasPreset,
+      hasMeta,
+      hasSeed,
+      seedSource,
+      networkName,
+      generationHashSeed,
+      detectedIp,
+      nodeRestPort: NODE_REST_PORT,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/share/export — download a .symbol-network.zip package */
+app.get('/api/share/export', (req, res) => {
+  try {
+    if (!fs.existsSync(PRESET_PATH)) {
+      return res.status(400).json({ error: 'No preset file found. Configure and start the network first.' });
+    }
+
+    const sourceNodeHint = String(req.query.sourceNodeHint || '') || undefined;
+
+    // Determine seed source directory
+    const importedSeedDir = path.join(SEED_DIR, '00000');
+    const generatedSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+    const seedSrcDir = fs.existsSync(path.join(importedSeedDir, '00001.dat'))
+      ? importedSeedDir
+      : fs.existsSync(path.join(generatedSeedDir, '00001.dat'))
+        ? generatedSeedDir
+        : null;
+
+    if (!seedSrcDir) {
+      return res.status(400).json({ error: 'No nemesis seed data found. Start the network at least once first.' });
+    }
+
+    // Read metadata
+    let uiMeta: Record<string, unknown> = {};
+    if (fs.existsSync(UI_META_PATH)) {
+      try { uiMeta = parseJsonFile(UI_META_PATH); } catch { /* */ }
+    }
+    // Override sourceNodeUrl in the export if user provided a hint
+    if (sourceNodeHint) {
+      uiMeta.sourceNodeUrl = sourceNodeHint;
+    }
+
+    // Build metadata.json
+    const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const np = presetDoc?.networkProperties as Record<string, unknown> | undefined;
+    const metadata = {
+      formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      networkName: uiMeta.networkName || uiMeta.friendlyName || '',
+      generationHashSeed: np?.nemesisGenerationHashSeed || '',
+      catapultVersion: uiMeta.catapultVersion || 'v3',
+      sourceNodeHint: sourceNodeHint || uiMeta.sourceNodeUrl || '',
+    };
+
+    // Determine safe filename
+    const safeName = String(metadata.networkName || 'symbol-network').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.symbol-network.zip"`);
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err: Error) => {
+      broadcastLog(`[Share] ❌ Export error: ${err.message}\n`);
+      if (!res.headersSent) res.status(500).end();
+    });
+    archive.pipe(res);
+
+    // 1) metadata.json
+    archive.append(JSON.stringify(metadata, null, 2), { name: 'metadata.json' });
+
+    // 2) custom-preset.yml — sanitize patched image names back to originals
+    //    so the package works on other machines that don't have local patched images.
+    let presetContent = fs.readFileSync(PRESET_PATH, 'utf-8');
+    presetContent = presetContent.replace(
+      /symbol-server-patched:(\S+)/g,
+      'symbolplatform/symbol-server:$1',
+    );
+
+    // Backfill auto-generated values from TARGET_DIR/preset.yml
+    // (symbol-bootstrap generates nemesisGenerationHashSeed, nemesisSignerPublicKey,
+    //  currencyMosaicId, harvestingMosaicId, etc. which may not be in custom-preset.yml)
+    const generatedPresetPath = path.join(TARGET_DIR, 'preset.yml');
+    if (fs.existsSync(generatedPresetPath)) {
+      try {
+        const genDoc = yaml.load(fs.readFileSync(generatedPresetPath, 'utf-8')) as Record<string, unknown>;
+        const custDoc = yaml.load(presetContent) as Record<string, unknown>;
+        if (custDoc && genDoc) {
+          // Ensure networkProperties exists
+          if (!custDoc.networkProperties) custDoc.networkProperties = {};
+          const np = custDoc.networkProperties as Record<string, unknown>;
+
+          // Backfill top-level networkProperties keys
+          const npBackfillKeys = ['nemesisGenerationHashSeed', 'nemesisSignerPublicKey', 'epochAdjustment'];
+          for (const k of npBackfillKeys) {
+            if (!np[k] && genDoc[k]) {
+              np[k] = genDoc[k];
+              broadcastLog(`[Share] Backfilled ${k} from generated preset\n`);
+            }
+          }
+
+          // Backfill chain keys
+          if (!np.chain) np.chain = {};
+          const chain = np.chain as Record<string, unknown>;
+          const chainBackfillKeys = ['currencyMosaicId', 'harvestingMosaicId'];
+          for (const k of chainBackfillKeys) {
+            if (!chain[k] && genDoc[k]) {
+              chain[k] = genDoc[k];
+              broadcastLog(`[Share] Backfilled chain.${k} from generated preset\n`);
+            }
+          }
+
+          presetContent = yaml.dump(custDoc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false });
+        }
+      } catch (e: any) {
+        broadcastLog(`[Share] ⚠️  Could not backfill generated values: ${e.message}\n`);
+      }
+    }
+
+    // Sanitize nodes[] for joining nodes:
+    // - Replace peerNodeUrls with the EXPORTER'S own URL (sourceNodeHint) so that
+    //   importing machines discover THIS node as a peer (not themselves).
+    // - Strip machine-specific fields that each node sets independently.
+    try {
+      const exportDoc = yaml.load(presetContent) as Record<string, unknown>;
+      if (exportDoc && Array.isArray(exportDoc.nodes)) {
+        exportDoc.nodes = (exportDoc.nodes as Record<string, unknown>[]).map((node) => {
+          const cleaned = { ...node };
+          // Point peerNodeUrls at the exporting (origin) node so importing nodes
+          // can find us. If no hint is available, remove the field entirely so
+          // symbol-bootstrap uses knownPeers from peers-p2p.json instead.
+          const originUrl = sourceNodeHint || (uiMeta.sourceNodeUrl as string) || '';
+          if (originUrl) {
+            cleaned.peerNodeUrls = originUrl;
+          } else {
+            delete cleaned.peerNodeUrls;
+          }
+          // Clear fields that belong to this specific machine.
+          // The importing node sets these for itself during Start.
+          delete cleaned.host;          // each machine has its own host/IP
+          delete cleaned.friendlyName;  // each node has its own display name
+          delete cleaned.localNetworks; // auto-patched by patchLocalNetworks()
+          delete cleaned.trustedHosts;  // auto-patched by patchLocalNetworks()
+          return cleaned;
+        });
+        presetContent = yaml.dump(exportDoc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false });
+        broadcastLog(`[Share] 🧹 Sanitized nodes[] in export (peerNodeUrls → ${sourceNodeHint || 'cleared'})\n`);
+      }
+    } catch (e: any) {
+      broadcastLog(`[Share] ⚠️  Could not sanitize nodes section: ${e.message}\n`);
+    }
+
+    archive.append(presetContent, { name: 'custom-preset.yml' });
+
+    // 3) ui-meta.json
+    archive.append(JSON.stringify(uiMeta, null, 2), { name: 'ui-meta.json' });
+
+    // 4) seed files
+    const seedFiles = ['00001.dat', '00001.stmt', 'hashes.dat', '00001.proof', 'proof.heights.dat'];
+    for (const f of seedFiles) {
+      const fp = path.join(seedSrcDir, f);
+      if (fs.existsSync(fp)) {
+        archive.file(fp, { name: `seed/00000/${f}` });
+      }
+    }
+    // Root-level seed index files
+    const seedParent = path.dirname(seedSrcDir);
+    for (const f of ['index.dat', 'proof.index.dat']) {
+      const fp = path.join(seedParent, f);
+      if (fs.existsSync(fp)) {
+        archive.file(fp, { name: `seed/${f}` });
+      }
+    }
+
+    archive.finalize();
+    broadcastLog(`[Share] ✅ Exporting network package: ${safeName}.symbol-network.zip\n`);
+  } catch (err: any) {
+    broadcastLog(`[Share] ❌ Export failed: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/share/import — upload a .symbol-network.zip and unpack it */
+app.post('/api/share/import', (req, res) => {
+  try {
+    // Import should only be done while stopped, otherwise stale runtime data can
+    // remain active and cause network mismatches after join.
+    if (networkStatus.state !== 'stopped') {
+      return res.status(409).json({
+        error: 'Node must be stopped before importing a network package. Please stop the node first.',
+      });
+    }
+
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const zipBuf = Buffer.concat(chunks);
+        if (zipBuf.length < 4) {
+          return res.status(400).json({ error: 'Empty or invalid ZIP file.' });
+        }
+
+        const zip = new AdmZip(zipBuf);
+        const entries = zip.getEntries();
+
+        // Validate required files exist in ZIP
+        const entryNames = entries.map((e: any) => e.entryName);
+        if (!entryNames.includes('custom-preset.yml')) {
+          return res.status(400).json({ error: 'Invalid package: custom-preset.yml not found.' });
+        }
+        if (!entryNames.some((n: string) => n === 'seed/00000/00001.dat')) {
+          return res.status(400).json({ error: 'Invalid package: seed/00000/00001.dat not found.' });
+        }
+
+        // Read metadata
+        let metadata: Record<string, unknown> = {};
+        const metaEntry = zip.getEntry('metadata.json');
+        if (metaEntry) {
+          try { metadata = JSON.parse(metaEntry.getData().toString('utf-8')); } catch { /* */ }
+        }
+
+        // 1) Extract custom-preset.yml
+        const presetEntry = zip.getEntry('custom-preset.yml');
+        if (presetEntry) {
+          fs.writeFileSync(PRESET_PATH, presetEntry.getData());
+          broadcastLog(`[Share] 📄 Imported custom-preset.yml (${presetEntry.getData().length}B)\n`);
+        }
+
+        // 2) Extract ui-meta.json
+        const uiMetaEntry = zip.getEntry('ui-meta.json');
+        if (uiMetaEntry) {
+          fs.writeFileSync(UI_META_PATH, uiMetaEntry.getData());
+          broadcastLog(`[Share] 📄 Imported ui-meta.json (${uiMetaEntry.getData().length}B)\n`);
+        }
+
+        // 3) Extract seed files
+        const seedDir00 = path.join(SEED_DIR, '00000');
+        fs.mkdirSync(seedDir00, { recursive: true });
+        const seedEntries = entries.filter((e: any) => e.entryName.startsWith('seed/') && !e.isDirectory);
+        for (const entry of seedEntries) {
+          const relativePath = entry.entryName.replace(/^seed\//, '');
+          // Root-level files (index.dat, proof.index.dat) go to SEED_DIR
+          // Sub-files (00000/*) go to SEED_DIR/00000/
+          const destPath = relativePath.includes('/')
+            ? path.join(SEED_DIR, relativePath)
+            : path.join(SEED_DIR, relativePath);
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          fs.writeFileSync(destPath, entry.getData());
+          broadcastLog(`[Share] 🌱 Imported seed: ${relativePath} (${entry.getData().length}B)\n`);
+        }
+
+        // 4) Clean runtime/generated data so next start performs a true join
+        // with imported preset + seed (prevents carrying over old chain/addresses).
+        const dirsToClean = ['databases', 'nodes', 'docker', 'gateways'];
+        for (const dir of dirsToClean) {
+          const dirPath = path.join(TARGET_DIR, dir);
+          if (fs.existsSync(dirPath)) {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            broadcastLog(`[Share] 🧹 Removed stale ${dir}/\n`);
+          }
+        }
+        for (const file of ['preset.yml', 'addresses.yml']) {
+          const filePath = path.join(TARGET_DIR, file);
+          if (fs.existsSync(filePath)) {
+            fs.rmSync(filePath, { force: true });
+            broadcastLog(`[Share] 🧹 Removed stale ${file}\n`);
+          }
+        }
+        const targetNemesisDir = path.join(TARGET_DIR, 'nemesis');
+        if (fs.existsSync(targetNemesisDir)) {
+          fs.rmSync(targetNemesisDir, { recursive: true, force: true });
+          broadcastLog('[Share] 🧹 Removed stale nemesis/\n');
+        }
+
+        // 4b) Patch peerNodeUrls in imported custom-preset.yml so the joining
+        //     node peers with the ORIGIN (not itself).
+        //     sourceNodeHint in metadata.json is the exporter's REST URL.
+        const importOriginUrl: string = (metadata.sourceNodeHint as string) || '';
+        if (importOriginUrl) {
+          try {
+            const importedPreset = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+            if (importedPreset && Array.isArray(importedPreset.nodes)) {
+              (importedPreset.nodes as Record<string, unknown>[]).forEach((node) => {
+                (node as Record<string, unknown>).peerNodeUrls = importOriginUrl;
+              });
+              fs.writeFileSync(PRESET_PATH, yaml.dump(importedPreset, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
+              broadcastLog(`[Share] 🔗 Set nodes[].peerNodeUrls → ${importOriginUrl}\n`);
+            }
+          } catch (e: any) {
+            broadcastLog(`[Share] ⚠️  Could not patch peerNodeUrls in preset: ${e.message}\n`);
+          }
+          // Also update sourceNodeUrl in ui-meta.json so Step 4c's peer fetch
+          // also uses the correct origin URL.
+          try {
+            if (fs.existsSync(UI_META_PATH)) {
+              const uiMetaImport = parseJsonFile(UI_META_PATH);
+              uiMetaImport.sourceNodeUrl = importOriginUrl;
+              fs.writeFileSync(UI_META_PATH, JSON.stringify(uiMetaImport, null, 2), 'utf-8');
+              broadcastLog(`[Share] 🔗 Updated ui-meta.json sourceNodeUrl → ${importOriginUrl}\n`);
+            }
+          } catch { /* ignore */ }
+        } else {
+          broadcastLog('[Share] ℹ️  No sourceNodeHint in package — peerNodeUrls not patched (set manually in Config)\n');
+        }
+
+        // 5) Build response with imported config for UI
+        let importedConfig: Record<string, unknown> = {};
+        try {
+          const presetData = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          // Flatten if nested
+          if (presetData && presetData.networkProperties) {
+            importedConfig = bootstrapPresetToFlat(presetData);
+          } else {
+            importedConfig = presetData ?? {};
+          }
+          // Merge UI metadata
+          if (fs.existsSync(UI_META_PATH)) {
+            const meta = parseJsonFile(UI_META_PATH);
+            importedConfig = { ...meta, ...importedConfig };
+          }
+        } catch { /* ignore parse errors */ }
+
+        broadcastLog(`[Share] ✅ Network package imported successfully\n`);
+        res.json({
+          success: true,
+          metadata,
+          config: importedConfig,
+          seedFiles: seedEntries.map((e: any) => e.entryName),
+        });
+      } catch (err: any) {
+        broadcastLog(`[Share] ❌ Import failed: ${err.message}\n`);
+        res.status(400).json({ error: `Failed to process ZIP: ${err.message}` });
+      }
+    });
+    req.on('error', (err) => {
+      res.status(500).json({ error: err.message });
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Backup / Restore endpoints
+// =============================================================================
+
+/** GET /api/backup — download a ZIP containing node identity files */
+app.get('/api/backup', (_req, res) => {
+  try {
+    broadcastLog('[Backup] Creating node backup ZIP...\n');
+
+    // Collect files to backup
+    const filesToBackup: { diskPath: string; zipPath: string }[] = [];
+
+    // 1) custom-preset.yml
+    if (fs.existsSync(PRESET_PATH)) {
+      filesToBackup.push({ diskPath: PRESET_PATH, zipPath: 'custom-preset.yml' });
+    } else {
+      return res.status(400).json({ error: 'custom-preset.yml not found. Start your node at least once first.' });
+    }
+
+    // 2) .ui-meta.json (UI metadata — preset/assembly/version)
+    if (fs.existsSync(UI_META_PATH)) {
+      filesToBackup.push({ diskPath: UI_META_PATH, zipPath: 'ui-meta.json' });
+    }
+
+    // 3) addresses.yml
+    const addressesPath = path.join(TARGET_DIR, 'addresses.yml');
+    if (fs.existsSync(addressesPath)) {
+      filesToBackup.push({ diskPath: addressesPath, zipPath: 'addresses.yml' });
+    } else {
+      broadcastLog('[Backup] ⚠️  addresses.yml not found — skipping (not yet generated?)\n');
+    }
+
+    // 4) nemesis/seed directory
+    const nemesisSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+    if (fs.existsSync(nemesisSeedDir)) {
+      const seedFiles = fs.readdirSync(nemesisSeedDir);
+      for (const f of seedFiles) {
+        const fp = path.join(nemesisSeedDir, f);
+        if (fs.statSync(fp).isFile()) {
+          filesToBackup.push({ diskPath: fp, zipPath: `nemesis/seed/00000/${f}` });
+        }
+      }
+    }
+
+    // Also check for seed index files at parent level
+    const nemesisSeedParent = path.join(TARGET_DIR, 'nemesis', 'seed');
+    for (const f of ['index.dat', 'proof.index.dat']) {
+      const fp = path.join(nemesisSeedParent, f);
+      if (fs.existsSync(fp)) {
+        filesToBackup.push({ diskPath: fp, zipPath: `nemesis/seed/${f}` });
+      }
+    }
+
+    // 5) nemesis/transactions directory
+    const nemesisTxDir = path.join(TARGET_DIR, 'nemesis', 'transactions');
+    if (fs.existsSync(nemesisTxDir)) {
+      const txFiles = fs.readdirSync(nemesisTxDir);
+      for (const f of txFiles) {
+        const fp = path.join(nemesisTxDir, f);
+        if (fs.statSync(fp).isFile()) {
+          filesToBackup.push({ diskPath: fp, zipPath: `nemesis/transactions/${f}` });
+        }
+      }
+    }
+
+    // Build backup metadata
+    const backupMeta = {
+      formatVersion: 1,
+      type: 'node-backup',
+      createdAt: new Date().toISOString(),
+      files: filesToBackup.map((f) => f.zipPath),
+    };
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `node-backup-${timestamp}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err: Error) => {
+      broadcastLog(`[Backup] ❌ Error: ${err.message}\n`);
+      if (!res.headersSent) res.status(500).end();
+    });
+    archive.pipe(res);
+
+    // Add metadata
+    archive.append(JSON.stringify(backupMeta, null, 2), { name: 'backup-meta.json' });
+
+    // Add all files
+    for (const f of filesToBackup) {
+      archive.file(f.diskPath, { name: f.zipPath });
+    }
+
+    archive.finalize();
+    broadcastLog(`[Backup] ✅ Exporting backup: ${filename} (${filesToBackup.length} files)\n`);
+  } catch (err: any) {
+    broadcastLog(`[Backup] ❌ Failed: ${err.message}\n`);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/backup/status — check which backup files are available */
+app.get('/api/backup/status', (_req, res) => {
+  const addressesPath = path.join(TARGET_DIR, 'addresses.yml');
+  const nemesisSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+  const nemesisTxDir = path.join(TARGET_DIR, 'nemesis', 'transactions');
+
+  const hasPreset = fs.existsSync(PRESET_PATH);
+  const hasAddresses = fs.existsSync(addressesPath);
+  const hasSeed = fs.existsSync(nemesisSeedDir) && fs.readdirSync(nemesisSeedDir).length > 0;
+  const hasTx = fs.existsSync(nemesisTxDir) && fs.readdirSync(nemesisTxDir).length > 0;
+
+  res.json({
+    canBackup: hasPreset,
+    files: {
+      'custom-preset.yml': hasPreset,
+      'addresses.yml': hasAddresses,
+      'nemesis/seed/': hasSeed,
+      'nemesis/transactions/': hasTx,
+    },
+    nodeState: networkStatus.state,
+  });
+});
+
+/** POST /api/restore — upload a backup ZIP and restore node identity */
+app.post('/api/restore', (req, res) => {
+  // Only allow restore when node is stopped
+  if (networkStatus.state !== 'stopped') {
+    return res.status(409).json({
+      error: 'Node must be stopped before restoring. Please stop the node first.',
+    });
+  }
+
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', async () => {
+    try {
+      const zipBuf = Buffer.concat(chunks);
+      if (zipBuf.length < 4) {
+        return res.status(400).json({ error: 'Empty or invalid ZIP file.' });
+      }
+
+      const zip = new AdmZip(zipBuf);
+      const entries = zip.getEntries();
+      const entryNames = entries.map((e: any) => e.entryName);
+
+      broadcastLog(`[Restore] Received backup ZIP (${(zipBuf.length / 1024).toFixed(1)} KB, ${entries.length} entries)\n`);
+
+      // Validate: must contain custom-preset.yml
+      if (!entryNames.includes('custom-preset.yml')) {
+        return res.status(400).json({ error: 'Invalid backup: custom-preset.yml not found.' });
+      }
+
+      // ── Step 0: Clean existing runtime data ──────────────────────────
+      // We must remove blockchain data, databases, generated configs, and
+      // docker-compose files so that `symbol-bootstrap start` performs a
+      // fresh config/compose/run cycle instead of --upgrade (which would
+      // keep incompatible blocks from a different network).
+      broadcastLog('[Restore] 🧹 Cleaning existing runtime data in target directory...\n');
+
+      const { execSync } = await import('child_process');
+
+      // Stop any lingering Docker containers that may hold file locks
+      const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+      if (fs.existsSync(composePath)) {
+        try {
+          execSync(`docker compose -f "${composePath}" down --remove-orphans 2>/dev/null || true`, {
+            timeout: 60_000,
+            stdio: 'pipe',
+          });
+          broadcastLog('[Restore] Stopped leftover containers\n');
+        } catch { /* ignore */ }
+      }
+
+      // Directories to remove (runtime/generated data)
+      const dirsToClean = ['databases', 'nodes', 'docker', 'gateways'];
+      for (const dir of dirsToClean) {
+        const dirPath = path.join(TARGET_DIR, dir);
+        if (fs.existsSync(dirPath)) {
+          fs.rmSync(dirPath, { recursive: true, force: true });
+          broadcastLog(`[Restore] 🗑️  Removed ${dir}/\n`);
+        }
+      }
+
+      // Remove generated preset.yml (will be regenerated by config step)
+      const generatedPreset = path.join(TARGET_DIR, 'preset.yml');
+      if (fs.existsSync(generatedPreset)) {
+        fs.unlinkSync(generatedPreset);
+        broadcastLog('[Restore] 🗑️  Removed preset.yml (generated)\n');
+      }
+
+      // Remove existing nemesis directory (will be replaced by backup)
+      const nemesisDir = path.join(TARGET_DIR, 'nemesis');
+      if (fs.existsSync(nemesisDir)) {
+        fs.rmSync(nemesisDir, { recursive: true, force: true });
+        broadcastLog('[Restore] 🗑️  Removed nemesis/\n');
+      }
+
+      // Remove existing addresses.yml (will be replaced by backup)
+      const existingAddresses = path.join(TARGET_DIR, 'addresses.yml');
+      if (fs.existsSync(existingAddresses)) {
+        fs.unlinkSync(existingAddresses);
+      }
+
+      broadcastLog('[Restore] ✅ Runtime data cleaned\n');
+
+      // ── Step 1: Restore files from backup ────────────────────────────
+      const restoredFiles: string[] = [];
+
+      // Ensure TARGET_DIR exists
+      fs.mkdirSync(TARGET_DIR, { recursive: true });
+
+      // 1) Restore custom-preset.yml
+      const presetEntry = zip.getEntry('custom-preset.yml');
+      if (presetEntry) {
+        fs.writeFileSync(PRESET_PATH, presetEntry.getData());
+        restoredFiles.push('custom-preset.yml');
+        broadcastLog(`[Restore] 📄 custom-preset.yml (${presetEntry.getData().length}B)\n`);
+      }
+
+      // 2) Restore ui-meta.json
+      const uiMetaEntry = zip.getEntry('ui-meta.json');
+      if (uiMetaEntry) {
+        fs.writeFileSync(UI_META_PATH, uiMetaEntry.getData());
+        restoredFiles.push('ui-meta.json');
+        broadcastLog(`[Restore] 📄 ui-meta.json (${uiMetaEntry.getData().length}B)\n`);
+      }
+
+      // 3) Restore addresses.yml
+      const addressesEntry = zip.getEntry('addresses.yml');
+      if (addressesEntry) {
+        const destPath = path.join(TARGET_DIR, 'addresses.yml');
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, addressesEntry.getData());
+        restoredFiles.push('addresses.yml');
+        broadcastLog(`[Restore] 🔑 addresses.yml (${addressesEntry.getData().length}B)\n`);
+      }
+
+      // 4) Restore nemesis/seed files
+      const seedEntries = entries.filter(
+        (e: any) => e.entryName.startsWith('nemesis/seed/') && !e.isDirectory,
+      );
+      for (const entry of seedEntries) {
+        const destPath = path.join(TARGET_DIR, entry.entryName);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+        restoredFiles.push(entry.entryName);
+        broadcastLog(`[Restore] 🌱 ${entry.entryName} (${entry.getData().length}B)\n`);
+      }
+
+      // 5) Restore nemesis/transactions files
+      const txEntries = entries.filter(
+        (e: any) => e.entryName.startsWith('nemesis/transactions/') && !e.isDirectory,
+      );
+      for (const entry of txEntries) {
+        const destPath = path.join(TARGET_DIR, entry.entryName);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+        restoredFiles.push(entry.entryName);
+        broadcastLog(`[Restore] 📦 ${entry.entryName} (${entry.getData().length}B)\n`);
+      }
+
+      // Also copy seed files to SEED_DIR for the share/join system
+      const seedDir00 = path.join(SEED_DIR, '00000');
+      fs.mkdirSync(seedDir00, { recursive: true });
+      for (const entry of seedEntries) {
+        const relativePath = entry.entryName.replace(/^nemesis\/seed\//, '');
+        const destPath = path.join(SEED_DIR, relativePath);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+      }
+
+      broadcastLog(`[Restore] ✅ Restored ${restoredFiles.length} files successfully\n`);
+      broadcastLog('[Restore] ℹ️  Runtime data was cleared. Start the node to regenerate configs and sync from scratch.\n');
+
+      res.json({
+        success: true,
+        restoredFiles,
+        message: 'Backup restored successfully. Existing data was cleared. Start the node to apply.',
+      });
+    } catch (err: any) {
+      broadcastLog(`[Restore] ❌ Failed: ${err.message}\n`);
+      res.status(400).json({ error: `Failed to process backup ZIP: ${err.message}` });
+    }
+  });
+  req.on('error', (err) => {
+    res.status(500).json({ error: err.message });
+  });
+});
+
+// =============================================================================
 // Command endpoints
 // =============================================================================
 
 app.post('/api/commands/start', async (req, res) => {
   try {
-    const { password } = req.body;
+    const { password, mode: requestedMode } = req.body as { password?: string; mode?: string };
     if (!password) {
       return res.status(400).json({ error: 'Network encryption password is required.' });
     }
@@ -2328,15 +6189,245 @@ app.post('/api/commands/start', async (req, res) => {
     broadcastLog(`[System] Base preset: ${basePreset}, Assembly: ${assembly}\n`);
 
     // ---------------------------------------------------------------
-    // We split "start" into  config → patch → compose → run
-    // because symbol-bootstrap 1.1.10 does NOT generate all properties
-    // that catapult v1.0.3.9 expects in [cache_database] of config-node.properties.
-    // (Missing: maxLogFiles, maxLogFileSize)
+    // Determine start mode
     //
-    // "start" internally does config → compose → run, but we need to
-    // inject a patch step between config and compose.
+    //   restart  – Node was previously started and data is intact.
+    //              Just do: symbol-bootstrap stop → symbol-bootstrap run.
+    //              No config, no compose, no cleanup.
+    //
+    //   full     – First-time start, or config changed, or post-restore.
+    //              Full sequence: config → compose → run (with patches).
+    //
+    // The caller can force a mode via `mode` body parameter.
+    // Otherwise we auto-detect:
+    //   - dataExists AND generatedPresetExists AND composeExists → "restart"
+    //   - otherwise → "full"
     // ---------------------------------------------------------------
+    const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
+    const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
+    const composeExists = fs.existsSync(path.join(TARGET_DIR, 'docker', 'docker-compose.yml'));
+
+    let startMode: 'restart' | 'full';
+    if (requestedMode === 'full' || requestedMode === 'restart') {
+      startMode = requestedMode;
+    } else {
+      // Auto-detect
+      startMode = (dataExists && generatedPresetExists && composeExists) ? 'restart' : 'full';
+    }
+
+    broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
+    broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists})\n`);
     const startSequence = async () => {
+
+      // =================================================================
+      // RESTART mode: simple stop → run, no config/compose/cleanup
+      //
+      //   This is the safe path for Stop → Start.  All data files
+      //   (statedb, spool, databases, block data) are left intact.
+      //   symbol-bootstrap stop ensures a clean shutdown,
+      //   symbol-bootstrap run brings everything back up.
+      // =================================================================
+      if (startMode === 'restart') {
+        broadcastLog('[System] ▶ Restart mode — using stop + run (no config/compose/cleanup)\n');
+
+        // 1. Stop any running containers cleanly
+        broadcastLog('[System] Step 1/3 – Stopping containers (symbol-bootstrap stop)...\n');
+        try {
+          await runBootstrapCommand('stop', [], {
+            stateWhileRunning: 'starting',
+            stateOnSuccess: 'starting',
+          });
+        } catch (e: any) {
+          broadcastLog(`[System] Stop warning (non-fatal): ${e.message}\n`);
+        }
+
+        // 2. Minimal lock cleanup — only needed if stop didn't shut down cleanly.
+        //    We do NOT touch spool, statedb, databases, state, etc.
+        {
+          const nodesDirRestart = path.join(TARGET_DIR, 'nodes');
+          if (fs.existsSync(nodesDirRestart)) {
+            for (const nodeName of fs.readdirSync(nodesDirRestart)) {
+              const dataDir = path.join(nodesDirRestart, nodeName, 'data');
+              if (!fs.existsSync(dataDir)) continue;
+
+              // Remove lock files (safety net after unclean stop)
+              for (const file of fs.readdirSync(dataDir)) {
+                if (file.endsWith('.lock')) {
+                  try {
+                    fs.unlinkSync(path.join(dataDir, file));
+                    broadcastLog(`[Cleanup] Removed lock: ${nodeName}/data/${file}\n`);
+                  } catch { /* ignore */ }
+                }
+              }
+              // Remove recovery flag
+              const recFlag = path.join(dataDir, 'server-recovery.started');
+              if (fs.existsSync(recFlag)) {
+                try { fs.unlinkSync(recFlag); } catch { /* ignore */ }
+                broadcastLog(`[Cleanup] Removed recovery flag: ${nodeName}\n`);
+              }
+
+              // Fix index.dat — if a crash left an unindexed block file,
+              // update index.dat so catapult sees cache == storage height.
+              const indexDatPath = path.join(dataDir, 'index.dat');
+              const blockDir = path.join(dataDir, '00000');
+              if (fs.existsSync(indexDatPath) && fs.existsSync(blockDir)) {
+                try {
+                  const indexBuf = fs.readFileSync(indexDatPath);
+                  const chainHeight = Number(indexBuf.readBigUInt64LE(0));
+                  let maxHeight = chainHeight;
+                  while (fs.existsSync(path.join(blockDir, String(maxHeight + 1).padStart(5, '0') + '.dat'))) {
+                    maxHeight++;
+                  }
+                  if (maxHeight > chainHeight) {
+                    const newBuf = Buffer.alloc(8);
+                    newBuf.writeBigUInt64LE(BigInt(maxHeight), 0);
+                    fs.writeFileSync(indexDatPath, newBuf);
+                    broadcastLog(`[Cleanup] index.dat updated: height ${chainHeight} → ${maxHeight}\n`);
+                  }
+                } catch (e: any) {
+                  broadcastLog(`[Cleanup] ⚠️ index.dat fix failed: ${e.message}\n`);
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Re-apply rest-gateway hostname patch (in case compose file was regenerated)
+        patchRestGatewayHostname(TARGET_DIR);
+
+        // 3b. Apply Docker Host Mode patches (also needed on quick restart)
+        patchDockerHostMode(TARGET_DIR);
+
+        // 4. Run containers
+        broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
+        await runBootstrapCommand('run', ['-d'], {
+          stateWhileRunning: 'starting',
+          stateOnSuccess: 'running',
+        });
+
+        // 5. Re-apply rest-gateway patch + host mode patch + recreate (run may overwrite compose)
+        {
+          const composePath5b = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+          patchRestGatewayHostname(TARGET_DIR);
+          patchDockerHostMode(TARGET_DIR);
+          if (fs.existsSync(composePath5b)) {
+            try {
+              const { execSync: execSync5b } = await import('child_process');
+              // When host mode is active, recreate api-node-0 and broker too
+              // (they need the network_mode: host change applied)
+              if (isDockerHostMode()) {
+                execSync5b(
+                  `docker compose -f "${composePath5b}" up -d --force-recreate api-node-0 broker rest-gateway 2>&1 || true`,
+                  { timeout: 120_000, stdio: 'pipe' },
+                );
+                broadcastLog('[System] api-node-0, broker, rest-gateway recreated (host mode) ✓\n');
+              } else {
+                execSync5b(
+                  `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
+                  { timeout: 60_000, stdio: 'pipe' },
+                );
+                broadcastLog('[System] rest-gateway recreated ✓\n');
+              }
+            } catch { /* non-fatal */ }
+          }
+        }
+
+        // 6. Health check
+        broadcastLog('\n[System] Step 3/3 – Waiting for node health...\n');
+        try {
+          const { execSync } = await import('child_process');
+          execSync('docker network connect docker_default symbol-manager 2>/dev/null || true');
+          NODE_REST_HOST = 'rest-gateway';
+          broadcastLog('[System] Joined docker_default network — REST host set to rest-gateway.\n');
+        } catch { /* already connected */ }
+        broadcastLog(`[System] Polling http://${NODE_REST_HOST}:${NODE_REST_PORT}/node/health ...\n`);
+        await waitForNodeHealth(90);
+
+        // Auto-restart Explorer if needed
+        if (isExplorerRunning() || explorerBuildStatus === 'built') {
+          try {
+            if (isExplorerRunning()) {
+              broadcastLog('[Explorer] ♻️ ノード再起動を検出 — Explorerを自動再起動します...\n');
+              const ns = readExplorerNamespaceFromPreset();
+              const prevName = explorerNetworkName;
+              const prevExtHost = explorerExternalHost;
+              await startExplorerContainer(ns.namespaceName, ns.divisibility, 8090, prevName, prevExtHost);
+            }
+          } catch (e: any) {
+            broadcastLog(`[Explorer] ⚠️ 自動再起動に失敗: ${e.message}\n`);
+          }
+        }
+
+        return;  // Done — skip the full sequence below
+      }
+
+      // =================================================================
+      // FULL mode: config → patch → compose → run
+      //
+      //   Used for first-time start, config changes, post-restore, etc.
+      //   This is the original full sequence.
+      // =================================================================
+      broadcastLog('[System] ▶ Full mode — running config → compose → run\n');
+
+      // ---------------------------------------------------------------
+      // Pre-Step: Stop lingering containers & remove lock files
+      //
+      //   Full mode is used for first-time start (empty TARGET_DIR),
+      //   post-restore, or forced reconfiguration.  Data files are
+      //   either absent or already cleaned by the caller.
+      //   We only need to stop any lingering containers and remove
+      //   stale lock/recovery files so catapult starts cleanly.
+      // ---------------------------------------------------------------
+      {
+        broadcastLog('[System] Pre-Step – Stopping lingering containers...\n');
+        const { execSync: execSyncPre } = await import('child_process');
+
+        // 1. docker compose down (if compose file exists)
+        const composePathPre = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        if (fs.existsSync(composePathPre)) {
+          try {
+            execSyncPre(
+              `docker compose -f "${composePathPre}" down --remove-orphans 2>&1 || true`,
+              { timeout: 90_000, stdio: 'pipe' },
+            );
+            broadcastLog('[System] Pre-Step – compose down complete.\n');
+          } catch (e: any) {
+            broadcastLog(`[Cleanup] Pre-Step – compose down warning: ${e.message}\n`);
+          }
+        }
+
+        // 2. Explicit docker stop by known container names (fallback)
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'broker', 'rest-gateway', 'db']) {
+          try {
+            execSyncPre(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
+          } catch { /* ignore */ }
+        }
+
+        // 3. Remove lock files and recovery flags from any existing nodes
+        const nodesDirPre = path.join(TARGET_DIR, 'nodes');
+        if (fs.existsSync(nodesDirPre)) {
+          for (const nodeName of fs.readdirSync(nodesDirPre)) {
+            const dataDir = path.join(nodesDirPre, nodeName, 'data');
+            if (!fs.existsSync(dataDir)) continue;
+            for (const file of fs.readdirSync(dataDir)) {
+              if (file.endsWith('.lock')) {
+                try {
+                  fs.unlinkSync(path.join(dataDir, file));
+                  broadcastLog(`[Cleanup] Removed lock: ${nodeName}/data/${file}\n`);
+                } catch { /* ignore */ }
+              }
+            }
+            const recoveryFlag = path.join(dataDir, 'server-recovery.started');
+            if (fs.existsSync(recoveryFlag)) {
+              try { fs.unlinkSync(recoveryFlag); } catch { /* ignore */ }
+              broadcastLog(`[Cleanup] Removed recovery flag: ${nodeName}\n`);
+            }
+          }
+        }
+
+        broadcastLog('[Cleanup] Pre-Step complete. ✓\n');
+      }
+
       // Step 0: Resolve catapult version
       const version = resolveVersion();
       broadcastLog(`[System] Catapult version: ${version.id} (${version.serverImage})\n`);
@@ -2349,23 +6440,198 @@ app.post('/api/commands/start', async (req, res) => {
       broadcastLog('[System] Step 0/6 – Ensuring patched server image...\n');
       const patchedTag = await ensurePatchedImage(version);
 
+      // Step 0c: Pre-patch mustache templates so nemgen sees all required props
+      //   IMPORTANT: runBootstrapCommand uses `npx -y symbol-bootstrap`, so the
+      //   actual templates live in the npx cache (~/.npm/_npx/...).  This cache
+      //   is lazily created on first npx invocation.  We must prime it BEFORE
+      //   patching so resolveBootstrapTemplateDirs() can find it.
+      broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
+      try {
+        const { execSync } = require('child_process') as typeof import('child_process');
+        broadcastLog('[Pre-Patch] Priming npx cache (npx -y symbol-bootstrap --version)...\n');
+        const ver = execSync('npx -y symbol-bootstrap --version 2>&1', {
+          timeout: 60_000,
+          stdio: 'pipe',
+          cwd: '/',
+          env: { ...process.env, FORCE_COLOR: '0' },
+        }).toString().trim();
+        broadcastLog(`[Pre-Patch] npx cache primed — bootstrap version: ${ver}\n`);
+      } catch (e: any) {
+        broadcastLog(`[Pre-Patch] ⚠️  npx prime failed (non-fatal): ${e.message}\n`);
+      }
+      patchMustacheTemplates(version);
+
+      // Step 0c2: Emergency fallback — if the mustache template was not found
+      // (e.g. different bootstrap install layout on join PC), directly patch
+      // any already-generated config-node.properties files that may exist in
+      // the target dir from a previous partial run.  This handles the case
+      // where config was run previously and left nodes/ behind without maxLogFiles.
+      if (version.configPatches.length > 0) {
+        const nodesDir = path.join(TARGET_DIR, 'nodes');
+        if (fs.existsSync(nodesDir)) {
+          broadcastLog('[System] Step 0c2 – Patching any pre-existing config files (pre-nemgen)...\n');
+          patchGeneratedConfigs(TARGET_DIR, version);
+        }
+      }
+
+      // Step 0d: Single-currency mode — patch mustache template so that
+      // harvestingMosaicId outputs currencyMosaicId.  This ensures nemgen
+      // generates the nemesis block with harvestingMosaicId = currencyMosaicId
+      // and importance based on the currency supply, preventing
+      // Failure_Core_Importance_Block_Mismatch at node startup.
+      patchMustacheForSingleCurrency();
+
+      // Step 0e: Promote networkProperties.chain / plugin values to the top
+      // level of custom-preset.yml so symbol-bootstrap's mustache templates
+      // pick them up.  The templates only read FLAT (root-level) keys; nested
+      // values under networkProperties.chain are ignored for flat rendering.
+      // Without this step, bootstrap's defaults (blockGenerationTargetTime=15s,
+      // importanceGrouping=180, etc.) would override the user's settings,
+      // causing a mismatch between the generated nemesis block and
+      // config-network.properties → Failure_Core_Importance_Block_Mismatch.
+      broadcastLog('[System] Step 0e – Promoting chain/plugin overrides to preset top level...\n');
+      normalizePresetTopLevelOverrides(PRESET_PATH);
+
       // Step 1: symbol-bootstrap config  (--upgrade to force regeneration)
       //   Reads custom-preset.yml which now has the patched image name.
       //   Note: --upgrade preserves existing data but skips nemesis seed generation
       //   when data/ doesn't exist.  Only use --upgrade when data/ already exists.
-      const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000'));
+      //
+      //   Post-restore scenario: TARGET_DIR has addresses.yml + nemesis/ but
+      //   NO preset.yml or nodes/.  symbol-bootstrap sees non-empty target and
+      //   tries to upgrade, but fails without preset.yml.
+      //   --reset (-r) also fails inside Docker because it tries to rmdir
+      //   the volume mount point itself (EBUSY).
+      //   Instead, we stash the restored identity files, clear TARGET_DIR
+      //   so config sees an empty directory, then restore identity files
+      //   after config finishes.
+      // Check for the actual nemesis block file, not just the directory.
+      // An empty data/00000/ dir from a previous failed run must NOT trigger --upgrade,
+      // because --upgrade skips nemgen → the node has no genesis block → crash.
+      const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
+      const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
+      const targetHasContent = fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length > 0;
+      const needsReset = !generatedPresetExists && !dataExists && targetHasContent;
+
+      // Stash restored identity files so config sees an empty target dir
+      // NOTE: TARGET_DIR is a Docker volume mount, so fs.renameSync across
+      // to /tmp fails with EXDEV.  Use copy + delete instead.
+      const STASH_DIR = '/tmp/restore-stash';
+      if (needsReset) {
+        broadcastLog('[System] Post-restore detected: stashing identity files for clean config...\n');
+        if (fs.existsSync(STASH_DIR)) fs.rmSync(STASH_DIR, { recursive: true, force: true });
+        fs.mkdirSync(STASH_DIR, { recursive: true });
+        const items = fs.readdirSync(TARGET_DIR);
+        for (const item of items) {
+          const src = path.join(TARGET_DIR, item);
+          const dst = path.join(STASH_DIR, item);
+          const stat = fs.statSync(src);
+          if (stat.isDirectory()) {
+            fs.cpSync(src, dst, { recursive: true });
+            fs.rmSync(src, { recursive: true, force: true });
+          } else {
+            fs.copyFileSync(src, dst);
+            fs.unlinkSync(src);
+          }
+        }
+        broadcastLog(`[System] Stashed ${items.length} item(s): ${items.join(', ')}\n`);
+      }
+
       broadcastLog(`[System] Step 1/6 – Generating configuration... (upgrade=${dataExists})\n`);
+
+      // Fresh install: remove ALL bootstrap-generated values from custom-preset.yml.
+      // When TARGET_DIR was wiped (or is empty), nemgen will generate a NEW
+      // genesis block with a NEW generationHashSeed AND new mosaic IDs.
+      // If custom-preset.yml still contains values from a previous run:
+      //   - nemesisGenerationHashSeed → "nemesis block has invalid generation hash proof"
+      //   - currencyMosaicId / harvestingMosaicId → "harvesting outflows (0)
+      //     do not add up to power ten multiple of expected importance" because
+      //     the old mosaic IDs in config don't match the newly generated nemesis
+      // These will all be backfilled after config from the freshly generated preset.yml.
+      //
+      // IMPORTANT: When imported seed exists (join-node mode), these values came
+      // from the ORIGIN network and MUST be preserved.  Clearing them would cause
+      // symbol-bootstrap to generate new random values → mismatch with the
+      // imported nemesis block → "invalid generation hash proof" or
+      // "nemesis public key does not match network".
+      const hasImportedSeedForStart = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
+      if (!dataExists && !generatedPresetExists && !hasImportedSeedForStart) {
+        try {
+          const freshDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          const freshNp = freshDoc?.networkProperties as Record<string, unknown> | undefined;
+          const freshChain = (freshNp?.chain as Record<string, unknown> | undefined);
+          let cleared = false;
+
+          // Keys that are generated by nemgen / symbol-bootstrap and must NOT
+          // be pre-set when creating a brand-new custom network.
+          const NP_STALE_KEYS = ['nemesisGenerationHashSeed', 'nemesisSignerPublicKey'] as const;
+          const CHAIN_STALE_KEYS = ['currencyMosaicId', 'harvestingMosaicId'] as const;
+
+          for (const k of NP_STALE_KEYS) {
+            if (freshNp?.[k]) { delete freshNp[k]; cleared = true; }
+            if ((freshDoc as any)[k]) { delete (freshDoc as any)[k]; cleared = true; }
+          }
+          for (const k of CHAIN_STALE_KEYS) {
+            if (freshChain?.[k]) { delete freshChain[k]; cleared = true; }
+            if ((freshDoc as any)[k]) { delete (freshDoc as any)[k]; cleared = true; }
+          }
+
+          if (cleared) {
+            fs.writeFileSync(PRESET_PATH, yaml.dump(freshDoc, { lineWidth: -1 }), 'utf-8');
+            broadcastLog('[System] Cleared stale bootstrap-generated values from custom-preset.yml (fresh install).\n');
+          }
+        } catch (e: any) {
+          broadcastLog(`[System] ⚠️  Could not clear stale keys: ${e.message}\n`);
+        }
+      } else if (hasImportedSeedForStart) {
+        broadcastLog('[System] 📦 Join mode detected (imported seed exists) — preserving network identity keys in custom-preset.yml.\n');
+      }
+
       const configArgs = [
         '-p', basePreset,
         '-a', assembly,
         '-c', 'custom-preset.yml',
         '--password', password,
       ];
-      if (dataExists) configArgs.push('--upgrade');
+      if (dataExists) {
+        configArgs.push('--upgrade');
+      }
+      // needsReset: target was cleared above, no flag needed
       await runBootstrapCommand('config', configArgs, {
         stateWhileRunning: 'starting',
         stateOnSuccess: 'starting',
       });
+
+      // After config, restore stashed identity files (overwrite generated ones)
+      if (needsReset && fs.existsSync(STASH_DIR)) {
+        // Restore addresses.yml (node private keys)
+        const addrSrc = path.join(STASH_DIR, 'addresses.yml');
+        if (fs.existsSync(addrSrc)) {
+          fs.copyFileSync(addrSrc, path.join(TARGET_DIR, 'addresses.yml'));
+          broadcastLog('[System] ✅ Restored backed-up addresses.yml (node identity preserved).\n');
+        }
+        // Restore nemesis/ directory (genesis block data) — ONLY if there is
+        // a real backed-up addresses.yml (= this is a genuine backup-restore
+        // scenario, not just stale crash debris).  When addresses.yml is absent
+        // from the stash, nemesis was just leftover from a previous failed run
+        // and the freshly-generated nemesis from nemgen should be kept.
+        const nemSrc = path.join(STASH_DIR, 'nemesis');
+        if (fs.existsSync(nemSrc) && fs.existsSync(addrSrc)) {
+          const nemDst = path.join(TARGET_DIR, 'nemesis');
+          if (fs.existsSync(nemDst)) fs.rmSync(nemDst, { recursive: true, force: true });
+          fs.cpSync(nemSrc, nemDst, { recursive: true });
+          broadcastLog('[System] ✅ Restored backed-up nemesis/ directory.\n');
+        } else if (fs.existsSync(nemSrc)) {
+          broadcastLog('[System] ⚠️  Skipped stale nemesis/ restore (no addresses.yml in stash — using freshly generated nemesis).\n');
+        }
+        // Clean up stash
+        fs.rmSync(STASH_DIR, { recursive: true, force: true });
+      }
+
+      // Step 1b: Read generated MosaicIDs from config-network.properties
+      //   and backfill them into custom-preset.yml for export/UI display.
+      broadcastLog('[System] Step 1b – Reading generated MosaicIDs...\n');
+      backfillMosaicIds(TARGET_DIR);
 
       // Step 2: Rewrite generated preset + configs with patched image
       //   Must happen AFTER config so the generated preset.yml exists,
@@ -2393,21 +6659,45 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 4b: ALWAYS force-patch docker-compose.yml images to match custom-preset.yml
       broadcastLog('[System] Step 4b – Patching docker-compose.yml images...\n');
       forceCorrectDockerComposeImages(TARGET_DIR);
+      patchRestGatewayHostname(TARGET_DIR);
+      patchStopGracePeriod(TARGET_DIR);
+      patchRestJsonApiNodeHost(TARGET_DIR);
+      patchDockerHostMode(TARGET_DIR);
 
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
       let sourceUrl: string | undefined;
+      let manualPeerUrls: string[] = [];
       try {
         const meta = fs.existsSync(UI_META_PATH)
           ? JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'))
           : {};
         sourceUrl = meta.sourceNodeUrl;
+        manualPeerUrls = readManualPeerUrlsFromPreset(PRESET_PATH);
         if (sourceUrl) {
           broadcastLog('[System] Step 4c – Fetching peers from source node...\n');
           await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
         }
+        if (manualPeerUrls.length > 0) {
+          broadcastLog('[System] Step 4c – Merging peers from node-level Peer Node URLs...\n');
+          await mergeManualPeerUrlsIntoPeerFiles(TARGET_DIR, manualPeerUrls);
+        }
       } catch (e: any) {
         broadcastLog(`[Peers] ⚠️  Peer fetch failed (non-fatal): ${e.message}\n`);
+      }
+
+      // Step 4c3: Refresh live peer public keys.
+      //   symbol-bootstrap config regenerates peers-p2p.json with keys stored
+      //   in its internal network config.  If a peer was rebuilt (new keypair),
+      //   the stored key is stale → Verify_Error on every P2P connection.
+      //   This step fetches each peer's actual public key via their REST API
+      //   (port 3000) and patches peers-p2p.json if the key has changed.
+      //   Runs for ALL nodes (not just join-nodes) and is non-fatal.
+      try {
+        broadcastLog('[System] Step 4c3 – Refreshing live peer public keys...\n');
+        await refreshLivePeerKeys(TARGET_DIR);
+      } catch (e: any) {
+        broadcastLog(`[Peers] ⚠️  Peer key refresh failed (non-fatal): ${e.message}\n`);
       }
 
       // Step 4c2: Patch config-node.properties so that the Docker subnet is
@@ -2419,7 +6709,7 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 4d: Install nemesis seed data
       //   Priority: 1) Imported seed files from network admin (shared/seed/)
       //             2) REST API reconstruction (fallback, may not work for all networks)
-      if (sourceUrl) {
+      {
         const importedSeedDir = path.join(SEED_DIR, '00000');
         const hasImportedSeed = fs.existsSync(path.join(importedSeedDir, '00001.dat'));
         if (hasImportedSeed) {
@@ -2430,7 +6720,7 @@ app.post('/api/commands/start', async (req, res) => {
             broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
             broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
           }
-        } else {
+        } else if (sourceUrl) {
           try {
             broadcastLog('[System] Step 4d – No imported seed found; attempting REST API reconstruction...\n');
             await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl);
@@ -2438,7 +6728,190 @@ app.post('/api/commands/start', async (req, res) => {
             broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
             broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
           }
+        } else {
+          broadcastLog('[System] Step 4d – No imported seed and no source node URL; using local generation.\n');
         }
+      }
+
+      // Step 4e: Guarantee genesis block data exists in each node's seed/00000/.
+      //
+      //   The catapult container's start.sh (and the catapult binary itself)
+      //   copies seed/00000/* → data/00000/ on first boot.  If we pre-populate
+      //   data/00000/ here, catapult's copy uses std::filesystem::copy_file
+      //   (no-overwrite) and crashes with "cannot copy file: File exists".
+      //
+      //   Therefore:
+      //     - ALWAYS update nodes/*/seed/00000/ (the copy SOURCE)
+      //     - Only update data/00000/ when it already has content (upgrade/
+      //       restart scenario where the container would SKIP the copy).
+      //   On a fresh start data/00000/ is empty → container handles the copy.
+      {
+        const nemSeedDir00 = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
+        const nodesBaseDir  = path.join(TARGET_DIR, 'nodes');
+        const seed00001     = path.join(nemSeedDir00, '00001.dat');
+        if (fs.existsSync(seed00001) && fs.existsSync(nodesBaseDir)) {
+          broadcastLog('[System] Step 4e – Installing genesis block to node seed directories...\n');
+          const seedFiles = fs.readdirSync(nemSeedDir00);
+          for (const nodeName of fs.readdirSync(nodesBaseDir)) {
+            const nodeDir       = path.join(nodesBaseDir, nodeName);
+            const nodeSeedDir00 = path.join(nodeDir, 'seed', '00000');
+            const nodeDataDir   = path.join(nodeDir, 'data');
+            const nodeDataDir00 = path.join(nodeDataDir, '00000');
+
+            // Always update the node's seed/ directory (catapult's copy source)
+            fs.mkdirSync(nodeSeedDir00, { recursive: true });
+            for (const f of seedFiles) {
+              fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeSeedDir00, f));
+            }
+            broadcastLog(`[System] ✅ ${nodeName}/seed/00000/ updated: ${seedFiles.join(', ')}\n`);
+
+            // Only force-update data/00000/ on upgrade/restart (non-empty data dir).
+            // On fresh start, leave data/00000/ empty so the container's own
+            // seed→data copy works without EEXIST conflicts.
+            const dataHasBlocks = fs.existsSync(path.join(nodeDataDir00, '00001.dat'));
+            if (dataHasBlocks) {
+              for (const f of seedFiles) {
+                // Skip overwriting hashes.dat if the existing one is larger —
+                // it contains hashes for blocks generated beyond genesis.
+                // Overwriting with the shorter seed version causes:
+                //   "couldn't seek past end of file ./data/00000/hashes.dat"
+                if (f === 'hashes.dat') {
+                  const existingPath = path.join(nodeDataDir00, f);
+                  if (fs.existsSync(existingPath)) {
+                    const existingSize = fs.statSync(existingPath).size;
+                    const seedSize = fs.statSync(path.join(nemSeedDir00, f)).size;
+                    if (existingSize >= seedSize) {
+                      broadcastLog(`[System]   Skipping hashes.dat (existing ${existingSize}B ≥ seed ${seedSize}B)\n`);
+                      continue;
+                    }
+                  }
+                }
+                fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeDataDir00, f));
+              }
+              broadcastLog(`[System] ✅ ${nodeName}/data/00000/ updated (upgrade mode)\n`);
+            }
+
+            // Remove stale lock files (prevents false recovery-mode on startup)
+            for (const lf of ['server.lock', 'broker.lock', 'recovery.lock']) {
+              const lfPath = path.join(nodeDataDir, lf);
+              if (fs.existsSync(lfPath)) {
+                fs.rmSync(lfPath, { force: true });
+                broadcastLog(`[System]   Removed stale lock: ${lf}\n`);
+              }
+            }
+          }
+        } else {
+          broadcastLog('[System] Step 4e – nemesis/seed/00000/00001.dat not found, skipping\n');
+        }
+      }
+
+      // Step 4f: Re-apply generationHashSeed from custom-preset.yml to all
+      //   config-network.properties files (nodes + gateways).
+      //   At this point gateways/ already exists (created by Step 4 compose).
+      //   This is the final safety net for join-PC scenarios where a previous
+      //   bootstrap run generated a different genesis hash:
+      //     • Step 1b already patched nodes/ (before compose)
+      //     • Step 4c patched both nodes/ and gateways/ via fetchAndWritePeerFiles
+      //       (only when sourceUrl was reachable at start time)
+      //     • This step guarantees gateways/ are correct even if Step 4c failed
+      //       or sourceUrl was not set, by reading directly from custom-preset.yml.
+      {
+        try {
+          const presetDocForHash = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          const npForHash = presetDocForHash?.networkProperties as Record<string, unknown> | undefined;
+          const hashForStep4f = (npForHash?.nemesisGenerationHashSeed as string | undefined)?.trim()?.toUpperCase();
+          // In join-node mode, also enforce correct mosaic IDs from custom-preset.yml.
+          // backfillMosaicIds (Step 1b) already patched nodes/ but gateways/ was not
+          // yet created at that point.  Re-apply here now that gateways/ exists.
+          const chainForStep4f = (npForHash?.chain as Record<string, unknown> | undefined) ?? {};
+          const currencyFor4f  = String(chainForStep4f.currencyMosaicId  ?? '').trim();
+          const harvestFor4f   = String(chainForStep4f.harvestingMosaicId ?? '').trim();
+          const patchCfg4f = (cfgPath: string): void => {
+            if (!fs.existsSync(cfgPath)) return;
+            let c = fs.readFileSync(cfgPath, 'utf-8');
+            let changed4f = false;
+            if (hashForStep4f) {
+              const m4f = c.match(/^generationHashSeed\s*=\s*(\S+)/m);
+              if (m4f && m4f[1].trim().toUpperCase() !== hashForStep4f) {
+                c = c.replace(/^(generationHashSeed\s*=\s*)\S+/m, `$1${hashForStep4f}`);
+                changed4f = true;
+                broadcastLog(`[Step4f] generationHashSeed patched in ${path.relative(TARGET_DIR, cfgPath)}\n`);
+              }
+            }
+            if (currencyFor4f) {
+              const mc = c.match(/^currencyMosaicId\s*=\s*(\S+)/m);
+              if (mc && mc[1].trim() !== currencyFor4f) {
+                c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m, `$1${currencyFor4f}`);
+                changed4f = true;
+                broadcastLog(`[Step4f] currencyMosaicId patched in ${path.relative(TARGET_DIR, cfgPath)}\n`);
+              }
+            }
+            if (harvestFor4f) {
+              const mh = c.match(/^harvestingMosaicId\s*=\s*(\S+)/m);
+              if (mh && mh[1].trim() !== harvestFor4f) {
+                c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${harvestFor4f}`);
+                changed4f = true;
+                broadcastLog(`[Step4f] harvestingMosaicId patched in ${path.relative(TARGET_DIR, cfgPath)}\n`);
+              }
+            }
+            if (changed4f) fs.writeFileSync(cfgPath, c, 'utf-8');
+          };
+          const nodesDir4f = path.join(TARGET_DIR, 'nodes');
+          if (fs.existsSync(nodesDir4f)) {
+            for (const nn of fs.readdirSync(nodesDir4f)) {
+              for (const cd of ['server-config', 'broker-config']) {
+                patchCfg4f(path.join(nodesDir4f, nn, cd, 'resources', 'config-network.properties'));
+              }
+            }
+          }
+          const gwDir4f = path.join(TARGET_DIR, 'gateways');
+          if (fs.existsSync(gwDir4f)) {
+            for (const gw of fs.readdirSync(gwDir4f)) {
+              patchCfg4f(path.join(gwDir4f, gw, 'api-node-config', 'config-network.properties'));
+            }
+          }
+        } catch (e: any) {
+          broadcastLog(`[GenerationHash] Step 4f warning: ${e.message}\n`);
+        }
+      }
+
+      // Step 4g: Stop existing node containers, then remove stale lock files
+      //   before running.  This is a safety net for the full mode.
+      {
+        const { execSync: execSync4g } = await import('child_process');
+        const composePath4g = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        broadcastLog('[System] Step 4g – Stopping containers before run...\n');
+        if (fs.existsSync(composePath4g)) {
+          try {
+            execSync4g(
+              `docker compose -f "${composePath4g}" down --remove-orphans 2>&1 || true`,
+              { timeout: 90_000, stdio: 'pipe' },
+            );
+          } catch { /* ignore */ }
+        }
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+          try {
+            execSync4g(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
+          } catch { /* ignore */ }
+        }
+        // Remove locks + recovery flags
+        const nodesDir4g = path.join(TARGET_DIR, 'nodes');
+        if (fs.existsSync(nodesDir4g)) {
+          for (const nodeName of fs.readdirSync(nodesDir4g)) {
+            const dataDir = path.join(nodesDir4g, nodeName, 'data');
+            if (!fs.existsSync(dataDir)) continue;
+            for (const file of fs.readdirSync(dataDir)) {
+              if (file.endsWith('.lock')) {
+                try { fs.unlinkSync(path.join(dataDir, file)); } catch { /* ignore */ }
+              }
+            }
+            const recFlag4g = path.join(dataDir, 'server-recovery.started');
+            if (fs.existsSync(recFlag4g)) {
+              try { fs.unlinkSync(recFlag4g); } catch { /* ignore */ }
+            }
+          }
+        }
+        broadcastLog('[System] Step 4g – Ready for run.\n');
       }
 
       // Step 5: symbol-bootstrap run (docker-compose up -d)
@@ -2449,6 +6922,43 @@ app.post('/api/commands/start', async (req, res) => {
         stateWhileRunning: 'starting',
         stateOnSuccess: 'running',
       });
+
+      // Step 5b: Re-apply rest-gateway hostname patch + force-recreate.
+      //
+      //   symbol-bootstrap run may internally re-invoke `compose` before
+      //   calling docker compose up, regenerating docker-compose.yml and
+      //   overwriting the Step 4b patches.  We re-apply patchRestGatewayHostname
+      //   here (after run) and force-recreate only the rest-gateway container
+      //   so it starts WITHOUT hostname: api-node-0 and WITHOUT the
+      //   self-referential /etc/hosts entry that causes ECONNREFUSED 7900.
+      {
+        broadcastLog('[System] Step 5b – Re-applying rest-gateway hostname patch...\n');
+        const composePath5b = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+        patchRestGatewayHostname(TARGET_DIR);
+        patchDockerHostMode(TARGET_DIR);
+        if (fs.existsSync(composePath5b)) {
+          try {
+            const { execSync: execSync5b } = await import('child_process');
+            if (isDockerHostMode()) {
+              const out5b = execSync5b(
+                `docker compose -f "${composePath5b}" up -d --force-recreate api-node-0 broker rest-gateway 2>&1 || true`,
+                { timeout: 120_000, stdio: 'pipe' },
+              ).toString().trim();
+              if (out5b) broadcastLog(`[System] Step 5b – ${out5b.slice(0, 300)}\n`);
+              broadcastLog('[System] Step 5b – api-node-0, broker, rest-gateway recreated (host mode) ✓\n');
+            } else {
+              const out5b = execSync5b(
+                `docker compose -f "${composePath5b}" up -d --force-recreate rest-gateway 2>&1 || true`,
+                { timeout: 60_000, stdio: 'pipe' },
+              ).toString().trim();
+              if (out5b) broadcastLog(`[System] Step 5b – ${out5b.slice(0, 300)}\n`);
+              broadcastLog('[System] Step 5b – rest-gateway recreated without hostname: api-node-0 ✓\n');
+            }
+          } catch (e: any) {
+            broadcastLog(`[System] Step 5b – Warning: force-recreate rest-gateway failed: ${e.message}\n`);
+          }
+        }
+      }
 
       // Step 6: Wait for node health
       //   symbol-manager and rest-gateway are on different Docker networks.
@@ -2467,6 +6977,28 @@ app.post('/api/commands/start', async (req, res) => {
 
       broadcastLog(`[System] Polling http://${NODE_REST_HOST}:${NODE_REST_PORT}/node/health ...\n`);
       await waitForNodeHealth(90);    // up to 90 seconds
+
+      // Step 6b: Auto-restart Explorer if it was previously running
+      //   When the node is reconfigured (e.g. namespace changed), the Explorer
+      //   must be restarted with the new config.  We read the namespace from
+      //   custom-preset.yml so the user doesn't have to manually restart it.
+      if (isExplorerRunning() || explorerBuildStatus === 'built') {
+        try {
+          const wasRunning = isExplorerRunning();
+          if (wasRunning) {
+            broadcastLog('[Explorer] ♻️ ノード再構成を検出 — Explorerを自動再起動します...\n');
+          }
+          if (wasRunning) {
+            const ns = readExplorerNamespaceFromPreset();
+            // Preserve the user's previously-set network name
+            const prevName = explorerNetworkName;
+            const prevExtHost = explorerExternalHost;
+            await startExplorerContainer(ns.namespaceName, ns.divisibility, 8090, prevName, prevExtHost);
+          }
+        } catch (e: any) {
+          broadcastLog(`[Explorer] ⚠️ 自動再起動に失敗: ${e.message}\n`);
+        }
+      }
     };
 
     // Fire-and-forget
@@ -2507,6 +7039,15 @@ app.post('/api/commands/healthCheck', async (_req, res) => {
 
 app.post('/api/commands/resetData', async (_req, res) => {
   try {
+    // Clear imported seed files so the next Start does not re-install the
+    // old Join seed over whatever bootstrap regenerates.
+    // target/nemesis/seed/ is preserved by symbol-bootstrap resetData and will
+    // be used directly on the next Start when no SEED_DIR is present.
+    if (fs.existsSync(SEED_DIR)) {
+      broadcastLog('[Reset] Removing imported seed files...\n');
+      fs.rmSync(SEED_DIR, { recursive: true, force: true });
+      broadcastLog('[Reset] ✅ Seed files removed\n');
+    }
     runBootstrapCommand('resetData', [], {
       stateWhileRunning: 'stopping',
       stateOnSuccess: 'stopped',
@@ -2519,7 +7060,7 @@ app.post('/api/commands/resetData', async (_req, res) => {
   }
 });
 
-// Full reset — stop everything, delete target dir, seeds, ui-meta
+// Full reset — stop everything, delete target dir, seeds, ui-meta, Explorer
 app.post('/api/commands/fullReset', async (_req, res) => {
   try {
     broadcastLog('\n[System] ========== FULL RESET ==========\n');
@@ -2527,6 +7068,10 @@ app.post('/api/commands/fullReset', async (_req, res) => {
     broadcastStatus();
 
     const { execSync } = await import('child_process');
+
+    // 0. Stop and remove Explorer container + image
+    broadcastLog('[Reset] Removing Explorer...\n');
+    await cleanupExplorer(true);  // removeImage=true
 
     // 1. Stop V2 containers (docker compose down) if they exist
     const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
@@ -2682,6 +7227,102 @@ app.post('/api/commands/kill', async (_req, res) => {
 });
 
 // =============================================================================
+// Clear stale lock files + MongoDB
+// =============================================================================
+
+// Clears *.lock files in nodes/*/data/ and optionally databases/.
+// The node containers must be stopped first (or this endpoint will
+// stop them automatically via compose down before deleting).
+app.post('/api/commands/clearLocks', async (_req, res) => {
+  try {
+    broadcastLog('\n[Cleanup] ========== Clear Locks ==========\n');
+    const { execSync: execSyncCL } = require('child_process');
+
+    // Stage 1: docker compose down (runs inside symbol-manager → inner Docker daemon)
+    const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+    if (fs.existsSync(composePath)) {
+      broadcastLog('[Cleanup] Stopping node containers via compose down...\n');
+      try {
+        const out = execSyncCL(
+          `docker compose -f "${composePath}" down --remove-orphans 2>&1 || true`,
+          { timeout: 90_000, stdio: 'pipe' },
+        ).toString().trim();
+        if (out) broadcastLog(`[Cleanup] compose down: ${out.slice(0, 300)}\n`);
+        broadcastLog('[Cleanup] compose down complete.\n');
+      } catch (e: any) {
+        broadcastLog(`[Cleanup] compose down failed: ${e.message}\n`);
+      }
+    } else {
+      broadcastLog('[Cleanup] compose file not found, skipping compose down.\n');
+    }
+
+    // Stage 2: force-remove containers by known names (fallback)
+    // Use `docker rm -f` instead of `docker stop` so that restart:unless-stopped
+    // cannot recreate a container (and its lock files) before we delete them.
+    broadcastLog('[Cleanup] Force-removing known containers...\n');
+    for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+      try {
+        const out = execSyncCL(`docker rm -f ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' }).toString().trim();
+        broadcastLog(`[Cleanup] docker rm -f ${cname}: ${out || 'ok'}\n`);
+      } catch (e: any) {
+        broadcastLog(`[Cleanup] docker rm -f ${cname}: ${e.message}\n`);
+      }
+    }
+
+    // Delete *.lock files with post-deletion verification
+    let lockCount = 0;
+    let lockFailed = 0;
+    const nodesDir = path.join(TARGET_DIR, 'nodes');
+    if (fs.existsSync(nodesDir)) {
+      for (const nodeName of fs.readdirSync(nodesDir)) {
+        const dataDir = path.join(nodesDir, nodeName, 'data');
+        if (!fs.existsSync(dataDir)) continue;
+        for (const file of fs.readdirSync(dataDir)) {
+          if (file.endsWith('.lock')) {
+            const lockPath = path.join(dataDir, file);
+            try {
+              fs.unlinkSync(lockPath);
+              if (fs.existsSync(lockPath)) {
+                lockFailed++;
+                broadcastLog(`[Cleanup] ⚠️  STILL EXISTS after delete (held open?): ${nodeName}/data/${file}\n`);
+              } else {
+                lockCount++;
+                broadcastLog(`[Cleanup] ✅ Removed lock: ${nodeName}/data/${file}\n`);
+              }
+            } catch (e: any) {
+              lockFailed++;
+              broadcastLog(`[Cleanup] ❌ Cannot delete ${nodeName}/data/${file}: ${e.message}\n`);
+            }
+          }
+        }
+      }
+    }
+
+    // NOTE: Do NOT clear databases/ here.
+    // catapult.recovery crashes with SIGABRT when it sees an empty MongoDB
+    // alongside existing block files (nodes/*/data/00000/ etc.).
+    // That SIGABRT leaves recovery.lock behind → next start fails with lock
+    // conflict again.  databases/ is only safe to remove as part of a Full
+    // Reset (which also wipes block files), never in isolation.
+
+    if (lockFailed > 0) {
+      broadcastLog(`[Cleanup] ⚠️  ${lockFailed} lock file(s) could NOT be deleted.\n`);
+      broadcastLog('[Cleanup] A process may still be holding the file open. Check container status above.\n');
+    } else {
+      broadcastLog(`[Cleanup] ✅ Done. Removed ${lockCount} lock file(s).\n`);
+      broadcastLog('[Cleanup] ▶ You can now Start the node.\n');
+    }
+
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.json({ success: true, locksRemoved: lockCount, locksFailed: lockFailed });
+  } catch (err: any) {
+    broadcastLog(`[Cleanup] ❌ clearLocks failed: ${err.message}\n`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
 // Join Network — fetch network properties from a remote node
 // =============================================================================
 
@@ -2709,22 +7350,77 @@ app.post('/api/network/fetch', async (req, res) => {
   try {
     broadcastLog(`[JoinNetwork] Fetching from ${base} ...\n`);
 
-    // Parallel fetch: network/properties, node/info, node/peers
-    const [networkProps, nodeInfo, peers] = await Promise.all([
+    // Parallel fetch: network/properties, node/info, node/peers, network/fees/transaction
+    const [networkProps, nodeInfo, peers, txFees] = await Promise.all([
       fetchJson('/network/properties'),
       fetchJson('/node/info'),
       fetchJson('/node/peers').catch(() => []),
+      fetchJson('/network/fees/transaction').catch(() => ({})),
     ]);
 
     broadcastLog(`[JoinNetwork] network/properties ✓\n`);
     broadcastLog(`[JoinNetwork] node/info ✓  (network: ${nodeInfo.networkIdentifier})\n`);
     broadcastLog(`[JoinNetwork] node/peers ✓  (${Array.isArray(peers) ? peers.length : 0} peers)\n`);
+    const minFee = txFees?.minFeeMultiplier ?? null;
+    if (minFee !== null) broadcastLog(`[JoinNetwork] network/fees/transaction ✓  (minFeeMultiplier: ${minFee})\n`);
+
+    // Fetch mosaic details for currency and harvesting mosaics.
+    // Used by the frontend to populate nemesisMosaics with correct
+    // supply / divisibility / flags instead of bootstrap defaults.
+    const cleanMosaicId = (id: unknown): string | null => {
+      if (!id) return null;
+      const s = String(id).replace(/0x/gi, '').replace(/'/g, '').toUpperCase();
+      return /^[0-9A-F]{16}$/.test(s) ? s : null;
+    };
+    const npChain = (networkProps as any)?.chain ?? {};
+    const currId = cleanMosaicId(npChain.currencyMosaicId);
+    const harvId = cleanMosaicId(npChain.harvestingMosaicId);
+    const mosaicIds = [...new Set([currId, harvId].filter((id): id is string => id !== null))];
+
+    let mosaicInfo: Record<string, unknown>[] = [];
+    let mosaicNames: { mosaicId: string; names: string[] }[] = [];
+    if (mosaicIds.length > 0) {
+      try {
+        const ctrl = new AbortController();
+        const t2 = setTimeout(() => ctrl.abort(), 10000);
+        const [mosaicRes, namesRes] = await Promise.all([
+          fetch(`${base}/mosaics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mosaicIds }),
+            signal: ctrl.signal,
+          }),
+          fetch(`${base}/namespaces/mosaic/names`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mosaicIds }),
+            signal: ctrl.signal,
+          }).catch(() => null),
+        ]);
+        clearTimeout(t2);
+        if (mosaicRes.ok) {
+          mosaicInfo = await mosaicRes.json();
+          broadcastLog(`[JoinNetwork] /mosaics ✓  (${mosaicInfo.length} mosaic entries)\n`);
+        }
+        if (namesRes?.ok) {
+          const raw = await namesRes.json();
+          // REST returns { mosaicNames: [...] } or directly an array
+          mosaicNames = Array.isArray(raw) ? raw : (raw?.mosaicNames ?? []);
+          broadcastLog(`[JoinNetwork] /mosaics/names ✓  (${mosaicNames.length} aliases)\n`);
+        }
+      } catch {
+        broadcastLog(`[JoinNetwork] /mosaics fetch skipped (non-critical)\n`);
+      }
+    }
 
     res.json({
       success: true,
       networkProperties: networkProps,
       nodeInfo,
       peers: Array.isArray(peers) ? peers : [],
+      minFeeMultiplier: minFee,
+      mosaicInfo,
+      mosaicNames,
     });
   } catch (err: any) {
     broadcastLog(`[JoinNetwork] Error: ${err.message}\n`);
@@ -2732,6 +7428,157 @@ app.post('/api/network/fetch', async (req, res) => {
       error: `Failed to fetch from node: ${err.message}`,
     });
   }
+});
+
+// =============================================================================
+// Explorer reverse proxy — serve the Explorer SPA through symbol-manager
+// =============================================================================
+// The Explorer container runs on port 4000 internally (exposed as 8090).
+// To avoid cross-origin issues (browser at :4000 vs Explorer at :8090),
+// we also proxy /explorer-smd/* requests to the Explorer container.
+// The user can access the Explorer at http://localhost:4000/explorer-smd/
+// and everything (REST, WS, config) stays same-origin.
+
+const EXPLORER_INTERNAL_URL = `http://${EXPLORER_CONTAINER}:4000`;
+
+// Serve Explorer config at /config (Explorer's loadConfig fetches window.location.origin + '/config')
+// This route is only hit when Explorer is accessed through symbol-manager proxy.
+app.get('/config', async (_req, res) => {
+  try {
+    const upstream = await fetch(`${EXPLORER_INTERNAL_URL}/config`);
+    if (!upstream.ok) throw new Error(`Explorer config: ${upstream.status}`);
+    const config = await upstream.json();
+    // Inject network name so the runtime script can display it in the header
+    if (explorerNetworkName) config.networkName = explorerNetworkName;
+    // Rewrite nodeWatch to relative URL so it works from any host
+    if (config.endpoints) config.endpoints.nodeWatch = '/api/explorer-proxy';
+    res.json(config);
+  } catch {
+    res.status(404).json({ error: 'Explorer not running' });
+  }
+});
+
+// Proxy all /explorer-smd/* to the Explorer container
+app.use('/explorer-smd', async (req, res, next) => {
+  // Don't proxy if Explorer container isn't running
+  const subPath = req.url || '/';  // Express strips the mount path
+  const target = `${EXPLORER_INTERNAL_URL}${subPath}`;
+  try {
+    const opts: RequestInit = {
+      method: req.method,
+      headers: { 'Content-Type': req.headers['content-type'] || 'application/octet-stream' },
+    };
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      opts.body = JSON.stringify(req.body);
+    }
+    const upstream = await fetch(target, opts);
+    res.status(upstream.status);
+    upstream.headers.forEach((v, k) => {
+      if (!['transfer-encoding', 'content-encoding', 'connection'].includes(k.toLowerCase())) {
+        res.setHeader(k, v);
+      }
+    });
+    // Override Cache-Control to prevent stale Explorer pages
+    if (subPath === '/' || subPath === '/index.html') {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+
+    // Inject network-name display script into HTML pages
+    if ((subPath === '/' || subPath === '/index.html') && explorerNetworkName) {
+      let html = body.toString('utf-8');
+      // Sanitise the name for safe embedding in a JS string literal
+      const safeName = explorerNetworkName
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/</g, '\\x3c')
+        .replace(/>/g, '\\x3e');
+      // Small runtime script:
+      //  • Updates document.title with the network name
+      //  • Appends a subtitle <div> inside the Explorer header (.header-title)
+      //  • Also patches the mobile menu title
+      const script = [
+        '<script>!function(){',
+        `var n="${safeName}";`,
+        'document.title=n+" | Explorer";',
+        'var t=setInterval(function(){',
+        'var h=document.querySelector(".header-title");',
+        'if(h&&!document.getElementById("nn-sub")){',
+        'clearInterval(t);',
+        'var d=document.createElement("div");',
+        'd.id="nn-sub";',
+        'd.style.cssText="font-size:14px;color:#6b7280;font-weight:normal;text-transform:none;letter-spacing:0;margin-top:-4px";',
+        'd.textContent=n;',
+        'h.appendChild(d)',
+        '}',
+        '},300)',
+        '}()</script>',
+      ].join('');
+      html = html.replace('</head>', script + '</head>');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+      return;
+    }
+
+    res.send(body);
+  } catch {
+    // Explorer container not running – fall through to SPA catch-all
+    next();
+  }
+});
+
+// =============================================================================
+// REST gateway reverse proxy (for Explorer frontend)
+// =============================================================================
+// The Explorer Vue app (running in the user's browser) calls
+// http://localhost:{apiNodePort}/... to reach the Symbol REST gateway.
+// By setting apiNodePort to the symbol-manager port and proxying here,
+// we can intercept known-bad requests (e.g. finalization/proof/epoch/0).
+//
+// Only activated for paths that look like Symbol REST endpoints and do NOT
+// start with /api/ (our own routes) or match static frontend assets.
+
+const REST_PROXY_PATHS = /^\/(node|chain|blocks?|transactions?|transactionStatus|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|lock|secretlock|hashlock)(\/|$)/;
+
+// Return valid finalization proof for epoch 0 (it never exists but SDK
+// expects the full shape including messageGroups array)
+app.get('/finalization/proof/epoch/0', (_req, res) => {
+  res.json({
+    version: 1,
+    finalizationEpoch: 0,
+    finalizationPoint: 0,
+    height: '1',
+    hash: '0'.repeat(64),
+    messageGroups: [],
+  });
+});
+
+app.use((req, res, next) => {
+  if (!REST_PROXY_PATHS.test(req.path)) return next();
+
+  const target = `http://${NODE_REST_HOST}:${NODE_REST_PORT}${req.originalUrl}`;
+  const opts: RequestInit = {
+    method: req.method,
+    headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
+  };
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    opts.body = JSON.stringify(req.body);
+  }
+
+  fetch(target, opts)
+    .then(async (upstream) => {
+      res.status(upstream.status);
+      upstream.headers.forEach((v, k) => {
+        if (!['transfer-encoding', 'content-encoding', 'connection'].includes(k.toLowerCase())) {
+          res.setHeader(k, v);
+        }
+      });
+      const body = await upstream.text();
+      res.send(body);
+    })
+    .catch(() => {
+      res.status(502).json({ code: 'ProxyError', message: 'REST gateway unreachable' });
+    });
 });
 
 // =============================================================================
