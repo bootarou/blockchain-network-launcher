@@ -6298,6 +6298,62 @@ app.post('/api/commands/start', async (req, res) => {
         // 3b. Apply Docker Host Mode patches (also needed on quick restart)
         patchDockerHostMode(TARGET_DIR);
 
+        // 3c. Sync mutable node settings from custom-preset.yml → config-node.properties
+        //     Restart mode skips `symbol-bootstrap config`, so changes like
+        //     friendlyName, host, minFeeMultiplier etc. are NOT propagated to
+        //     the generated config files.  Patch them here so Stop→Start
+        //     picks up any UI changes without requiring a Full Reset.
+        {
+          try {
+            const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+            const presetNodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
+            if (presetNodes && presetNodes.length > 0) {
+              const nodesDirSync = path.join(TARGET_DIR, 'nodes');
+              if (fs.existsSync(nodesDirSync)) {
+                for (const nodeEntry of presetNodes) {
+                  const nodeName = String(nodeEntry.name || 'api-node-0');
+                  const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
+                  if (!fs.existsSync(configPath)) continue;
+
+                  let configContent = fs.readFileSync(configPath, 'utf-8');
+                  let patched = false;
+
+                  // Mutable fields that the user can change via UI without needing
+                  // a full bootstrap config regeneration.
+                  const mutableFields: Array<{ presetKey: string; propKey: string }> = [
+                    { presetKey: 'friendlyName', propKey: 'friendlyName' },
+                    { presetKey: 'host', propKey: 'host' },
+                    { presetKey: 'minFeeMultiplier', propKey: 'minFeeMultiplier' },
+                    { presetKey: 'maxTrackedNodes', propKey: 'maxTrackedNodes' },
+                  ];
+
+                  for (const { presetKey, propKey } of mutableFields) {
+                    const newValue = nodeEntry[presetKey];
+                    if (newValue === undefined || newValue === null) continue;
+                    const regex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
+                    if (regex.test(configContent)) {
+                      const oldMatch = configContent.match(regex)?.[0] || '';
+                      const newLine = `${propKey} = ${newValue}`;
+                      if (oldMatch !== newLine) {
+                        configContent = configContent.replace(regex, newLine);
+                        patched = true;
+                        broadcastLog(`[Patch] ${nodeName}: ${oldMatch} → ${newLine}\n`);
+                      }
+                    }
+                  }
+
+                  if (patched) {
+                    fs.writeFileSync(configPath, configContent, 'utf-8');
+                    broadcastLog(`[Patch] config-node.properties synced for ${nodeName} ✓\n`);
+                  }
+                }
+              }
+            }
+          } catch (e: any) {
+            broadcastLog(`[Patch] ⚠️ config-node.properties sync warning: ${e.message}\n`);
+          }
+        }
+
         // 4. Run containers
         broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
         await runBootstrapCommand('run', ['-d'], {
