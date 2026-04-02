@@ -16,6 +16,14 @@ export const ja: TranslationDict = {
   'theme.switchToLight': 'ライトモードに切り替え',
   'theme.switchToDark': 'ダークモードに切り替え',
 
+  // Login
+  'login.subtitle': '管理パスワードを入力してください',
+  'login.placeholder': '管理パスワード',
+  'login.button': 'ログイン',
+  'login.loading': 'ログイン中...',
+  'login.error': 'パスワードが正しくありません。',
+  'login.logout': 'ログアウト',
+
   // Tabs
   'tabs.config': 'Configuration',
   'tabs.join': 'Join Network',

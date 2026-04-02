@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon } from 'lucide-react';
+import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut } from 'lucide-react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { JoinNetwork } from './components/JoinNetwork';
 import { ShareNetwork } from './components/ShareNetwork';
 import { BackupRestore } from './components/BackupRestore';
 import { HelpPage } from './components/HelpPage';
+import { LoginPage } from './components/LoginPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
 import { DEFAULT_PRESET, DEFAULT_NODE, DEFAULT_GATEWAY, type PresetConfig, type NodeConfig, type GatewayConfig } from './constants';
 import { api } from './lib/api';
+import { setAuthToken, clearAuthToken } from './lib/api';
 import { useTranslation } from './i18n';
 import { useTheme } from './theme';
 
@@ -17,6 +19,47 @@ function App() {
   const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'share' | 'backup' | 'help'>('config');
   const { t, lang, setLang } = useTranslation();
   const { theme, toggleTheme } = useTheme();
+
+  // ── Auth state ──
+  const [authRequired, setAuthRequired] = useState<boolean | null>(null); // null = loading
+  const [authenticated, setAuthenticated] = useState(false);
+
+  useEffect(() => {
+    api.getAuthStatus().then(({ authRequired: required }) => {
+      setAuthRequired(required);
+      if (!required) {
+        setAuthenticated(true);
+      } else {
+        // Check if existing token is still valid
+        api.verifyToken().then((valid) => {
+          setAuthenticated(valid);
+        });
+      }
+    });
+  }, []);
+
+  const handleLogin = (token: string) => {
+    setAuthToken(token);
+    setAuthenticated(true);
+  };
+
+  const handleLogout = () => {
+    clearAuthToken();
+    setAuthenticated(false);
+  };
+
+  // Show login screen if auth is required and not authenticated
+  if (authRequired === null) {
+    // Loading state
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center">
+        <Server className="w-8 h-8 text-indigo-400 animate-pulse" />
+      </div>
+    );
+  }
+  if (authRequired && !authenticated) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
 
   // Load saved preset from backend on mount
   useEffect(() => {
@@ -196,6 +239,16 @@ function App() {
               <RotateCcw className="w-3.5 h-3.5" />
               {t('app.reset')}
             </button>
+
+            {authRequired && (
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
+                title={t('login.logout')}
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       </header>

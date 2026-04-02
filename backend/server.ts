@@ -18,6 +18,81 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// =============================================================================
+// Admin authentication
+// =============================================================================
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const AUTH_ENABLED = ADMIN_PASSWORD.length > 0;
+const AUTH_TOKEN_SECRET = AUTH_ENABLED
+  ? crypto.randomBytes(32).toString('hex')
+  : '';
+
+/** Generate a signed auth token for a successful login. */
+function generateAuthToken(): string {
+  const payload = Date.now().toString();
+  const hmac = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('hex');
+  return `${payload}.${hmac}`;
+}
+
+/** Verify an auth token is valid. */
+function verifyAuthToken(token: string): boolean {
+  const dot = token.indexOf('.');
+  if (dot === -1) return false;
+  const payload = token.substring(0, dot);
+  const hmac = token.substring(dot + 1);
+  const expected = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+// ── Auth endpoints (always available) ──
+
+app.get('/api/auth/status', (_req, res) => {
+  res.json({ authRequired: AUTH_ENABLED });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!AUTH_ENABLED) {
+    return res.json({ success: true, token: '' });
+  }
+  const { password } = req.body ?? {};
+  if (!password || password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Invalid password.' });
+  }
+  const token = generateAuthToken();
+  res.json({ success: true, token });
+});
+
+app.post('/api/auth/verify', (req, res) => {
+  if (!AUTH_ENABLED) {
+    return res.json({ valid: true });
+  }
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  try {
+    res.json({ valid: verifyAuthToken(token) });
+  } catch {
+    res.json({ valid: false });
+  }
+});
+
+// ── Auth middleware: protect all /api/* routes below this point ──
+
+app.use('/api', (req, res, next) => {
+  if (!AUTH_ENABLED) return next();
+  // Allow auth endpoints through (already handled above)
+  if (req.path.startsWith('/auth/')) return next();
+  // Support token via Authorization header or _token query param (for download links)
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : (req.query._token as string) || '';
+  try {
+    if (token && verifyAuthToken(token)) return next();
+  } catch { /* invalid token */ }
+  res.status(401).json({ error: 'Unauthorized. Please log in.' });
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 

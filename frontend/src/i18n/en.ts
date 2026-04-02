@@ -16,6 +16,14 @@ export const en: TranslationDict = {
   'theme.switchToLight': 'Switch to light mode',
   'theme.switchToDark': 'Switch to dark mode',
 
+  // Login
+  'login.subtitle': 'Enter admin password to continue',
+  'login.placeholder': 'Admin password',
+  'login.button': 'Log In',
+  'login.loading': 'Logging in...',
+  'login.error': 'Incorrect password. Please try again.',
+  'login.logout': 'Log out',
+
   // Tabs
   'tabs.config': 'Configuration',
   'tabs.join': 'Join Network',
