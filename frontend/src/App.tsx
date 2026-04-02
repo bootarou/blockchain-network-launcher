@@ -48,21 +48,9 @@ function App() {
     setAuthenticated(false);
   };
 
-  // Show login screen if auth is required and not authenticated
-  if (authRequired === null) {
-    // Loading state
-    return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center">
-        <Server className="w-8 h-8 text-indigo-400 animate-pulse" />
-      </div>
-    );
-  }
-  if (authRequired && !authenticated) {
-    return <LoginPage onLogin={handleLogin} />;
-  }
-
   // Load saved preset from backend on mount
   useEffect(() => {
+    if (!authenticated) return;
     api
       .loadPreset()
       .then((data) => {
@@ -82,7 +70,7 @@ function App() {
         }
       })
       .catch(() => {}); // Silently ignore when backend is not running
-  }, []);
+  }, [authenticated]);
 
   const handleConfigChange = (newConfig: PresetConfig) => {
     setConfig(newConfig);
@@ -126,6 +114,18 @@ function App() {
       setConfig(DEFAULT_PRESET);
     }
   };
+
+  // ── Auth early returns (MUST be after all hooks) ──
+  if (authRequired === null) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center">
+        <Server className="w-8 h-8 text-indigo-400 animate-pulse" />
+      </div>
+    );
+  }
+  if (authRequired && !authenticated) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50 flex flex-col">
