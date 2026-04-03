@@ -7,8 +7,8 @@ services:
         SYMBOL_BOOTSTRAP_REPO: ${SYMBOL_BOOTSTRAP_REPO:-https://github.com/bootarou/symbol-bootstrap.git}
     container_name: symbol-manager
     ports:
-      - "127.0.0.1:4000:4000"   # Backend API & WebSocket (localhost only for security)
-      - "127.0.0.1:5173:5173"   # Frontend Vite dev server (localhost only)
+      - "${BIND_ADDRESS:-127.0.0.1}:4000:4000"   # Backend API & WebSocket
+      - "${BIND_ADDRESS:-127.0.0.1}:5173:5173"   # Frontend Vite dev server
       # NOTE: 3000 and 7900 are NOT mapped here.
       # symbol-bootstrap creates sibling containers (rest-gateway, api-node)
       # via the shared docker.sock, and those containers bind directly to
