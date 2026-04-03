@@ -6664,7 +6664,10 @@ app.post('/api/commands/start', async (req, res) => {
       // generates the nemesis block with harvestingMosaicId = currencyMosaicId
       // and importance based on the currency supply, preventing
       // Failure_Core_Importance_Block_Mismatch at node startup.
-      patchMustacheForSingleCurrency();
+      // Skip for testnet/mainnet (official networks always use dual-currency).
+      if (basePreset !== 'testnet' && basePreset !== 'mainnet') {
+        patchMustacheForSingleCurrency();
+      }
 
       // Step 0e: Promote networkProperties.chain / plugin values to the top
       // level of custom-preset.yml so symbol-bootstrap's mustache templates
@@ -6674,8 +6677,15 @@ app.post('/api/commands/start', async (req, res) => {
       // importanceGrouping=180, etc.) would override the user's settings,
       // causing a mismatch between the generated nemesis block and
       // config-network.properties → Failure_Core_Importance_Block_Mismatch.
-      broadcastLog('[System] Step 0e – Promoting chain/plugin overrides to preset top level...\n');
-      normalizePresetTopLevelOverrides(PRESET_PATH);
+      //
+      // Skip for testnet/mainnet: official presets define their own values;
+      // promoting custom overrides would cause state hash mismatches.
+      if (basePreset !== 'testnet' && basePreset !== 'mainnet') {
+        broadcastLog('[System] Step 0e – Promoting chain/plugin overrides to preset top level...\n');
+        normalizePresetTopLevelOverrides(PRESET_PATH);
+      } else {
+        broadcastLog(`[System] Step 0e – Skipped (using ${basePreset} base preset — no custom chain overrides).\n`);
+      }
 
       // Step 1: symbol-bootstrap config  (--upgrade to force regeneration)
       //   Reads custom-preset.yml which now has the patched image name.
@@ -6740,6 +6750,72 @@ app.post('/api/commands/start', async (req, res) => {
       // imported nemesis block → "invalid generation hash proof" or
       // "nemesis public key does not match network".
       const hasImportedSeedForStart = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
+
+      // ── Testnet / Mainnet: strip networkProperties from custom-preset.yml ──
+      // When using an official network preset (testnet / mainnet), chain and
+      // plugin parameters are defined by the base preset.  If our custom-preset.yml
+      // contains networkProperties (e.g. from a previous custom network config),
+      // they override the official values and cause:
+      //   "nemesis block state hash does not match calculated state hash"
+      // Only safe overrides: nodes, gateways, docker images, privateKeySecurityMode.
+      if (basePreset === 'testnet' || basePreset === 'mainnet') {
+        try {
+          const officialDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          let stripped = false;
+          // Remove networkProperties entirely — all chain/plugin/identity values
+          // must come from the official base preset.
+          if (officialDoc.networkProperties) { delete officialDoc.networkProperties; stripped = true; }
+          // Also remove top-level promoted keys that normalizePresetTopLevelOverrides()
+          // may have written (these override mustache template defaults).
+          const DANGEROUS_TOP_KEYS = [
+            'nemesisGenerationHashSeed', 'nemesisSignerPublicKey',
+            'epochAdjustment', 'networkType', 'networkIdentifier',
+            'currencyMosaicId', 'harvestingMosaicId',
+            'totalChainImportance', 'initialCurrencyAtomicUnits',
+            'blockGenerationTargetTime', 'blockTimeSmoothingFactor',
+            'importanceGrouping', 'importanceActivityPercentage',
+            'maxRollbackBlocks', 'maxDifficultyBlocks',
+            'maxTransactionLifetime', 'maxBlockFutureTime',
+            'maxTransactionsPerBlock', 'maxMosaicAtomicUnits',
+            'minHarvesterBalance', 'maxHarvesterBalance',
+            'minVoterBalance', 'votingSetGrouping',
+            'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',
+            'harvestBeneficiaryPercentage', 'harvestNetworkPercentage',
+            'harvestNetworkFeeSinkAddress', 'harvestNetworkFeeSinkAddressV1',
+            'defaultDynamicFeeMultiplier',
+            // Plugin keys
+            'maxTransactionsPerAggregate', 'maxCosignaturesPerAggregate',
+            'enableStrictCosignatureCheck', 'enableBondedAggregateSupport',
+            'maxBondedTransactionLifetime',
+            'lockedFundsPerAggregate', 'maxHashLockDuration',
+            'maxSecretLockDuration', 'minProofSize', 'maxProofSize',
+            'maxValueSize',
+            'maxMosaicsPerAccount', 'maxMosaicDuration', 'maxMosaicDivisibility',
+            'mosaicRentalFeeSinkAddress', 'mosaicRentalFeeSinkAddressV1', 'mosaicRentalFee',
+            'maxNamespacesPerAccount', 'maxNameSize', 'maxNamespaceDepth',
+            'maxChildNamespaces', 'minNamespaceDuration', 'maxNamespaceDuration',
+            'namespaceGracePeriodDuration', 'reservedRootNamespaceNames',
+            'namespaceRentalFeeSinkAddress', 'namespaceRentalFeeSinkAddressV1',
+            'rootNamespaceRentalFeePerBlock', 'childNamespaceRentalFee',
+            'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
+            'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
+            'maxMessageSize',
+          ] as const;
+          for (const k of DANGEROUS_TOP_KEYS) {
+            if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
+          }
+          // Remove inflation (official networks have their own schedule)
+          if (officialDoc.inflation) { delete officialDoc.inflation; stripped = true; }
+
+          if (stripped) {
+            fs.writeFileSync(PRESET_PATH, yaml.dump(officialDoc, { lineWidth: -1 }), 'utf-8');
+            broadcastLog(`[System] Stripped networkProperties & chain overrides from custom-preset.yml (using ${basePreset} base preset).\n`);
+          }
+        } catch (e: any) {
+          broadcastLog(`[System] ⚠️  Could not strip network overrides: ${e.message}\n`);
+        }
+      }
+
       if (!dataExists && !generatedPresetExists && !hasImportedSeedForStart) {
         try {
           const freshDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
