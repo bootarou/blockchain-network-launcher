@@ -24,8 +24,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       } else {
         setError(t('login.error'));
       }
-    } catch {
-      setError(t('login.error'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      setError(msg === 'RATE_LIMITED' ? t('login.rateLimited') : t('login.error'));
     } finally {
       setLoading(false);
     }

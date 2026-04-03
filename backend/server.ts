@@ -15,7 +15,6 @@ import AdmZip from 'adm-zip';
 // =============================================================================
 
 const app = express();
-app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // =============================================================================
@@ -27,6 +26,29 @@ const AUTH_ENABLED = ADMIN_PASSWORD.length > 0;
 const AUTH_TOKEN_SECRET = AUTH_ENABLED
   ? crypto.randomBytes(32).toString('hex')
   : '';
+const AUTH_TOKEN_TTL = 60 * 60 * 1000; // 1 hour
+
+// ── Simple in-memory rate limiter for login ──
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function isLoginRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 }); // 15 min window
+    return false;
+  }
+  entry.count++;
+  return entry.count > 5; // max 5 attempts per window
+}
+
+// Periodically clean up expired entries (every 30 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of loginAttempts) {
+    if (now > entry.resetAt) loginAttempts.delete(ip);
+  }
+}, 30 * 60 * 1000);
 
 /** Generate a signed auth token for a successful login. */
 function generateAuthToken(): string {
@@ -35,12 +57,15 @@ function generateAuthToken(): string {
   return `${payload}.${hmac}`;
 }
 
-/** Verify an auth token is valid. */
+/** Verify an auth token is valid (includes TTL check). */
 function verifyAuthToken(token: string): boolean {
   const dot = token.indexOf('.');
   if (dot === -1) return false;
   const payload = token.substring(0, dot);
   const hmac = token.substring(dot + 1);
+  // Check token age
+  const issued = parseInt(payload, 10);
+  if (isNaN(issued) || Date.now() - issued > AUTH_TOKEN_TTL) return false;
   const expected = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('hex');
   return crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(expected, 'hex'));
 }
@@ -55,8 +80,19 @@ app.post('/api/auth/login', (req, res) => {
   if (!AUTH_ENABLED) {
     return res.json({ success: true, token: '' });
   }
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (isLoginRateLimited(ip)) {
+    return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+  }
   const { password } = req.body ?? {};
-  if (!password || password !== ADMIN_PASSWORD) {
+  if (!password || typeof password !== 'string') {
+    return res.status(401).json({ error: 'Invalid password.' });
+  }
+  // Timing-safe comparison: hash both values to ensure constant-time check
+  // regardless of password length difference.
+  const inputHash = crypto.createHash('sha256').update(password).digest();
+  const expectedHash = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
+  if (!crypto.timingSafeEqual(inputHash, expectedHash)) {
     return res.status(401).json({ error: 'Invalid password.' });
   }
   const token = generateAuthToken();
@@ -98,7 +134,25 @@ const wss = new WebSocketServer({ noServer: true });
 
 // Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
 server.on('upgrade', (request: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer) => {
-  if (request.url === '/ws') {
+  const reqUrl = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+
+  // ── Authenticate WebSocket upgrades when auth is enabled ──
+  if (AUTH_ENABLED) {
+    const token = reqUrl.searchParams.get('token') || '';
+    try {
+      if (!token || !verifyAuthToken(token)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+    } catch {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
+
+  if (reqUrl.pathname === '/ws') {
     // Proxy WebSocket to Symbol REST gateway for Explorer block notifications
     wss.handleUpgrade(request, socket, head, (clientWs) => {
       const upstream = new WebSocket(`ws://${NODE_REST_HOST}:${NODE_REST_PORT}/ws`);

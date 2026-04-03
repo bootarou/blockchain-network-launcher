@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Activity, RefreshCw, Server, Database, Wifi, WifiOff } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, getAuthToken } from '../lib/api';
 import { cn } from '../lib/utils';
 import { useTranslation } from '../i18n';
 
@@ -54,7 +54,9 @@ export function NodeHealthIndicator() {
       if (disposed) return;
       // In dev mode, Vite proxies /ws → ws://localhost:4000
       // In production, the backend handles the upgrade on the same port
-      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws` : WS_URL;
+      const token = getAuthToken();
+      const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws${tokenParam}` : `${WS_URL}${tokenParam}`;
       ws = new WebSocket(wsTarget);
 
       ws.onopen = () => {

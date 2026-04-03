@@ -22,6 +22,7 @@ export const ja: TranslationDict = {
   'login.button': 'ログイン',
   'login.loading': 'ログイン中...',
   'login.error': 'パスワードが正しくありません。',
+  'login.rateLimited': '試行回数が多すぎます。15分後に再試行してください。',
   'login.logout': 'ログアウト',
 
   // Tabs

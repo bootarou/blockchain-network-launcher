@@ -9,7 +9,6 @@ services:
     ports:
       - "127.0.0.1:4000:4000"   # Backend API & WebSocket (localhost only for security)
       - "127.0.0.1:5173:5173"   # Frontend Vite dev server (localhost only)
-      - "80:80"       # Frontend production (future)
       # NOTE: 3000 and 7900 are NOT mapped here.
       # symbol-bootstrap creates sibling containers (rest-gateway, api-node)
       # via the shared docker.sock, and those containers bind directly to

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Terminal as TerminalIcon, Trash2, ArrowDown } from 'lucide-react';
 import { useTranslation } from '../i18n';
+import { getAuthToken } from '../lib/api';
 
 // In production the backend serves the frontend on the same port → same host.
 // In dev mode Vite proxies /ws → ws://localhost:4000 (see vite.config.ts).
@@ -28,7 +29,9 @@ export function TerminalLogs() {
       if (disposed) return;
       // In dev mode, Vite proxies /ws → ws://localhost:4000
       // In production, the backend handles the upgrade on the same port
-      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws` : WS_URL;
+      const token = getAuthToken();
+      const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws${tokenParam}` : `${WS_URL}${tokenParam}`;
       ws = new WebSocket(wsTarget);
 
       ws.onopen = () => {

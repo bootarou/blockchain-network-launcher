@@ -22,6 +22,7 @@ export const en: TranslationDict = {
   'login.button': 'Log In',
   'login.loading': 'Logging in...',
   'login.error': 'Incorrect password. Please try again.',
+  'login.rateLimited': 'Too many attempts. Please wait 15 minutes.',
   'login.logout': 'Log out',
 
   // Tabs

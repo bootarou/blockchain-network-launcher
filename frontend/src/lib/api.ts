@@ -40,7 +40,13 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
         : Object.entries(init.headers as Record<string, string>)
     ) : undefined
   );
-  return fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers });
+  // Token expired or invalid → force re-login
+  if (res.status === 401 && getAuthToken()) {
+    clearAuthToken();
+    window.location.reload();
+  }
+  return res;
 }
 
 export const api = {
@@ -63,6 +69,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
+    if (res.status === 429) {
+      throw new Error('RATE_LIMITED');
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Login failed' }));
       throw new Error(err.error || `HTTP ${res.status}`);
