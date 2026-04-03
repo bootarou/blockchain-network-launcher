@@ -243,10 +243,11 @@ function App() {
             {authRequired && (
               <button
                 onClick={handleLogout}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 hover:bg-zinc-800 rounded-lg transition-colors border border-red-800/50"
                 title={t('login.logout')}
               >
                 <LogOut className="w-3.5 h-3.5" />
+                {t('login.logout')}
               </button>
             )}
           </div>
