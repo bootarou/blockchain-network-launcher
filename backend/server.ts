@@ -6807,6 +6807,15 @@ app.post('/api/commands/start', async (req, res) => {
           // Remove inflation (official networks have their own schedule)
           if (officialDoc.inflation) { delete officialDoc.inflation; stripped = true; }
 
+          // Remove Docker image overrides — testnet/mainnet must use the
+          // images defined by their base preset.  Stale image tags from a
+          // previous custom-network session (e.g. gcc-1.0.3.6 / V2) would
+          // cause version mismatches with the official chain.
+          const IMAGE_KEYS = ['symbolServerImage', 'symbolRestImage', 'symbolServerToolsImage'] as const;
+          for (const k of IMAGE_KEYS) {
+            if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
+          }
+
           if (stripped) {
             fs.writeFileSync(PRESET_PATH, yaml.dump(officialDoc, { lineWidth: -1 }), 'utf-8');
             broadcastLog(`[System] Stripped networkProperties & chain overrides from custom-preset.yml (using ${basePreset} base preset).\n`);
