@@ -2349,12 +2349,21 @@ function resolveBootstrapTemplateDirs(): string[] {
   return dirs;
 }
 
-function patchMustacheTemplates(version: CatapultVersionDef) {
+function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string) {
+  // For testnet/mainnet, skip config-network.properties patches — the official
+  // base preset already has the correct fork_heights.  Overriding them (e.g.
+  // uniqueAggregateTransactionHash=0) causes Failure_Aggregate_V2_Prohibited
+  // when syncing old blocks that contain V2 aggregate transactions.
+  const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
+  const patches = isOfficialNetwork
+    ? version.configPatches.filter(p => p.file !== 'config-network.properties')
+    : version.configPatches;
+
   const templateDirs = resolveBootstrapTemplateDirs();
-  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${version.configPatches.length}, template dirs: ${templateDirs.length}\n`);
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}${isOfficialNetwork ? ' (skipped config-network.properties for official network)' : ''}, template dirs: ${templateDirs.length}\n`);
 
   for (const templateDir of templateDirs) {
-  for (const patch of version.configPatches) {
+  for (const patch of patches) {
     const templatePath = path.join(templateDir, patch.file + '.mustache');
     if (!fs.existsSync(templatePath)) {
       broadcastLog(`[Pre-Patch] ⚠️  Template not found: ${templatePath}\n`);
@@ -3983,8 +3992,13 @@ function backfillMosaicIds(targetDir: string): void {
   }
 }
 
-function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef) {
-  const patches = version.configPatches;
+function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, basePreset?: string) {
+  // For testnet/mainnet, skip config-network.properties patches — the official
+  // base preset defines the correct fork_heights and chain parameters.
+  const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
+  const patches = isOfficialNetwork
+    ? version.configPatches.filter(p => p.file !== 'config-network.properties')
+    : version.configPatches;
   const removePropsSet = version.removeProps ?? [];
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
@@ -6644,7 +6658,7 @@ app.post('/api/commands/start', async (req, res) => {
       } catch (e: any) {
         broadcastLog(`[Pre-Patch] ⚠️  npx prime failed (non-fatal): ${e.message}\n`);
       }
-      patchMustacheTemplates(version);
+      patchMustacheTemplates(version, basePreset);
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
       // (e.g. different bootstrap install layout on join PC), directly patch
@@ -6655,7 +6669,7 @@ app.post('/api/commands/start', async (req, res) => {
         const nodesDir = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDir)) {
           broadcastLog('[System] Step 0c2 – Patching any pre-existing config files (pre-nemgen)...\n');
-          patchGeneratedConfigs(TARGET_DIR, version);
+          patchGeneratedConfigs(TARGET_DIR, version, basePreset);
         }
       }
 
@@ -6915,7 +6929,7 @@ app.post('/api/commands/start', async (req, res) => {
 
       // Step 3: Patch generated properties files (version-dependent)
       broadcastLog(`[System] Step 3/6 – Patching generated config files (${version.configPatches.length} patch sets)...\n`);
-      patchGeneratedConfigs(TARGET_DIR, version);
+      patchGeneratedConfigs(TARGET_DIR, version, basePreset);
 
       // Step 4: symbol-bootstrap compose (generates docker-compose.yml)
       broadcastLog('[System] Step 4/6 – Generating docker-compose.yml...\n');
