@@ -2350,17 +2350,21 @@ function resolveBootstrapTemplateDirs(): string[] {
 }
 
 function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string) {
-  // For testnet/mainnet, skip config-network.properties patches — the official
-  // base preset already has the correct fork_heights.  Overriding them (e.g.
-  // uniqueAggregateTransactionHash=0) causes Failure_Aggregate_V2_Prohibited
-  // when syncing old blocks that contain V2 aggregate transactions.
+  // For testnet/mainnet, the fork_heights properties must still EXIST (the V3
+  // binary requires them), but uniqueAggregateTransactionHash must NOT be '0'
+  // (which means 'V2 prohibited from genesis').  Official networks have V2
+  // aggregates in early blocks; set it to empty so the chain's own fork
+  // schedule applies.
   const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
-  const patches = isOfficialNetwork
-    ? version.configPatches.filter(p => p.file !== 'config-network.properties')
-    : version.configPatches;
+  const patches = version.configPatches.map(p => {
+    if (isOfficialNetwork && p.file === 'config-network.properties') {
+      return { ...p, props: { ...p.props, uniqueAggregateTransactionHash: '' } };
+    }
+    return p;
+  });
 
   const templateDirs = resolveBootstrapTemplateDirs();
-  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}${isOfficialNetwork ? ' (skipped config-network.properties for official network)' : ''}, template dirs: ${templateDirs.length}\n`);
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}${isOfficialNetwork ? ' (uniqueAggregateTransactionHash=empty for official network)' : ''}, template dirs: ${templateDirs.length}\n`);
 
   for (const templateDir of templateDirs) {
   for (const patch of patches) {
@@ -3993,12 +3997,15 @@ function backfillMosaicIds(targetDir: string): void {
 }
 
 function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, basePreset?: string) {
-  // For testnet/mainnet, skip config-network.properties patches — the official
-  // base preset defines the correct fork_heights and chain parameters.
+  // For testnet/mainnet, override uniqueAggregateTransactionHash to empty
+  // (the binary requires the property to exist, but '0' would block V2 txs).
   const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
-  const patches = isOfficialNetwork
-    ? version.configPatches.filter(p => p.file !== 'config-network.properties')
-    : version.configPatches;
+  const patches = version.configPatches.map(p => {
+    if (isOfficialNetwork && p.file === 'config-network.properties') {
+      return { ...p, props: { ...p.props, uniqueAggregateTransactionHash: '' } };
+    }
+    return p;
+  });
   const removePropsSet = version.removeProps ?? [];
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
