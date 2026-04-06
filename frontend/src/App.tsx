@@ -66,6 +66,14 @@ function App() {
           if (Array.isArray(data.gateways)) {
             merged.gateways = (data.gateways as GatewayConfig[]).map((g) => ({ ...DEFAULT_GATEWAY, ...g }));
           }
+          // Auto-fill empty node host with browser hostname (skip localhost/127.0.0.1)
+          const browserHost = window.location.hostname;
+          const isLocal = !browserHost || browserHost === 'localhost' || browserHost === '127.0.0.1' || browserHost === '::1';
+          if (!isLocal) {
+            merged.nodes = merged.nodes.map((n) =>
+              !n.host ? { ...n, host: browserHost } : n
+            );
+          }
           setConfig(merged);
         }
       })
