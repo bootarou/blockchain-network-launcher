@@ -118,6 +118,9 @@ app.use('/api', (req, res, next) => {
   if (!AUTH_ENABLED) return next();
   // Allow auth endpoints through (already handled above)
   if (req.path.startsWith('/auth/')) return next();
+  // Explorer's nodeWatch-compatible proxy must stay publicly reachable
+  // so external Explorer users can load node data without manager login.
+  if (req.path === '/explorer-proxy' || req.path.startsWith('/explorer-proxy/')) return next();
   // Support token via Authorization header or _token query param (for download links)
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ')
