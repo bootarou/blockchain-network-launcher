@@ -6,7 +6,7 @@
 ; =============================================================================
 
 #define MyAppName "Symbol Network Manager"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.2.2"
 #define MyAppPublisher "NFTDrive Bootarou"
 #define MyAppURL "https://github.com/bootarou/blockchain-network-launcher"
 
@@ -17,7 +17,8 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
-DefaultDirName={userappdata}\SymbolNetworkManager
+DefaultDirName={localappdata}\Programs\SymbolNetworkManager
+UsePreviousAppDir=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
@@ -26,9 +27,9 @@ OutputBaseFilename=SymbolNetworkManager-Setup-{#MyAppVersion}
 ; SetupIconFile=assets\icon.ico
 Compression=lzma2
 SolidCompression=yes
-; 管理者権限を要求（WSL2 + Docker のインストールに必要）
-PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+; Docker 事前準備前提のため非管理者で実行
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=commandline
 ; Windows 10 v2004 以上を要求
 MinVersion=10.0.19041
 WizardStyle=modern
@@ -36,52 +37,29 @@ WizardStyle=modern
 Uninstallable=no
 ; 進捗バーなし（PowerShell スクリプトが進捗を表示する）
 DisableFinishedPage=no
+; インストーラー実行ログを有効化（%TEMP% に Setup Log*.txt）
+SetupLogging=yes
 
 [Languages]
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
-japanese.WelcomeLabel2=このウィザードは、Symbol Network Manager の実行に必要な環境をセットアップします。%n%n以下のソフトウェアが自動的にインストールされます：%n  • WSL2 (Windows Subsystem for Linux 2)%n  • Docker Desktop for Windows%n  • Git for Windows%n  • Symbol Network Manager
-english.WelcomeLabel2=This wizard will set up the required environment for Symbol Network Manager.%n%nThe following software will be automatically installed:%n  • WSL2 (Windows Subsystem for Linux 2)%n  • Docker Desktop for Windows%n  • Git for Windows%n  • Symbol Network Manager
+japanese.WelcomeLabel2=このウィザードは、Symbol Network Manager の実行に必要な環境をセットアップします。%n%n以下のセットアップを行います：%n  • 同梱された Symbol Network Manager プロジェクトの起動設定%n%n※ Docker Desktop は事前にインストールして起動しておいてください。
+english.WelcomeLabel2=This wizard will set up the required environment for Symbol Network Manager.%n%nThe setup includes:%n  • Startup configuration for the bundled Symbol Network Manager project%n%n* Please install and start Docker Desktop in advance.
 
 [Files]
 ; PowerShell スクリプトを一時ディレクトリに展開
-Source: "scripts\check-prereqs.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
-Source: "scripts\setup-wsl2.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
-Source: "scripts\setup-docker.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 Source: "scripts\setup-project.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
+; プロジェクト本体をインストール先へ同梱
+Source: "..\..\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: ".git\*,node_modules\*,frontend\node_modules\*,backend\node_modules\*,build\windows\output\*"
 
 [Run]
-; Step 1: 前提条件チェック
+; Step 1: プロジェクトセットアップ
 Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{tmp}\check-prereqs.ps1"""; \
-  StatusMsg: "前提条件を確認しています..."; \
-  Flags: runhidden waituntilterminated; \
-  Check: not WizardSilent
-
-; Step 2: WSL2 セットアップ
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{tmp}\setup-wsl2.ps1"""; \
-  StatusMsg: "WSL2 をセットアップしています..."; \
-  Flags: runhidden waituntilterminated
-
-; Step 3: Docker Desktop セットアップ
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{tmp}\setup-docker.ps1"""; \
-  StatusMsg: "Docker Desktop をセットアップしています..."; \
-  Flags: runhidden waituntilterminated
-
-; Step 4: プロジェクトセットアップ
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{tmp}\setup-project.ps1"" -InstallDir ""{app}"""; \
+  Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{tmp}\setup-project.ps1"" -InstallDir ""{app}"""; \
   StatusMsg: "Symbol Network Manager をセットアップしています..."; \
-  Flags: runhidden waituntilterminated
-
-; 完了後にブラウザを開く
-Filename: "http://localhost:5173"; \
-  Description: "Symbol Network Manager を開く"; \
-  Flags: postinstall nowait shellexec skipifsilent
+  Flags: waituntilterminated
 
 [Code]
 // ── カスタム進捗表示用の Pascal Script ──────────────────────────
@@ -105,7 +83,7 @@ end;
 function InitializeSetup: Boolean;
 begin
   // Windows バージョンの最終確認
-  if not IsWindows10OrGreater then begin
+  if (GetWindowsVersion < $0A000000) then begin
     MsgBox('このアプリケーションは Windows 10 バージョン 2004 以上が必要です。', mbCriticalError, MB_OK);
     Result := False;
     Exit;
@@ -113,14 +91,8 @@ begin
   Result := True;
 end;
 
-function IsWindows10OrGreater: Boolean;
-begin
-  Result := (GetWindowsVersion >= $0A000000);
-end;
-
-// 再起動が必要な場合のハンドリング
+// 再起動は不要
 function NeedRestart: Boolean;
 begin
-  // WSL2 のインストール後に再起動が必要な場合
-  Result := FileExists(ExpandConstant('{tmp}\symbol-needs-reboot'));
+  Result := False;
 end;

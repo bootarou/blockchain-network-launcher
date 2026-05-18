@@ -1,15 +1,13 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Symbol Network Manager — プロジェクトセットアップ
 .DESCRIPTION
-    リポジトリのクローン、Docker イメージのビルド、コンテナ起動、
+    同梱済みプロジェクトを使って Docker イメージのビルド、コンテナ起動、
     ブラウザ起動、デスクトップショートカット作成を行います。
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallDir = "",
-    [string]$RepoUrl = "https://github.com/bootarou/blockchain-network-launcher.git"
+    [string]$InstallDir = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,85 +16,129 @@ if (-not $InstallDir) {
     $InstallDir = Join-Path $env:USERPROFILE "symbol-network-manager"
 }
 
-$ProjectDir = Join-Path $InstallDir "blockchain-network-launcher"
+$ProjectDir = $InstallDir
 $AppUrl = "http://localhost:5173"
-
-function Write-Step {
-    param([string]$Msg)
-    Write-Host ""
-    Write-Host ">> $Msg" -ForegroundColor Cyan
-}
-
-function Test-GitInstalled {
-    try {
-        git --version 2>&1 | Out-Null
-        return ($LASTEXITCODE -eq 0)
-    } catch {
-        return $false
-    }
-}
-
-# ── Step 1: Git の確認・インストール ─────────────────────────────
-Write-Step "Git を確認しています..."
-
-if (Test-GitInstalled) {
-    $gitVer = git --version 2>&1
-    Write-Host "  $gitVer" -ForegroundColor Green
-} else {
-    Write-Host "  Git がインストールされていません。インストールします..." -ForegroundColor Yellow
-
-    $useWinget = $false
-    try {
-        winget --version 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { $useWinget = $true }
-    } catch {}
-
-    if ($useWinget) {
-        winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements 2>&1
-        # PATH 更新
-        $gitPath = "$env:ProgramFiles\Git\cmd"
-        if (Test-Path $gitPath) { $env:PATH = "$gitPath;$env:PATH" }
-    } else {
-        Write-Host "  ✗ winget が利用できません。Git を手動でインストールしてください:" -ForegroundColor Red
-        Write-Host "    https://git-scm.com/download/win" -ForegroundColor Yellow
-        exit 1
-    }
-
-    if (-not (Test-GitInstalled)) {
-        Write-Host "  ✗ Git のインストールに失敗しました。" -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "  Git をインストールしました。" -ForegroundColor Green
-}
-
-# ── Step 2: リポジトリのクローン ─────────────────────────────────
-Write-Step "リポジトリをクローンしています..."
+$LogDir = Join-Path $env:LOCALAPPDATA "SymbolNetworkManager"
+$LogFile = Join-Path $LogDir "setup-project.log"
 
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-if (Test-Path (Join-Path $ProjectDir ".git")) {
-    Write-Host "  既存のリポジトリが見つかりました。最新版に更新します..." -ForegroundColor Yellow
-    Push-Location $ProjectDir
-    git pull origin main 2>&1
-    Pop-Location
-} else {
-    if (Test-Path $ProjectDir) {
-        Write-Host "  ⚠ $ProjectDir が存在しますが Git リポジトリではありません。" -ForegroundColor Yellow
-        Write-Host "  バックアップして再クローンします..." -ForegroundColor Yellow
-        $backupPath = "$ProjectDir.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        Rename-Item $ProjectDir $backupPath
-    }
-    git clone $RepoUrl $ProjectDir 2>&1
+if (-not (Test-Path $LogDir)) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
-if (-not (Test-Path (Join-Path $ProjectDir "docker-compose.yml"))) {
-    Write-Host "  ✗ クローンに失敗しました。docker-compose.yml が見つかりません。" -ForegroundColor Red
+function Write-Log {
+    param([string]$Msg)
+    Add-Content -Path $LogFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Msg"
+}
+
+function Fail-And-Exit {
+    param(
+        [string]$Message,
+        [string]$Detail = ""
+    )
+
+    Write-Host "  ✗ $Message" -ForegroundColor Red
+    if ($Detail) {
+        Write-Host $Detail -ForegroundColor DarkGray
+        Write-Log "DETAIL: $Detail"
+    }
+    Write-Host "  ログ: $LogFile" -ForegroundColor Yellow
+    Write-Log "FAILED: $Message"
     exit 1
 }
 
-Write-Host "  クローン先: $ProjectDir" -ForegroundColor Green
+# まず開始行を直接書き込んで、途中中断時も痕跡を残す
+Write-Log "setup-project.ps1 started. InstallDir=$InstallDir"
+Write-Log "PSVersion=$($PSVersionTable.PSVersion) ProcessArch=$([Environment]::Is64BitProcess) OSArch=$([Environment]::Is64BitOperatingSystem)"
+Write-Log "PATH=$env:PATH"
+
+function Write-Step {
+    param([string]$Msg)
+    Write-Log "STEP: $Msg"
+    Write-Host ""
+    Write-Host ">> $Msg" -ForegroundColor Cyan
+}
+
+function Find-DockerExe {
+    $cmd = Get-Command docker -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        return $cmd.Source
+    }
+
+    $candidates = @()
+    if ($env:ProgramW6432) {
+        $candidates += (Join-Path $env:ProgramW6432 "Docker\Docker\resources\bin\docker.exe")
+    }
+    if ($env:ProgramFiles) {
+        $candidates += (Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe")
+    }
+    if ($env:'ProgramFiles(x86)') {
+        $candidates += (Join-Path $env:'ProgramFiles(x86)' "Docker\Docker\resources\bin\docker.exe")
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Docker\Docker\resources\bin\docker.exe")
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Invoke-DockerCapture {
+    param(
+        [string]$DockerExe,
+        [string[]]$Arguments
+    )
+
+    $output = & $DockerExe @Arguments 2>&1 | Out-String
+    $exitCode = $LASTEXITCODE
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output   = $output
+    }
+}
+
+# ── Step 1: 同梱プロジェクトの検証 ────────────────────────────────
+Write-Step "同梱プロジェクトを確認しています..."
+
+if (-not (Test-Path $ProjectDir)) {
+    Fail-And-Exit -Message "インストール先が見つかりません: $ProjectDir"
+}
+
+if (-not (Test-Path (Join-Path $ProjectDir "docker-compose.yml"))) {
+    Fail-And-Exit -Message "同梱プロジェクトが不完全です。docker-compose.yml が見つかりません。" -Detail "インストーラにプロジェクト本体が同梱されているか確認してください。"
+}
+
+Write-Host "  プロジェクトパス: $ProjectDir" -ForegroundColor Green
+
+# ── Step 2: Docker Compose の確認 ────────────────────────────────
+Write-Step "Docker Compose の実行可否を確認しています..."
+
+$dockerExe = Find-DockerExe
+if (-not $dockerExe) {
+    Fail-And-Exit -Message "docker コマンドが見つかりません。Docker Desktop のインストールと起動を確認してください。"
+}
+
+Write-Host "  docker: $dockerExe" -ForegroundColor DarkGray
+Write-Log "docker.exe: $dockerExe"
+
+$composeVersion = Invoke-DockerCapture -DockerExe $dockerExe -Arguments @('compose', 'version')
+if ($composeVersion.ExitCode -ne 0) {
+    Fail-And-Exit -Message "'docker compose' が実行できません。Docker Desktop が起動しているか確認してください。" -Detail $composeVersion.Output
+}
+
+# Docker engine 接続可否チェック
+$dockerInfo = Invoke-DockerCapture -DockerExe $dockerExe -Arguments @('info')
+if ($dockerInfo.ExitCode -ne 0) {
+    Fail-And-Exit -Message "Docker engine に接続できません。Docker Desktop を起動してから再実行してください。" -Detail $dockerInfo.Output
+}
 
 # ── Step 3: Docker イメージのビルド ──────────────────────────────
 Write-Step "Docker イメージをビルドしています（数分かかります）..."
@@ -106,33 +148,40 @@ Push-Location $ProjectDir
 $env:COMPOSE_BAKE = "false"
 
 # ビルド実行
-$buildOutput = docker compose build 2>&1 | Out-String
+$build = Invoke-DockerCapture -DockerExe $dockerExe -Arguments @('compose', 'build')
+$buildOutput = $build.Output
+$buildExitCode = $build.ExitCode
 $buildSuccess = $buildOutput -match "symbol-manager\s+(Built|Successfully built)"
+Write-Log "docker compose build exit=$buildExitCode"
 
 # exit code 1 は Docker Desktop の stderr 出力による false positive の場合がある
-if (-not $buildSuccess) {
+if (($buildExitCode -ne 0) -or (-not $buildSuccess)) {
     # イメージが作成されたか直接確認
-    $images = docker images --filter "reference=*symbol-manager*" --format "{{.Repository}}:{{.Tag}}" 2>&1
+    $imagesResult = Invoke-DockerCapture -DockerExe $dockerExe -Arguments @('images', '--filter', 'reference=*symbol-manager*', '--format', '{{.Repository}}:{{.Tag}}')
+    $images = $imagesResult.Output
     $buildSuccess = ($images -match "symbol-manager")
 }
 
 if ($buildSuccess) {
     Write-Host "  ✓ ビルド成功" -ForegroundColor Green
 } else {
-    Write-Host "  ✗ ビルドに失敗しました。出力:" -ForegroundColor Red
-    Write-Host $buildOutput -ForegroundColor DarkGray
     Pop-Location
-    exit 1
+    Fail-And-Exit -Message "ビルドに失敗しました。" -Detail $buildOutput
 }
 
 # ── Step 4: コンテナの起動 ───────────────────────────────────────
 Write-Step "コンテナを起動しています..."
 
-docker compose up -d 2>&1
+$up = Invoke-DockerCapture -DockerExe $dockerExe -Arguments @('compose', 'up', '-d')
+$upOutput = $up.Output
+if ($up.ExitCode -ne 0) {
+    Pop-Location
+    Fail-And-Exit -Message "コンテナ起動に失敗しました。" -Detail $upOutput
+}
 
 # ヘルスチェック待ち
 Write-Host "  コンテナの起動を待っています..." -ForegroundColor Yellow
-$maxWait = 60
+$maxWait = 120
 $elapsed = 0
 $ready = $false
 while ($elapsed -lt $maxWait) {
@@ -150,8 +199,8 @@ Pop-Location
 if ($ready) {
     Write-Host "  ✓ アプリケーションが起動しました" -ForegroundColor Green
 } else {
-    Write-Host "  ⚠ アプリケーションの起動確認がタイムアウトしました。" -ForegroundColor Yellow
-    Write-Host "  docker compose logs で状態を確認してください。" -ForegroundColor Yellow
+    $logs = Invoke-DockerCapture -DockerExe $dockerExe -Arguments @('compose', 'logs', '--no-color', '--tail', '100')
+    Fail-And-Exit -Message "アプリケーションの起動確認がタイムアウトしました。" -Detail $logs.Output
 }
 
 # ── Step 5: デスクトップショートカット作成 ────────────────────────
@@ -193,4 +242,5 @@ Write-Host "  以下のコマンドを実行してください:" -ForegroundColo
 Write-Host "    cd $ProjectDir" -ForegroundColor DarkGray
 Write-Host "    docker compose up -d" -ForegroundColor DarkGray
 Write-Host ""
+Add-Content -Path $LogFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] setup-project.ps1 completed successfully."
 exit 0
