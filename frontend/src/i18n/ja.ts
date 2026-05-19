@@ -32,6 +32,7 @@ export const ja: TranslationDict = {
   'tabs.dashboard': 'Dashboard',
   'tabs.backup': 'Backup',
   'tabs.help': 'Help',
+  'tabs.publish': 'Publish',
 
   // ===========================================================================
   // Dashboard
@@ -868,4 +869,42 @@ export const ja: TranslationDict = {
   'backup.restore.restoredFiles': 'リストアされたファイル:',
   'backup.restore.error': 'リストア失敗: {error}',
   'backup.restore.button': 'リストアを実行',
+
+  // ===========================================================================
+  // Publish Network
+  // ===========================================================================
+  'publish.title': 'Cloudflare 経由で公開',
+  'publish.description': 'Symbol ノード（REST Gateway・Websocket）を Cloudflare Tunnel 経由でインターネットに公開します。',
+  'publish.configTitle': 'Cloudflare 認証情報',
+  'publish.tokenLabel': 'API トークン',
+  'publish.tokenPlaceholder': 'Cloudflare API トークンを入力...',
+  'publish.tokenHint': 'Cloudflare ダッシュボードで生成した「Edit Zone DNS」権限のトークンを使用します。',
+  'publish.zoneIdLabel': 'Zone ID',
+  'publish.zoneIdPlaceholder': '例: a1b2c3d4e5f6...',
+  'publish.zoneIdHint': 'Cloudflare ダッシュボード右側に表示される Zone ID。',
+  'publish.accountIdLabel': 'Account ID',
+  'publish.accountIdPlaceholder': '例: x9y8z7w6v5...',
+  'publish.accountIdHint': 'Cloudflare アカウントの Account ID。',
+  'publish.subdomainLabel': 'サブドメイン（プレフィックス）',
+  'publish.subdomainHint': '例: symbol-node → {subdomain}-3000.yourdomain.com のレコードが作成されます。',
+  'publish.portsLabel': '公開するポート',
+  'publish.show': '表示',
+  'publish.hide': '非表示',
+  'publish.configRequired': 'Token・Zone ID・Account ID はすべて必須です。',
+  'publish.configSaved': '設定を保存しました。',
+  'publish.saveButton': '設定を保存',
+  'publish.statusTitle': '公開状態',
+  'publish.selectPortsError': '少なくとも 1 つのポートを選択してください。',
+  'publish.publishedStatus': '公開中',
+  'publish.notPublishedStatus': '非公開',
+  'publish.lastPublished': '最終公開日時',
+  'publish.active': '有効',
+  'publish.inactive': '無効',
+  'publish.copy': 'URLをコピー',
+  'publish.publishSuccess': 'ネットワークを公開しました。',
+  'publish.publishButton': 'Cloudflare で公開する',
+  'publish.unpublishButton': '公開を取消',
+  'publish.unpublishConfirm': 'Cloudflare の DNS レコードを削除してネットワークの公開を取消しますか？',
+  'publish.refreshStatus': '状態を更新',
+  'publish.noStatus': '設定を保存すると公開状態を確認できます。',
 };

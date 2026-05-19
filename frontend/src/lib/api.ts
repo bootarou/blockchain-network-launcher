@@ -470,4 +470,72 @@ export const api = {
       xhr.send(file);
     });
   },
+
+  // ── Publish Network (Cloudflare) ───────────────────────────────────────
+
+  getPublishConfig: async (): Promise<{
+    cloudflareToken: string;
+    cloudflareZoneId: string;
+    cloudflareAccountId: string;
+    publish3000: boolean;
+    publish7900: boolean;
+    subdomain: string;
+  }> => {
+    const res = await authFetch(`${API_BASE}/publish/config`);
+    if (!res.ok) throw new Error('Failed to load publish config');
+    return res.json();
+  },
+
+  savePublishConfig: async (config: {
+    cloudflareToken: string;
+    cloudflareZoneId: string;
+    cloudflareAccountId: string;
+    publish3000: boolean;
+    publish7900: boolean;
+    subdomain: string;
+  }) => {
+    const res = await authFetch(`${API_BASE}/publish/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    if (!res.ok) throw new Error('Failed to save publish config');
+    return res.json();
+  },
+
+  getPublishStatus: async (): Promise<{
+    isPublished: boolean;
+    lastPublishedAt?: string;
+    port3000?: { name: string; description: string; isPublished: boolean; url?: string };
+    port7900?: { name: string; description: string; isPublished: boolean; url?: string };
+  }> => {
+    const res = await authFetch(`${API_BASE}/publish/status`);
+    if (!res.ok) throw new Error('Failed to load publish status');
+    return res.json();
+  },
+
+  publishNetwork: async (options: {
+    ports: { port3000: boolean; port7900: boolean };
+    subdomain: string;
+  }) => {
+    const res = await authFetch(`${API_BASE}/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  unpublishNetwork: async () => {
+    const res = await authFetch(`${API_BASE}/publish`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
 };

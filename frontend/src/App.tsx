@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut } from 'lucide-react';
+import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut, Cloud } from 'lucide-react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { JoinNetwork } from './components/JoinNetwork';
 import { ShareNetwork } from './components/ShareNetwork';
 import { BackupRestore } from './components/BackupRestore';
 import { HelpPage } from './components/HelpPage';
+import { PublishNetwork } from './components/PublishNetwork';
 import { LoginPage } from './components/LoginPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
 import { DEFAULT_PRESET, DEFAULT_NODE, DEFAULT_GATEWAY, type PresetConfig, type NodeConfig, type GatewayConfig } from './constants';
@@ -16,7 +17,7 @@ import { useTheme } from './theme';
 
 function App() {
   const [config, setConfig] = useState<PresetConfig>(DEFAULT_PRESET);
-  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'share' | 'backup' | 'help'>('config');
+  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'share' | 'publish' | 'backup' | 'help'>('config');
   const { t, lang, setLang } = useTranslation();
   const { theme, toggleTheme } = useTheme();
 
@@ -199,6 +200,17 @@ function App() {
                 {t('tabs.dashboard')}
               </button>
               <button
+                onClick={() => setActivePanel('publish')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  activePanel === 'publish'
+                    ? 'bg-violet-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <Cloud className="w-3.5 h-3.5" />
+                {t('tabs.publish')}
+              </button>
+              <button
                 onClick={() => setActivePanel('backup')}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
                   activePanel === 'backup'
@@ -270,6 +282,8 @@ function App() {
           <JoinNetwork onConfigImport={handleJoinImport} />
         ) : activePanel === 'share' ? (
           <ShareNetwork onConfigImport={handleShareImport} />
+        ) : activePanel === 'publish' ? (
+          <PublishNetwork />
         ) : activePanel === 'backup' ? (
           <BackupRestore />
         ) : activePanel === 'help' ? (

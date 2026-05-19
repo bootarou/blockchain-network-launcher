@@ -7725,6 +7725,209 @@ app.post('/api/network/fetch', async (req, res) => {
 });
 
 // =============================================================================
+// Publish Network (Cloudflare)
+// =============================================================================
+
+const PUBLISH_CONFIG_FILE = path.join(process.env.HOME || '/root', '.symbol-publish-config.json');
+let publishConfig: Record<string, unknown> = {};
+
+// Load publish config on startup
+try {
+  if (fs.existsSync(PUBLISH_CONFIG_FILE)) {
+    publishConfig = JSON.parse(fs.readFileSync(PUBLISH_CONFIG_FILE, 'utf8'));
+  }
+} catch {
+  /* ignore */
+}
+
+function savePublishConfig() {
+  try {
+    fs.writeFileSync(PUBLISH_CONFIG_FILE, JSON.stringify(publishConfig, null, 2));
+  } catch (err) {
+    console.error('Failed to save publish config:', err);
+  }
+}
+
+app.get('/api/publish/config', (_req, res) => {
+  res.json({
+    cloudflareToken: (publishConfig.cloudflareToken as string) || '',
+    cloudflareZoneId: (publishConfig.cloudflareZoneId as string) || '',
+    cloudflareAccountId: (publishConfig.cloudflareAccountId as string) || '',
+    publish3000: (publishConfig.publish3000 as boolean) ?? true,
+    publish7900: (publishConfig.publish7900 as boolean) ?? true,
+    subdomain: (publishConfig.subdomain as string) || 'symbol-network',
+  });
+});
+
+app.post('/api/publish/config', (req, res) => {
+  const { cloudflareToken, cloudflareZoneId, cloudflareAccountId, publish3000, publish7900, subdomain } = req.body;
+  publishConfig = {
+    cloudflareToken,
+    cloudflareZoneId,
+    cloudflareAccountId,
+    publish3000,
+    publish7900,
+    subdomain,
+  };
+  savePublishConfig();
+  res.json({ success: true });
+});
+
+app.get('/api/publish/status', async (_req, res) => {
+  try {
+    const token = publishConfig.cloudflareToken as string;
+    const zoneId = publishConfig.cloudflareZoneId as string;
+
+    if (!token || !zoneId) {
+      return res.json({
+        isPublished: false,
+        port3000: {
+          name: 'Symbol Node REST Gateway',
+          description: 'REST API サーバー（ポート 3000）',
+          isPublished: false,
+        },
+        port7900: {
+          name: 'Symbol Node Websocket',
+          description: 'Websocket サーバー（ポート 7900）',
+          isPublished: false,
+        },
+      });
+    }
+
+    // Cloudflare API で DNS レコード確認
+    const cf = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const data = (await cf.json()) as { result?: Array<{ name: string; content: string }> };
+    const records = data.result || [];
+
+    const subdomain = publishConfig.subdomain as string || 'symbol-network';
+    const port3000Record = records.find((r) => r.name?.includes(`${subdomain}-3000`));
+    const port7900Record = records.find((r) => r.name?.includes(`${subdomain}-7900`));
+
+    res.json({
+      isPublished: !!(port3000Record || port7900Record),
+      lastPublishedAt: publishConfig.lastPublishedAt,
+      port3000: {
+        name: 'Symbol Node REST Gateway',
+        description: 'REST API サーバー（ポート 3000）',
+        isPublished: !!port3000Record,
+        url: port3000Record?.content ? `https://${subdomain}-3000.yourdomain.com` : undefined,
+      },
+      port7900: {
+        name: 'Symbol Node Websocket',
+        description: 'Websocket サーバー（ポート 7900）',
+        isPublished: !!port7900Record,
+        url: port7900Record?.content ? `wss://${subdomain}-7900.yourdomain.com` : undefined,
+      },
+    });
+  } catch (err) {
+    console.error('Failed to get publish status:', err);
+    res.status(500).json({ error: 'Failed to get publish status' });
+  }
+});
+
+app.post('/api/publish', async (req, res) => {
+  try {
+    const { ports, subdomain } = req.body;
+    const token = publishConfig.cloudflareToken as string;
+    const zoneId = publishConfig.cloudflareZoneId as string;
+
+    if (!token || !zoneId) {
+      return res.status(400).json({ error: 'Cloudflare credentials not configured' });
+    }
+
+    const operations = [];
+
+    if (ports.port3000) {
+      operations.push(
+        fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            type: 'CNAME',
+            name: `${subdomain}-3000`,
+            content: 'localhost',
+            ttl: 3600,
+          }),
+        })
+      );
+    }
+
+    if (ports.port7900) {
+      operations.push(
+        fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            type: 'CNAME',
+            name: `${subdomain}-7900`,
+            content: 'localhost',
+            ttl: 3600,
+          }),
+        })
+      );
+    }
+
+    await Promise.all(operations);
+
+    publishConfig.lastPublishedAt = new Date().toISOString();
+    savePublishConfig();
+
+    res.json({ success: true, published: true });
+  } catch (err) {
+    console.error('Failed to publish network:', err);
+    res.status(500).json({ error: 'Failed to publish network' });
+  }
+});
+
+app.delete('/api/publish', async (_req, res) => {
+  try {
+    const token = publishConfig.cloudflareToken as string;
+    const zoneId = publishConfig.cloudflareZoneId as string;
+
+    if (!token || !zoneId) {
+      return res.status(400).json({ error: 'Cloudflare credentials not configured' });
+    }
+
+    // Get all DNS records and delete ones we created
+    const cf = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const data = (await cf.json()) as { result?: Array<{ id: string; name: string }> };
+    const records = data.result || [];
+
+    const subdomain = publishConfig.subdomain as string || 'symbol-network';
+    const toDelete = records.filter((r) => r.name?.includes(subdomain));
+
+    await Promise.all(
+      toDelete.map((record) =>
+        fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${record.id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      )
+    );
+
+    delete publishConfig.lastPublishedAt;
+    savePublishConfig();
+
+    res.json({ success: true, published: false });
+  } catch (err) {
+    console.error('Failed to unpublish network:', err);
+    res.status(500).json({ error: 'Failed to unpublish network' });
+  }
+});
+
+// =============================================================================
 // Explorer reverse proxy — serve the Explorer SPA through symbol-manager
 // =============================================================================
 // The Explorer container runs on port 4000 internally (exposed as 8090).

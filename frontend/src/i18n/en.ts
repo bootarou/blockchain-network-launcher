@@ -32,6 +32,7 @@ export const en: TranslationDict = {
   'tabs.dashboard': 'Dashboard',
   'tabs.backup': 'Backup',
   'tabs.help': 'Help',
+  'tabs.publish': 'Publish',
 
   // ===========================================================================
   // Dashboard
@@ -868,4 +869,42 @@ export const en: TranslationDict = {
   'backup.restore.restoredFiles': 'Restored files:',
   'backup.restore.error': 'Restore failed: {error}',
   'backup.restore.button': 'Restore',
+
+  // ===========================================================================
+  // Publish Network
+  // ===========================================================================
+  'publish.title': 'Publish via Cloudflare',
+  'publish.description': 'Expose Symbol node ports (REST Gateway & Websocket) to the internet via Cloudflare DNS records.',
+  'publish.configTitle': 'Cloudflare Credentials',
+  'publish.tokenLabel': 'API Token',
+  'publish.tokenPlaceholder': 'Enter Cloudflare API token...',
+  'publish.tokenHint': 'Use an API token with Edit Zone DNS permission from the Cloudflare dashboard.',
+  'publish.zoneIdLabel': 'Zone ID',
+  'publish.zoneIdPlaceholder': 'e.g. a1b2c3d4e5f6...',
+  'publish.zoneIdHint': 'Zone ID shown on the right side of the Cloudflare dashboard.',
+  'publish.accountIdLabel': 'Account ID',
+  'publish.accountIdPlaceholder': 'e.g. x9y8z7w6v5...',
+  'publish.accountIdHint': 'Your Cloudflare account ID.',
+  'publish.subdomainLabel': 'Subdomain Prefix',
+  'publish.subdomainHint': 'e.g. symbol-node → DNS records {subdomain}-3000.yourdomain.com will be created.',
+  'publish.portsLabel': 'Ports to publish',
+  'publish.show': 'Show',
+  'publish.hide': 'Hide',
+  'publish.configRequired': 'Token, Zone ID, and Account ID are all required.',
+  'publish.configSaved': 'Configuration saved.',
+  'publish.saveButton': 'Save Configuration',
+  'publish.statusTitle': 'Publish Status',
+  'publish.selectPortsError': 'Please select at least one port.',
+  'publish.publishedStatus': 'Published',
+  'publish.notPublishedStatus': 'Not Published',
+  'publish.lastPublished': 'Last published',
+  'publish.active': 'Active',
+  'publish.inactive': 'Inactive',
+  'publish.copy': 'Copy URL',
+  'publish.publishSuccess': 'Network published successfully.',
+  'publish.publishButton': 'Publish via Cloudflare',
+  'publish.unpublishButton': 'Unpublish',
+  'publish.unpublishConfirm': 'Delete Cloudflare DNS records and unpublish the network?',
+  'publish.refreshStatus': 'Refresh status',
+  'publish.noStatus': 'Save configuration to check publish status.',
 };
