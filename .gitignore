@@ -46,6 +46,9 @@ shared/.ui-meta.json
 draft/windows.zip
 draft/**/*.zip
 
+# Inno Setup build output (EXE — rebuild with ISCC.exe setup.iss)
+build/windows/output/
+
 # Development notes
 summary.md
 

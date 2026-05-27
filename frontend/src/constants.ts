@@ -682,6 +682,10 @@ export const OFFICIAL_TESTNET_GENERATION_HASH =
 
 export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
   mainnet: {
+    catapultVersion: 'v3',
+    symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
+    symbolRestImage: 'symbolplatform/symbol-rest:2.4.4',
+    symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
     networkType: 'mainnet', networkIdentifier: 104, networkName: 'mainnet', friendlyName: 'mainnet',
     nemesisGenerationHashSeed: '57F7DA205008026C776CB6AED843393F04CD458E0AA2D9F1D5F31A402072B2D6',
     epochAdjustment: '1615853185s',
@@ -700,6 +704,10 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
     namespaceGracePeriodDuration: '30d', lockedFundsPerAggregate: "10'000'000", maxMessageSize: 1024,
   },
   testnet: {
+    catapultVersion: 'v3',
+    symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
+    symbolRestImage: 'symbolplatform/symbol-rest:2.4.4',
+    symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
     networkType: 'testnet', networkIdentifier: 152, networkName: 'testnet', friendlyName: 'testnet',
     nemesisGenerationHashSeed: '49D6E1CE276A85B70EAFE52349AACCA389302E7A9754BCF1221E79494FC665A4',
     epochAdjustment: '1667250467s',

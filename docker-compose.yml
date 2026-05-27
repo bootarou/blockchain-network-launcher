@@ -7,9 +7,8 @@ services:
         SYMBOL_BOOTSTRAP_REPO: ${SYMBOL_BOOTSTRAP_REPO:-https://github.com/bootarou/symbol-bootstrap.git}
     container_name: symbol-manager
     ports:
-      - "4000:4000"   # Backend API & WebSocket
-      - "5173:5173"   # Frontend Vite dev server
-      - "80:80"       # Frontend production (future)
+      - "${BIND_ADDRESS:-127.0.0.1}:4000:4000"   # Backend API & WebSocket
+      - "${BIND_ADDRESS:-127.0.0.1}:5173:5173"   # Frontend Vite dev server
       # NOTE: 3000 and 7900 are NOT mapped here.
       # symbol-bootstrap creates sibling containers (rest-gateway, api-node)
       # via the shared docker.sock, and those containers bind directly to
@@ -26,6 +25,10 @@ services:
       - NODE_ENV=development
       - PORT=4000
       - TARGET_DIR=${SYMBOL_TARGET_DIR:-/var/lib/symbol-target}
+      # ── Admin authentication ──
+      # Set ADMIN_PASSWORD to enable login protection for the Web UI.
+      # When empty or unset, authentication is disabled (open access).
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/api/status"]
       interval: 30s

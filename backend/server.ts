@@ -15,15 +15,147 @@ import AdmZip from 'adm-zip';
 // =============================================================================
 
 const app = express();
-app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// =============================================================================
+// Admin authentication
+// =============================================================================
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const AUTH_ENABLED = ADMIN_PASSWORD.length > 0;
+const AUTH_TOKEN_SECRET = AUTH_ENABLED
+  ? crypto.randomBytes(32).toString('hex')
+  : '';
+const AUTH_TOKEN_TTL = 60 * 60 * 1000; // 1 hour
+
+// ── Simple in-memory rate limiter for login ──
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function isLoginRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 }); // 15 min window
+    return false;
+  }
+  entry.count++;
+  return entry.count > 5; // max 5 attempts per window
+}
+
+// Periodically clean up expired entries (every 30 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of loginAttempts) {
+    if (now > entry.resetAt) loginAttempts.delete(ip);
+  }
+}, 30 * 60 * 1000);
+
+/** Generate a signed auth token for a successful login. */
+function generateAuthToken(): string {
+  const payload = Date.now().toString();
+  const hmac = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('hex');
+  return `${payload}.${hmac}`;
+}
+
+/** Verify an auth token is valid (includes TTL check). */
+function verifyAuthToken(token: string): boolean {
+  const dot = token.indexOf('.');
+  if (dot === -1) return false;
+  const payload = token.substring(0, dot);
+  const hmac = token.substring(dot + 1);
+  // Check token age
+  const issued = parseInt(payload, 10);
+  if (isNaN(issued) || Date.now() - issued > AUTH_TOKEN_TTL) return false;
+  const expected = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+// ── Auth endpoints (always available) ──
+
+app.get('/api/auth/status', (_req, res) => {
+  res.json({ authRequired: AUTH_ENABLED });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!AUTH_ENABLED) {
+    return res.json({ success: true, token: '' });
+  }
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (isLoginRateLimited(ip)) {
+    return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+  }
+  const { password } = req.body ?? {};
+  if (!password || typeof password !== 'string') {
+    return res.status(401).json({ error: 'Invalid password.' });
+  }
+  // Timing-safe comparison: hash both values to ensure constant-time check
+  // regardless of password length difference.
+  const inputHash = crypto.createHash('sha256').update(password).digest();
+  const expectedHash = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
+  if (!crypto.timingSafeEqual(inputHash, expectedHash)) {
+    return res.status(401).json({ error: 'Invalid password.' });
+  }
+  const token = generateAuthToken();
+  res.json({ success: true, token });
+});
+
+app.post('/api/auth/verify', (req, res) => {
+  if (!AUTH_ENABLED) {
+    return res.json({ valid: true });
+  }
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  try {
+    res.json({ valid: verifyAuthToken(token) });
+  } catch {
+    res.json({ valid: false });
+  }
+});
+
+// ── Auth middleware: protect all /api/* routes below this point ──
+
+app.use('/api', (req, res, next) => {
+  if (!AUTH_ENABLED) return next();
+  // Allow auth endpoints through (already handled above)
+  if (req.path.startsWith('/auth/')) return next();
+  // Explorer's nodeWatch-compatible proxy must stay publicly reachable
+  // so external Explorer users can load node data without manager login.
+  if (req.path === '/explorer-proxy' || req.path.startsWith('/explorer-proxy/')) return next();
+  // Support token via Authorization header or _token query param (for download links)
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : (req.query._token as string) || '';
+  try {
+    if (token && verifyAuthToken(token)) return next();
+  } catch { /* invalid token */ }
+  res.status(401).json({ error: 'Unauthorized. Please log in.' });
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 // Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
 server.on('upgrade', (request: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer) => {
-  if (request.url === '/ws') {
+  const reqUrl = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+
+  // ── Authenticate WebSocket upgrades when auth is enabled ──
+  if (AUTH_ENABLED) {
+    const token = reqUrl.searchParams.get('token') || '';
+    try {
+      if (!token || !verifyAuthToken(token)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+    } catch {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
+
+  if (reqUrl.pathname === '/ws') {
     // Proxy WebSocket to Symbol REST gateway for Explorer block notifications
     wss.handleUpgrade(request, socket, head, (clientWs) => {
       const upstream = new WebSocket(`ws://${NODE_REST_HOST}:${NODE_REST_PORT}/ws`);
@@ -2220,12 +2352,25 @@ function resolveBootstrapTemplateDirs(): string[] {
   return dirs;
 }
 
-function patchMustacheTemplates(version: CatapultVersionDef) {
+function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string) {
+  // For testnet/mainnet, the fork_heights properties must still EXIST (the V3
+  // binary requires them), but uniqueAggregateTransactionHash must NOT be '0'
+  // (which means 'V2 prohibited from genesis').  Official networks have V2
+  // aggregates in early blocks; set it to empty so the chain's own fork
+  // schedule applies.
+  const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
+  const patches = version.configPatches.map(p => {
+    if (isOfficialNetwork && p.file === 'config-network.properties') {
+      return { ...p, props: { ...p.props, uniqueAggregateTransactionHash: '' } };
+    }
+    return p;
+  });
+
   const templateDirs = resolveBootstrapTemplateDirs();
-  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${version.configPatches.length}, template dirs: ${templateDirs.length}\n`);
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}${isOfficialNetwork ? ' (uniqueAggregateTransactionHash=empty for official network)' : ''}, template dirs: ${templateDirs.length}\n`);
 
   for (const templateDir of templateDirs) {
-  for (const patch of version.configPatches) {
+  for (const patch of patches) {
     const templatePath = path.join(templateDir, patch.file + '.mustache');
     if (!fs.existsSync(templatePath)) {
       broadcastLog(`[Pre-Patch] ⚠️  Template not found: ${templatePath}\n`);
@@ -3854,8 +3999,16 @@ function backfillMosaicIds(targetDir: string): void {
   }
 }
 
-function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef) {
-  const patches = version.configPatches;
+function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, basePreset?: string) {
+  // For testnet/mainnet, override uniqueAggregateTransactionHash to empty
+  // (the binary requires the property to exist, but '0' would block V2 txs).
+  const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
+  const patches = version.configPatches.map(p => {
+    if (isOfficialNetwork && p.file === 'config-network.properties') {
+      return { ...p, props: { ...p.props, uniqueAggregateTransactionHash: '' } };
+    }
+    return p;
+  });
   const removePropsSet = version.removeProps ?? [];
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
@@ -6298,6 +6451,62 @@ app.post('/api/commands/start', async (req, res) => {
         // 3b. Apply Docker Host Mode patches (also needed on quick restart)
         patchDockerHostMode(TARGET_DIR);
 
+        // 3c. Sync mutable node settings from custom-preset.yml → config-node.properties
+        //     Restart mode skips `symbol-bootstrap config`, so changes like
+        //     friendlyName, host, minFeeMultiplier etc. are NOT propagated to
+        //     the generated config files.  Patch them here so Stop→Start
+        //     picks up any UI changes without requiring a Full Reset.
+        {
+          try {
+            const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+            const presetNodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
+            if (presetNodes && presetNodes.length > 0) {
+              const nodesDirSync = path.join(TARGET_DIR, 'nodes');
+              if (fs.existsSync(nodesDirSync)) {
+                for (const nodeEntry of presetNodes) {
+                  const nodeName = String(nodeEntry.name || 'api-node-0');
+                  const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
+                  if (!fs.existsSync(configPath)) continue;
+
+                  let configContent = fs.readFileSync(configPath, 'utf-8');
+                  let patched = false;
+
+                  // Mutable fields that the user can change via UI without needing
+                  // a full bootstrap config regeneration.
+                  const mutableFields: Array<{ presetKey: string; propKey: string }> = [
+                    { presetKey: 'friendlyName', propKey: 'friendlyName' },
+                    { presetKey: 'host', propKey: 'host' },
+                    { presetKey: 'minFeeMultiplier', propKey: 'minFeeMultiplier' },
+                    { presetKey: 'maxTrackedNodes', propKey: 'maxTrackedNodes' },
+                  ];
+
+                  for (const { presetKey, propKey } of mutableFields) {
+                    const newValue = nodeEntry[presetKey];
+                    if (newValue === undefined || newValue === null) continue;
+                    const regex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
+                    if (regex.test(configContent)) {
+                      const oldMatch = configContent.match(regex)?.[0] || '';
+                      const newLine = `${propKey} = ${newValue}`;
+                      if (oldMatch !== newLine) {
+                        configContent = configContent.replace(regex, newLine);
+                        patched = true;
+                        broadcastLog(`[Patch] ${nodeName}: ${oldMatch} → ${newLine}\n`);
+                      }
+                    }
+                  }
+
+                  if (patched) {
+                    fs.writeFileSync(configPath, configContent, 'utf-8');
+                    broadcastLog(`[Patch] config-node.properties synced for ${nodeName} ✓\n`);
+                  }
+                }
+              }
+            }
+          } catch (e: any) {
+            broadcastLog(`[Patch] ⚠️ config-node.properties sync warning: ${e.message}\n`);
+          }
+        }
+
         // 4. Run containers
         broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
         await runBootstrapCommand('run', ['-d'], {
@@ -6459,7 +6668,7 @@ app.post('/api/commands/start', async (req, res) => {
       } catch (e: any) {
         broadcastLog(`[Pre-Patch] ⚠️  npx prime failed (non-fatal): ${e.message}\n`);
       }
-      patchMustacheTemplates(version);
+      patchMustacheTemplates(version, basePreset);
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
       // (e.g. different bootstrap install layout on join PC), directly patch
@@ -6470,7 +6679,7 @@ app.post('/api/commands/start', async (req, res) => {
         const nodesDir = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDir)) {
           broadcastLog('[System] Step 0c2 – Patching any pre-existing config files (pre-nemgen)...\n');
-          patchGeneratedConfigs(TARGET_DIR, version);
+          patchGeneratedConfigs(TARGET_DIR, version, basePreset);
         }
       }
 
@@ -6479,7 +6688,10 @@ app.post('/api/commands/start', async (req, res) => {
       // generates the nemesis block with harvestingMosaicId = currencyMosaicId
       // and importance based on the currency supply, preventing
       // Failure_Core_Importance_Block_Mismatch at node startup.
-      patchMustacheForSingleCurrency();
+      // Skip for testnet/mainnet (official networks always use dual-currency).
+      if (basePreset !== 'testnet' && basePreset !== 'mainnet') {
+        patchMustacheForSingleCurrency();
+      }
 
       // Step 0e: Promote networkProperties.chain / plugin values to the top
       // level of custom-preset.yml so symbol-bootstrap's mustache templates
@@ -6489,8 +6701,15 @@ app.post('/api/commands/start', async (req, res) => {
       // importanceGrouping=180, etc.) would override the user's settings,
       // causing a mismatch between the generated nemesis block and
       // config-network.properties → Failure_Core_Importance_Block_Mismatch.
-      broadcastLog('[System] Step 0e – Promoting chain/plugin overrides to preset top level...\n');
-      normalizePresetTopLevelOverrides(PRESET_PATH);
+      //
+      // Skip for testnet/mainnet: official presets define their own values;
+      // promoting custom overrides would cause state hash mismatches.
+      if (basePreset !== 'testnet' && basePreset !== 'mainnet') {
+        broadcastLog('[System] Step 0e – Promoting chain/plugin overrides to preset top level...\n');
+        normalizePresetTopLevelOverrides(PRESET_PATH);
+      } else {
+        broadcastLog(`[System] Step 0e – Skipped (using ${basePreset} base preset — no custom chain overrides).\n`);
+      }
 
       // Step 1: symbol-bootstrap config  (--upgrade to force regeneration)
       //   Reads custom-preset.yml which now has the patched image name.
@@ -6555,6 +6774,81 @@ app.post('/api/commands/start', async (req, res) => {
       // imported nemesis block → "invalid generation hash proof" or
       // "nemesis public key does not match network".
       const hasImportedSeedForStart = fs.existsSync(path.join(SEED_DIR, '00000', '00001.dat'));
+
+      // ── Testnet / Mainnet: strip networkProperties from custom-preset.yml ──
+      // When using an official network preset (testnet / mainnet), chain and
+      // plugin parameters are defined by the base preset.  If our custom-preset.yml
+      // contains networkProperties (e.g. from a previous custom network config),
+      // they override the official values and cause:
+      //   "nemesis block state hash does not match calculated state hash"
+      // Only safe overrides: nodes, gateways, docker images, privateKeySecurityMode.
+      if (basePreset === 'testnet' || basePreset === 'mainnet') {
+        try {
+          const officialDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+          let stripped = false;
+          // Remove networkProperties entirely — all chain/plugin/identity values
+          // must come from the official base preset.
+          if (officialDoc.networkProperties) { delete officialDoc.networkProperties; stripped = true; }
+          // Also remove top-level promoted keys that normalizePresetTopLevelOverrides()
+          // may have written (these override mustache template defaults).
+          const DANGEROUS_TOP_KEYS = [
+            'nemesisGenerationHashSeed', 'nemesisSignerPublicKey',
+            'epochAdjustment', 'networkType', 'networkIdentifier',
+            'currencyMosaicId', 'harvestingMosaicId',
+            'totalChainImportance', 'initialCurrencyAtomicUnits',
+            'blockGenerationTargetTime', 'blockTimeSmoothingFactor',
+            'importanceGrouping', 'importanceActivityPercentage',
+            'maxRollbackBlocks', 'maxDifficultyBlocks',
+            'maxTransactionLifetime', 'maxBlockFutureTime',
+            'maxTransactionsPerBlock', 'maxMosaicAtomicUnits',
+            'minHarvesterBalance', 'maxHarvesterBalance',
+            'minVoterBalance', 'votingSetGrouping',
+            'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',
+            'harvestBeneficiaryPercentage', 'harvestNetworkPercentage',
+            'harvestNetworkFeeSinkAddress', 'harvestNetworkFeeSinkAddressV1',
+            'defaultDynamicFeeMultiplier',
+            // Plugin keys
+            'maxTransactionsPerAggregate', 'maxCosignaturesPerAggregate',
+            'enableStrictCosignatureCheck', 'enableBondedAggregateSupport',
+            'maxBondedTransactionLifetime',
+            'lockedFundsPerAggregate', 'maxHashLockDuration',
+            'maxSecretLockDuration', 'minProofSize', 'maxProofSize',
+            'maxValueSize',
+            'maxMosaicsPerAccount', 'maxMosaicDuration', 'maxMosaicDivisibility',
+            'mosaicRentalFeeSinkAddress', 'mosaicRentalFeeSinkAddressV1', 'mosaicRentalFee',
+            'maxNamespacesPerAccount', 'maxNameSize', 'maxNamespaceDepth',
+            'maxChildNamespaces', 'minNamespaceDuration', 'maxNamespaceDuration',
+            'namespaceGracePeriodDuration', 'reservedRootNamespaceNames',
+            'namespaceRentalFeeSinkAddress', 'namespaceRentalFeeSinkAddressV1',
+            'rootNamespaceRentalFeePerBlock', 'childNamespaceRentalFee',
+            'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
+            'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
+            'maxMessageSize',
+          ] as const;
+          for (const k of DANGEROUS_TOP_KEYS) {
+            if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
+          }
+          // Remove inflation (official networks have their own schedule)
+          if (officialDoc.inflation) { delete officialDoc.inflation; stripped = true; }
+
+          // Remove Docker image overrides — testnet/mainnet must use the
+          // images defined by their base preset.  Stale image tags from a
+          // previous custom-network session (e.g. gcc-1.0.3.6 / V2) would
+          // cause version mismatches with the official chain.
+          const IMAGE_KEYS = ['symbolServerImage', 'symbolRestImage', 'symbolServerToolsImage'] as const;
+          for (const k of IMAGE_KEYS) {
+            if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
+          }
+
+          if (stripped) {
+            fs.writeFileSync(PRESET_PATH, yaml.dump(officialDoc, { lineWidth: -1 }), 'utf-8');
+            broadcastLog(`[System] Stripped networkProperties & chain overrides from custom-preset.yml (using ${basePreset} base preset).\n`);
+          }
+        } catch (e: any) {
+          broadcastLog(`[System] ⚠️  Could not strip network overrides: ${e.message}\n`);
+        }
+      }
+
       if (!dataExists && !generatedPresetExists && !hasImportedSeedForStart) {
         try {
           const freshDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
@@ -6645,7 +6939,7 @@ app.post('/api/commands/start', async (req, res) => {
 
       // Step 3: Patch generated properties files (version-dependent)
       broadcastLog(`[System] Step 3/6 – Patching generated config files (${version.configPatches.length} patch sets)...\n`);
-      patchGeneratedConfigs(TARGET_DIR, version);
+      patchGeneratedConfigs(TARGET_DIR, version, basePreset);
 
       // Step 4: symbol-bootstrap compose (generates docker-compose.yml)
       broadcastLog('[System] Step 4/6 – Generating docker-compose.yml...\n');
@@ -7427,6 +7721,209 @@ app.post('/api/network/fetch', async (req, res) => {
     res.status(502).json({
       error: `Failed to fetch from node: ${err.message}`,
     });
+  }
+});
+
+// =============================================================================
+// Publish Network (Cloudflare)
+// =============================================================================
+
+const PUBLISH_CONFIG_FILE = path.join(process.env.HOME || '/root', '.symbol-publish-config.json');
+let publishConfig: Record<string, unknown> = {};
+
+// Load publish config on startup
+try {
+  if (fs.existsSync(PUBLISH_CONFIG_FILE)) {
+    publishConfig = JSON.parse(fs.readFileSync(PUBLISH_CONFIG_FILE, 'utf8'));
+  }
+} catch {
+  /* ignore */
+}
+
+function savePublishConfig() {
+  try {
+    fs.writeFileSync(PUBLISH_CONFIG_FILE, JSON.stringify(publishConfig, null, 2));
+  } catch (err) {
+    console.error('Failed to save publish config:', err);
+  }
+}
+
+app.get('/api/publish/config', (_req, res) => {
+  res.json({
+    cloudflareToken: (publishConfig.cloudflareToken as string) || '',
+    cloudflareZoneId: (publishConfig.cloudflareZoneId as string) || '',
+    cloudflareAccountId: (publishConfig.cloudflareAccountId as string) || '',
+    publish3000: (publishConfig.publish3000 as boolean) ?? true,
+    publish7900: (publishConfig.publish7900 as boolean) ?? true,
+    subdomain: (publishConfig.subdomain as string) || 'symbol-network',
+  });
+});
+
+app.post('/api/publish/config', (req, res) => {
+  const { cloudflareToken, cloudflareZoneId, cloudflareAccountId, publish3000, publish7900, subdomain } = req.body;
+  publishConfig = {
+    cloudflareToken,
+    cloudflareZoneId,
+    cloudflareAccountId,
+    publish3000,
+    publish7900,
+    subdomain,
+  };
+  savePublishConfig();
+  res.json({ success: true });
+});
+
+app.get('/api/publish/status', async (_req, res) => {
+  try {
+    const token = publishConfig.cloudflareToken as string;
+    const zoneId = publishConfig.cloudflareZoneId as string;
+
+    if (!token || !zoneId) {
+      return res.json({
+        isPublished: false,
+        port3000: {
+          name: 'Symbol Node REST Gateway',
+          description: 'REST API サーバー（ポート 3000）',
+          isPublished: false,
+        },
+        port7900: {
+          name: 'Symbol Node Websocket',
+          description: 'Websocket サーバー（ポート 7900）',
+          isPublished: false,
+        },
+      });
+    }
+
+    // Cloudflare API で DNS レコード確認
+    const cf = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const data = (await cf.json()) as { result?: Array<{ name: string; content: string }> };
+    const records = data.result || [];
+
+    const subdomain = publishConfig.subdomain as string || 'symbol-network';
+    const port3000Record = records.find((r) => r.name?.includes(`${subdomain}-3000`));
+    const port7900Record = records.find((r) => r.name?.includes(`${subdomain}-7900`));
+
+    res.json({
+      isPublished: !!(port3000Record || port7900Record),
+      lastPublishedAt: publishConfig.lastPublishedAt,
+      port3000: {
+        name: 'Symbol Node REST Gateway',
+        description: 'REST API サーバー（ポート 3000）',
+        isPublished: !!port3000Record,
+        url: port3000Record?.content ? `https://${subdomain}-3000.yourdomain.com` : undefined,
+      },
+      port7900: {
+        name: 'Symbol Node Websocket',
+        description: 'Websocket サーバー（ポート 7900）',
+        isPublished: !!port7900Record,
+        url: port7900Record?.content ? `wss://${subdomain}-7900.yourdomain.com` : undefined,
+      },
+    });
+  } catch (err) {
+    console.error('Failed to get publish status:', err);
+    res.status(500).json({ error: 'Failed to get publish status' });
+  }
+});
+
+app.post('/api/publish', async (req, res) => {
+  try {
+    const { ports, subdomain } = req.body;
+    const token = publishConfig.cloudflareToken as string;
+    const zoneId = publishConfig.cloudflareZoneId as string;
+
+    if (!token || !zoneId) {
+      return res.status(400).json({ error: 'Cloudflare credentials not configured' });
+    }
+
+    const operations = [];
+
+    if (ports.port3000) {
+      operations.push(
+        fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            type: 'CNAME',
+            name: `${subdomain}-3000`,
+            content: 'localhost',
+            ttl: 3600,
+          }),
+        })
+      );
+    }
+
+    if (ports.port7900) {
+      operations.push(
+        fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            type: 'CNAME',
+            name: `${subdomain}-7900`,
+            content: 'localhost',
+            ttl: 3600,
+          }),
+        })
+      );
+    }
+
+    await Promise.all(operations);
+
+    publishConfig.lastPublishedAt = new Date().toISOString();
+    savePublishConfig();
+
+    res.json({ success: true, published: true });
+  } catch (err) {
+    console.error('Failed to publish network:', err);
+    res.status(500).json({ error: 'Failed to publish network' });
+  }
+});
+
+app.delete('/api/publish', async (_req, res) => {
+  try {
+    const token = publishConfig.cloudflareToken as string;
+    const zoneId = publishConfig.cloudflareZoneId as string;
+
+    if (!token || !zoneId) {
+      return res.status(400).json({ error: 'Cloudflare credentials not configured' });
+    }
+
+    // Get all DNS records and delete ones we created
+    const cf = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const data = (await cf.json()) as { result?: Array<{ id: string; name: string }> };
+    const records = data.result || [];
+
+    const subdomain = publishConfig.subdomain as string || 'symbol-network';
+    const toDelete = records.filter((r) => r.name?.includes(subdomain));
+
+    await Promise.all(
+      toDelete.map((record) =>
+        fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${record.id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      )
+    );
+
+    delete publishConfig.lastPublishedAt;
+    savePublishConfig();
+
+    res.json({ success: true, published: false });
+  } catch (err) {
+    console.error('Failed to unpublish network:', err);
+    res.status(500).json({ error: 'Failed to unpublish network' });
   }
 });
 
