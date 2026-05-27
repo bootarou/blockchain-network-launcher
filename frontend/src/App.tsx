@@ -233,6 +233,25 @@ function App() {
               Symbol / NEM
             </a>
           </p>
+          <p className="flex items-center justify-center gap-3">
+            <a
+              href="https://github.com/bootarou/blockchain-network-launcher"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-zinc-500 hover:text-indigo-400 transition-colors"
+            >
+              GitHub
+            </a>
+            <span className="text-zinc-700">|</span>
+            <a
+              href="https://x.com/bootarou_0x00"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-zinc-500 hover:text-sky-400 transition-colors"
+            >
+              X @bootarou_0x00
+            </a>
+          </p>
         </footer>
       </div>
     </div>
