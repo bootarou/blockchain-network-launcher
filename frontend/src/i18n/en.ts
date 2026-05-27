@@ -16,6 +16,15 @@ export const en: TranslationDict = {
   'theme.switchToLight': 'Switch to light mode',
   'theme.switchToDark': 'Switch to dark mode',
 
+  // Login
+  'login.subtitle': 'Enter admin password to continue',
+  'login.placeholder': 'Admin password',
+  'login.button': 'Log In',
+  'login.loading': 'Logging in...',
+  'login.error': 'Incorrect password. Please try again.',
+  'login.rateLimited': 'Too many attempts. Please wait 15 minutes.',
+  'login.logout': 'Log out',
+
   // Tabs
   'tabs.config': 'Configuration',
   'tabs.join': 'Join Network',
@@ -23,6 +32,18 @@ export const en: TranslationDict = {
   'tabs.dashboard': 'Dashboard',
   'tabs.backup': 'Backup',
   'tabs.help': 'Help',
+  'tabs.publish': 'Publish',
+  'tabs.manage': 'Manage',
+  'tabs.explorer': 'Explorer',
+  'tabs.operations': 'Operations',
+
+  // Sidebar
+  'sidebar.groupCore': 'Main',
+  'sidebar.groupCoreDesc': 'Pages you check daily',
+  'sidebar.groupTools': 'Tools',
+  'sidebar.groupToolsDesc': 'Settings and management pages',
+  'sidebar.groupSupport': 'Support',
+  'sidebar.groupSupportDesc': 'Help and reference pages',
 
   // ===========================================================================
   // Dashboard
@@ -55,6 +76,12 @@ export const en: TranslationDict = {
   'dashboard.modalStopTitle': 'Stopping Network...',
   'dashboard.modalStopDesc': 'symbol-bootstrap is stopping the network. Please wait until all containers are safely shut down.',
   'dashboard.modalHint': 'Check terminal logs for progress',
+  'dashboard.overviewTitle': 'Network Overview',
+  'dashboard.overviewDescription': 'This page is monitoring-only. Use the Operations page for start/stop and other actions.',
+
+  // Operations
+  'operations.title': 'Network Operations',
+  'operations.description': 'Run start, stop, reset, and preset import/export actions here.',
 
   // ===========================================================================
   // Address Viewer
@@ -325,6 +352,7 @@ export const en: TranslationDict = {
   'explorer.buildingTitle': 'Downloading Explorer...',
   'explorer.buildingHint': 'Check Terminal Logs for build progress',
   'explorer.nodeRequired': 'Node must be running',
+  'explorer.pageDescription': 'Manage Explorer build/start/stop and access settings on this page.',
 
   // ===========================================================================
   // Join Network
@@ -859,4 +887,50 @@ export const en: TranslationDict = {
   'backup.restore.restoredFiles': 'Restored files:',
   'backup.restore.error': 'Restore failed: {error}',
   'backup.restore.button': 'Restore',
+
+  // ===========================================================================
+  // Publish Network
+  // ===========================================================================
+  'publish.title': 'Publish via Cloudflare',
+  'publish.description': 'Expose Symbol node ports (REST Gateway & Websocket) to the internet via Cloudflare DNS records.',
+  'publish.configTitle': 'Cloudflare Credentials',
+  'publish.tokenLabel': 'API Token',
+  'publish.tokenPlaceholder': 'Enter Cloudflare API token...',
+  'publish.tokenHint': 'Use an API token with Edit Zone DNS permission from the Cloudflare dashboard.',
+  'publish.zoneIdLabel': 'Zone ID',
+  'publish.zoneIdPlaceholder': 'e.g. a1b2c3d4e5f6...',
+  'publish.zoneIdHint': 'Zone ID shown on the right side of the Cloudflare dashboard.',
+  'publish.accountIdLabel': 'Account ID',
+  'publish.accountIdPlaceholder': 'e.g. x9y8z7w6v5...',
+  'publish.accountIdHint': 'Your Cloudflare account ID.',
+  'publish.subdomainLabel': 'Subdomain Prefix',
+  'publish.subdomainHint': 'e.g. symbol-node → DNS records {subdomain}-3000.yourdomain.com will be created.',
+  'publish.portsLabel': 'Ports to publish',
+  'publish.show': 'Show',
+  'publish.hide': 'Hide',
+  'publish.configRequired': 'Token, Zone ID, and Account ID are all required.',
+  'publish.configSaved': 'Configuration saved.',
+  'publish.saveButton': 'Save Configuration',
+  'publish.statusTitle': 'Publish Status',
+  'publish.selectPortsError': 'Please select at least one port.',
+  'publish.publishedStatus': 'Published',
+  'publish.notPublishedStatus': 'Not Published',
+  'publish.lastPublished': 'Last published',
+  'publish.active': 'Active',
+  'publish.inactive': 'Inactive',
+  'publish.copy': 'Copy URL',
+  'publish.publishSuccess': 'Network published successfully.',
+  'publish.publishButton': 'Publish via Cloudflare',
+  'publish.unpublishButton': 'Unpublish',
+  'publish.unpublishConfirm': 'Delete Cloudflare DNS records and unpublish the network?',
+  'publish.refreshStatus': 'Refresh status',
+  'publish.noStatus': 'Save configuration to check publish status.',
+
+  // ===========================================================================
+  // Management
+  // ===========================================================================
+  'manage.title': 'Management Tools',
+  'manage.description': 'Storage, addresses, Docker images, and logs are grouped here.',
+  'manage.addressesTitle': 'Address Management',
+  'manage.addressesDescription': 'View raw addresses.yml data and the detailed address viewer here.',
 };
