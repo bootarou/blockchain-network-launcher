@@ -33,6 +33,17 @@ export const en: TranslationDict = {
   'tabs.backup': 'Backup',
   'tabs.help': 'Help',
   'tabs.publish': 'Publish',
+  'tabs.manage': 'Manage',
+  'tabs.explorer': 'Explorer',
+  'tabs.operations': 'Operations',
+
+  // Sidebar
+  'sidebar.groupCore': 'Main',
+  'sidebar.groupCoreDesc': 'Pages you check daily',
+  'sidebar.groupTools': 'Tools',
+  'sidebar.groupToolsDesc': 'Settings and management pages',
+  'sidebar.groupSupport': 'Support',
+  'sidebar.groupSupportDesc': 'Help and reference pages',
 
   // ===========================================================================
   // Dashboard
@@ -65,6 +76,12 @@ export const en: TranslationDict = {
   'dashboard.modalStopTitle': 'Stopping Network...',
   'dashboard.modalStopDesc': 'symbol-bootstrap is stopping the network. Please wait until all containers are safely shut down.',
   'dashboard.modalHint': 'Check terminal logs for progress',
+  'dashboard.overviewTitle': 'Network Overview',
+  'dashboard.overviewDescription': 'This page is monitoring-only. Use the Operations page for start/stop and other actions.',
+
+  // Operations
+  'operations.title': 'Network Operations',
+  'operations.description': 'Run start, stop, reset, and preset import/export actions here.',
 
   // ===========================================================================
   // Address Viewer
@@ -335,6 +352,7 @@ export const en: TranslationDict = {
   'explorer.buildingTitle': 'Downloading Explorer...',
   'explorer.buildingHint': 'Check Terminal Logs for build progress',
   'explorer.nodeRequired': 'Node must be running',
+  'explorer.pageDescription': 'Manage Explorer build/start/stop and access settings on this page.',
 
   // ===========================================================================
   // Join Network
@@ -907,4 +925,12 @@ export const en: TranslationDict = {
   'publish.unpublishConfirm': 'Delete Cloudflare DNS records and unpublish the network?',
   'publish.refreshStatus': 'Refresh status',
   'publish.noStatus': 'Save configuration to check publish status.',
+
+  // ===========================================================================
+  // Management
+  // ===========================================================================
+  'manage.title': 'Management Tools',
+  'manage.description': 'Storage, addresses, Docker images, and logs are grouped here.',
+  'manage.addressesTitle': 'Address Management',
+  'manage.addressesDescription': 'View raw addresses.yml data and the detailed address viewer here.',
 };

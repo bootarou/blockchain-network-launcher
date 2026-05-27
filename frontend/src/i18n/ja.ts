@@ -33,6 +33,17 @@ export const ja: TranslationDict = {
   'tabs.backup': 'Backup',
   'tabs.help': 'Help',
   'tabs.publish': 'Publish',
+  'tabs.manage': '管理',
+  'tabs.explorer': 'Explorer',
+  'tabs.operations': '操作',
+
+  // Sidebar
+  'sidebar.groupCore': 'メイン',
+  'sidebar.groupCoreDesc': '日常的に見るページ',
+  'sidebar.groupTools': '機能',
+  'sidebar.groupToolsDesc': '設定と管理のページ',
+  'sidebar.groupSupport': 'サポート',
+  'sidebar.groupSupportDesc': 'ヘルプと補助情報',
 
   // ===========================================================================
   // Dashboard
@@ -65,6 +76,12 @@ export const ja: TranslationDict = {
   'dashboard.modalStopTitle': 'ネットワーク停止中...',
   'dashboard.modalStopDesc': 'symbol-bootstrap がネットワークを停止しています。全てのコンテナが安全にシャットダウンされるまでお待ちください。',
   'dashboard.modalHint': '進捗はターミナルログで確認できます',
+  'dashboard.overviewTitle': 'ネットワーク概要',
+  'dashboard.overviewDescription': 'このページは状態監視専用です。起動・停止などの操作は「操作」ページで行えます。',
+
+  // Operations
+  'operations.title': 'ネットワーク操作',
+  'operations.description': '起動、停止、リセット、プリセットの入出力をこのページで実行します。',
 
   // ===========================================================================
   // Address Viewer
@@ -335,6 +352,7 @@ export const ja: TranslationDict = {
   'explorer.buildingTitle': 'Explorerをダウンロードしています...',
   'explorer.buildingHint': 'ターミナルログで進捗を確認できます',
   'explorer.nodeRequired': 'ノードが稼働中である必要があります',
+  'explorer.pageDescription': 'Explorer のビルド・起動・停止と公開設定をこのページで管理します。',
 
   // ===========================================================================
   // Join Network
@@ -907,4 +925,12 @@ export const ja: TranslationDict = {
   'publish.unpublishConfirm': 'Cloudflare の DNS レコードを削除してネットワークの公開を取消しますか？',
   'publish.refreshStatus': '状態を更新',
   'publish.noStatus': '設定を保存すると公開状態を確認できます。',
+
+  // ===========================================================================
+  // Management
+  // ===========================================================================
+  'manage.title': '管理ツール',
+  'manage.description': 'ストレージ、アドレス、Docker イメージ、ログをこのページに集約します。',
+  'manage.addressesTitle': 'アドレス管理',
+  'manage.addressesDescription': 'addresses.yml の生データ確認と詳細ビューをここで扱います。',
 };

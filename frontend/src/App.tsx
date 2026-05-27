@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut, Cloud } from 'lucide-react';
+import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut, Cloud, Wrench, Play } from 'lucide-react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { JoinNetwork } from './components/JoinNetwork';
 import { ShareNetwork } from './components/ShareNetwork';
 import { BackupRestore } from './components/BackupRestore';
 import { HelpPage } from './components/HelpPage';
+import { ManagementPage } from './components/ManagementPage';
+import { ExplorerPage } from './components/ExplorerPage';
+import { OperationsPage } from './components/OperationsPage';
 import { PublishNetwork } from './components/PublishNetwork';
+import { SidebarNav } from './components/SidebarNav';
 import { LoginPage } from './components/LoginPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
 import { DEFAULT_PRESET, DEFAULT_NODE, DEFAULT_GATEWAY, type PresetConfig, type NodeConfig, type GatewayConfig } from './constants';
@@ -17,7 +21,7 @@ import { useTheme } from './theme';
 
 function App() {
   const [config, setConfig] = useState<PresetConfig>(DEFAULT_PRESET);
-  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'join' | 'share' | 'publish' | 'backup' | 'help'>('config');
+  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'operations' | 'manage' | 'explorer' | 'join' | 'share' | 'publish' | 'backup' | 'help'>('config');
   const { t, lang, setLang } = useTranslation();
   const { theme, toggleTheme } = useTheme();
 
@@ -137,151 +141,77 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-50 flex flex-col">
-      {/* ── Header ── */}
-      <header className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Server className="w-7 h-7 text-indigo-400" />
-            <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent leading-tight">
-                {t('app.title')}
-              </h1>
-              <p className="text-zinc-600 text-xs">{t('app.subtitle')}</p>
-            </div>
-          </div>
+    <div className="min-h-screen bg-zinc-950 text-zinc-50 lg:flex">
+      <SidebarNav activePanel={activePanel} onNavigate={setActivePanel} />
 
-          <div className="flex items-center gap-4">
-            {/* Node health indicator */}
-            <NodeHealthIndicator />
-
-            {/* Panel toggle (mobile-friendly) */}
-            <div className="flex bg-zinc-900 border border-zinc-800 rounded-lg p-0.5">
-              <button
-                onClick={() => setActivePanel('config')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  activePanel === 'config'
-                    ? 'bg-indigo-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {t('tabs.config')}
-              </button>
-              <button
-                onClick={() => setActivePanel('join')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  activePanel === 'join'
-                    ? 'bg-emerald-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                {t('tabs.join')}
-              </button>
-              <button
-                onClick={() => setActivePanel('share')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  activePanel === 'share'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                {t('tabs.share')}
-              </button>
-              <button
-                onClick={() => setActivePanel('dashboard')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  activePanel === 'dashboard'
-                    ? 'bg-indigo-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {t('tabs.dashboard')}
-              </button>
-              <button
-                onClick={() => setActivePanel('publish')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  activePanel === 'publish'
-                    ? 'bg-violet-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Cloud className="w-3.5 h-3.5" />
-                {t('tabs.publish')}
-              </button>
-              <button
-                onClick={() => setActivePanel('backup')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  activePanel === 'backup'
-                    ? 'bg-teal-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                {t('tabs.backup')}
-              </button>
-              <button
-                onClick={() => setActivePanel('help')}
-                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                  activePanel === 'help'
-                    ? 'bg-amber-600 text-white'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <HelpCircle className="w-3.5 h-3.5" />
-                {t('tabs.help')}
-              </button>
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+        {/* ── Header ── */}
+        <header className="sticky top-0 z-40 border-b border-zinc-800 bg-zinc-950/85 backdrop-blur-sm">
+          <div className="flex items-center justify-between gap-4 px-4 py-3 sm:px-6">
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Workspace</p>
+              <h2 className="truncate text-sm font-medium text-zinc-200">
+                {t('app.subtitle')}
+              </h2>
             </div>
 
-            <button
-              onClick={toggleTheme}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
-              title={theme === 'dark' ? t('theme.switchToLight') : t('theme.switchToDark')}
-            >
-              {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-            </button>
-
-            <button
-              onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
-              title={lang === 'ja' ? 'Switch to English' : '日本語に切り替え'}
-            >
-              <Languages className="w-3.5 h-3.5" />
-              {lang === 'ja' ? 'EN' : 'JA'}
-            </button>
-
-            <button
-              onClick={handleResetDefaults}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
-              title={t('app.resetToDefaults')}
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              {t('app.reset')}
-            </button>
-
-            {authRequired && (
+            <div className="flex items-center gap-2 sm:gap-3">
               <button
-                onClick={handleLogout}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 hover:bg-zinc-800 rounded-lg transition-colors border border-red-800/50"
-                title={t('login.logout')}
+                onClick={toggleTheme}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                title={theme === 'dark' ? t('theme.switchToLight') : t('theme.switchToDark')}
               >
-                <LogOut className="w-3.5 h-3.5" />
-                {t('login.logout')}
+                {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{theme === 'dark' ? 'Dark' : 'Light'}</span>
               </button>
-            )}
+
+              <button
+                onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                title={lang === 'ja' ? 'Switch to English' : '日本語に切り替え'}
+              >
+                <Languages className="w-3.5 h-3.5" />
+                {lang === 'ja' ? 'EN' : 'JA'}
+              </button>
+
+              <button
+                onClick={handleResetDefaults}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                title={t('app.resetToDefaults')}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                {t('app.reset')}
+              </button>
+
+              {authRequired && (
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center gap-1.5 rounded-lg border border-red-800/50 px-3 py-1.5 text-xs text-red-400 transition-colors hover:bg-zinc-800 hover:text-red-300"
+                  title={t('login.logout')}
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{t('login.logout')}</span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
       {/* ── Main Content ── */}
-      <main className="flex-1 max-w-4xl w-full mx-auto px-6 py-8">
+      <main className="flex-1 min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <div className="mx-auto w-full max-w-6xl">
         {activePanel === 'config' ? (
           <ConfigForm config={config} onChange={handleConfigChange} />
         ) : activePanel === 'join' ? (
           <JoinNetwork onConfigImport={handleJoinImport} />
         ) : activePanel === 'share' ? (
           <ShareNetwork onConfigImport={handleShareImport} />
+        ) : activePanel === 'operations' ? (
+          <OperationsPage config={config} onConfigImport={handleConfigImport} />
+        ) : activePanel === 'manage' ? (
+          <ManagementPage />
+        ) : activePanel === 'explorer' ? (
+          <ExplorerPage config={config} />
         ) : activePanel === 'publish' ? (
           <PublishNetwork />
         ) : activePanel === 'backup' ? (
@@ -289,20 +219,22 @@ function App() {
         ) : activePanel === 'help' ? (
           <HelpPage />
         ) : (
-          <Dashboard config={config} onConfigImport={handleConfigImport} />
+          <Dashboard />
         )}
+        </div>
       </main>
 
       {/* ── Footer ── */}
-      <footer className="border-t border-zinc-800 py-4 text-center text-xs text-zinc-600 space-y-1">
-        <p>{t('app.footer')}</p>
-        <p>
-          {t('app.poweredBy')}{' '}
-          <a href="https://symbolplatform.com" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-indigo-400 transition-colors">
-            Symbol / NEM
-          </a>
-        </p>
-      </footer>
+        <footer className="border-t border-zinc-800 py-4 text-center text-xs text-zinc-600 space-y-1">
+          <p>{t('app.footer')}</p>
+          <p>
+            {t('app.poweredBy')}{' '}
+            <a href="https://symbolplatform.com" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-indigo-400 transition-colors">
+              Symbol / NEM
+            </a>
+          </p>
+        </footer>
+      </div>
     </div>
   );
 }
