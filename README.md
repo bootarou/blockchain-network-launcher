@@ -21,6 +21,12 @@ Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・
 - 🌍 **多言語対応** — 日本語 / English 切り替え
 - 🌙 **ダーク / ライトテーマ** — 好みに応じて切り替え
 
+## スクリーンショット
+
+最新 UI のイメージです。
+
+![Symbol Network Manager UI](docs/screenshots/001.png)
+
 ## アーキテクチャ
 
 ```
