@@ -6881,12 +6881,17 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog('[System] 📦 Join mode detected (imported seed exists) — preserving network identity keys in custom-preset.yml.\n');
       }
 
+      const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
       const configArgs = [
         '-p', basePreset,
         '-a', assembly,
-        '-c', 'custom-preset.yml',
         '--password', password,
       ];
+      if (!isOfficialPreset) {
+        configArgs.splice(4, 0, '-c', 'custom-preset.yml');
+      } else {
+        broadcastLog(`[System] Official preset (${basePreset}) detected — using symbol-bootstrap defaults (no custom preset file).\n`);
+      }
       if (dataExists) {
         configArgs.push('--upgrade');
       }
