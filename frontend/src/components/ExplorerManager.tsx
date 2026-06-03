@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from '../i18n';
 import {
   Globe,
@@ -24,18 +24,31 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
   const [status, setStatus] = useState<ExplorerStatus>('not-built');
   const [loading, setLoading] = useState(false);
 
+  const isPublicPreset =
+    config.preset === 'testnet' ||
+    config.preset === 'mainnet' ||
+    config.networkType === 'testnet' ||
+    config.networkType === 'mainnet';
+
   // Pre-fill namespace config from user's preset
   const defaultNsName =
-    config.baseNamespace && config.nemesisMosaics?.[0]?.name
-      ? `${config.baseNamespace}.${config.nemesisMosaics[0].name}`
-      : 'symbol.xym';
-  const defaultDiv = String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
+    isPublicPreset
+      ? 'symbol.xym'
+      : config.baseNamespace && config.nemesisMosaics?.[0]?.name
+        ? `${config.baseNamespace}.${config.nemesisMosaics[0].name}`
+        : 'symbol.xym';
+  const defaultDiv = isPublicPreset ? '6' : String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
+  const defaultNetworkName = isPublicPreset ? String(config.preset) : (config.baseNamespace || '');
 
   const [nsName, setNsName] = useState(defaultNsName);
   const [nsId, setNsId] = useState('');
   const [divisibility, setDivisibility] = useState(defaultDiv);
-  const [networkName, setNetworkName] = useState(config.baseNamespace || '');
+  const [networkName, setNetworkName] = useState(defaultNetworkName);
   const [externalHost, setExternalHost] = useState('');
+  const [nsEdited, setNsEdited] = useState(false);
+  const [divEdited, setDivEdited] = useState(false);
+  const [networkNameEdited, setNetworkNameEdited] = useState(false);
+  const modeRef = useRef<'public' | 'custom'>(isPublicPreset ? 'public' : 'custom');
 
   // ── Poll explorer status ─────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
@@ -66,15 +79,31 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
 
   // Update namespace defaults when preset config changes
   useEffect(() => {
+    const mode: 'public' | 'custom' = isPublicPreset ? 'public' : 'custom';
+    const modeChanged = modeRef.current !== mode;
+    if (modeChanged) {
+      modeRef.current = mode;
+      setNsEdited(false);
+      setDivEdited(false);
+      setNetworkNameEdited(false);
+    }
+
     const ns =
-      config.baseNamespace && config.nemesisMosaics?.[0]?.name
-        ? `${config.baseNamespace}.${config.nemesisMosaics[0].name}`
-        : 'symbol.xym';
-    const div = String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
-    setNsName(ns);
-    setDivisibility(div);
-    if (config.baseNamespace) setNetworkName(config.baseNamespace);
-  }, [config.baseNamespace, config.nemesisMosaics]);
+      isPublicPreset
+        ? 'symbol.xym'
+        : config.baseNamespace && config.nemesisMosaics?.[0]?.name
+          ? `${config.baseNamespace}.${config.nemesisMosaics[0].name}`
+          : 'symbol.xym';
+    const div = isPublicPreset ? '6' : String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
+    if (!nsEdited || modeChanged) setNsName(ns);
+    if (!divEdited || modeChanged) setDivisibility(div);
+
+    if (isPublicPreset) {
+      if (!networkNameEdited || modeChanged) setNetworkName(String(config.preset || config.networkType || 'testnet'));
+    } else if (config.baseNamespace && (!networkNameEdited || modeChanged)) {
+      setNetworkName(config.baseNamespace);
+    }
+  }, [config.preset, config.baseNamespace, config.nemesisMosaics, isPublicPreset]);
 
   // ── Handlers ─────────────────────────────────────────────────────────
   const handleBuild = async () => {
@@ -175,7 +204,10 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
             <input
               type="text"
               value={networkName}
-              onChange={(e) => setNetworkName(e.target.value)}
+              onChange={(e) => {
+                setNetworkNameEdited(true);
+                setNetworkName(e.target.value);
+              }}
               disabled={status === 'running'}
               placeholder="My Network"
               className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 focus:outline-none focus:border-indigo-500/50"
@@ -193,6 +225,7 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
               value={externalHost}
               onChange={(e) => setExternalHost(e.target.value)}
               disabled={status === 'running'}
+              autoComplete="off"
               placeholder="192.168.0.31"
               className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 focus:outline-none focus:border-indigo-500/50 font-mono"
             />
@@ -206,7 +239,10 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
               <input
                 type="text"
                 value={nsName}
-                onChange={(e) => setNsName(e.target.value)}
+                onChange={(e) => {
+                  setNsEdited(true);
+                  setNsName(e.target.value);
+                }}
                 disabled={status === 'running'}
                 className="w-full text-sm bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300 disabled:opacity-50 focus:outline-none focus:border-indigo-500/50"
               />
@@ -230,7 +266,10 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
               <input
                 type="number"
                 value={divisibility}
-                onChange={(e) => setDivisibility(e.target.value)}
+                onChange={(e) => {
+                  setDivEdited(true);
+                  setDivisibility(e.target.value);
+                }}
                 disabled={status === 'running'}
                 min={0}
                 max={6}

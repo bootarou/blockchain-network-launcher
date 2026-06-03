@@ -16,6 +16,7 @@ import { useTranslation } from '../i18n';
 import { api } from '../lib/api';
 import { configToYaml, yamlToConfig } from '../lib/utils';
 import type { PresetConfig } from '../constants';
+import { TerminalLogs } from './TerminalLogs';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -332,6 +333,14 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
             {t('dashboard.import')}
           </button>
         </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-lg font-semibold text-zinc-100">{t('terminal.title')}</h3>
+          <p className="text-sm text-zinc-400">symbol-bootstrap の起動・停止・復旧時のログを確認できます。</p>
+        </div>
+        <TerminalLogs />
       </div>
     </div>
   );

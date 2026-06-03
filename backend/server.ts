@@ -1462,6 +1462,7 @@ const EXPLORER_CONTAINER = 'symbol-explorer';
 const EXPLORER_REPO = 'https://github.com/bootarou/explorer-smd.git';
 const EXPLORER_BRANCH = 'main';
 let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
+let explorerBuildErrorMessage = '';
 /** Network name displayed in the Explorer header (persisted across restarts) */
 let explorerNetworkName = '';
 /** User-configured external host/IP so Explorer node list works from outside */
@@ -1472,7 +1473,10 @@ let explorerExternalHost = '';
   try {
     const { execSync } = await import('child_process');
     const id = execSync(`docker images -q ${EXPLORER_IMAGE}`, { encoding: 'utf-8' }).trim();
-    if (id) explorerBuildStatus = 'built';
+    if (id) {
+      explorerBuildStatus = 'built';
+      explorerBuildErrorMessage = '';
+    }
   } catch { /* ignore */ }
 })();
 
@@ -1491,10 +1495,11 @@ app.get('/api/explorer/status', async (_req, res) => {
 
     let status = 'not-built';
     if (explorerBuildStatus === 'building') status = 'building';
+    else if (explorerBuildStatus === 'error') status = 'error';
     else if (containerRunning) status = 'running';
     else if (imageExists) status = 'stopped';
 
-    res.json({ status, imageExists, containerRunning });
+    res.json({ status, imageExists, containerRunning, error: explorerBuildErrorMessage || undefined });
   } catch (err: any) {
     res.json({ status: 'error', error: err.message });
   }
@@ -1505,6 +1510,7 @@ app.post('/api/explorer/build', async (_req, res) => {
     return res.json({ success: false, error: 'Build already in progress' });
   }
   explorerBuildStatus = 'building';
+  explorerBuildErrorMessage = '';
   broadcastLog('[Explorer] Building image from bootarou/explorer-smd (main branch) ...\n');
   broadcast('EXPLORER_STATUS', { status: 'building' });
 
@@ -1530,15 +1536,22 @@ app.post('/api/explorer/build', async (_req, res) => {
     // This keeps the browser on a single origin (e.g. 192.168.0.31:8090)
     // so no CORS issues arise.
     "RUN mv server.js _server.js && sed -i 's/const PORT = 4000/const PORT = 4001/' _server.js",
+    // Ensure /config is served as JSON so Axios parses window.globalConfig.
+    // Without this, explorer falls back to bundled defaults and can call wrong APIs.
+    "RUN sed -i \"s#let mimeType = mime.lookup(fileUrl) || mime.lookup(ext) || 'application/octet-stream';#let mimeType = ('/config' === fileUrl) ? 'application/json' : (mime.lookup(fileUrl) || mime.lookup(ext) || 'application/octet-stream');#\" _server.js",
     `RUN cat > server.js << 'PROXYEOF'
 const http=require("http");
 const MH=process.env.PROXY_HOST||"symbol-manager";
 const MP=+(process.env.PROXY_PORT||4000);
-const RE=/^\\/(api|node|chain|blocks?|transactions?|transactionStatus|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|lock|secretlock|hashlock)(\\\/|$|\\?)/;
+const RH=process.env.REST_HOST||"rest-gateway";
+const RP=+(process.env.REST_PORT||3000);
+const RE=/^\\\/(ws|node|chain|blocks?|transactions?|transactionStatus|accounts?|mosaics?|namespaces?|metadata|receipts|statements|finalization|network|multisig|restrictions?|lock|secretlock|hashlock)(\\\/|$|\\?)/;
+const RE_PROXY=/^\\\/api\\\/explorer-proxy(\\\/|$|\\?)/;
 require("./_server");
-function px(h,p,q,r,x){var o={hostname:h,port:p,path:q.url,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
-var srv=http.createServer(function(q,r){RE.test(q.url)?px(MH,MP,q,r,{"x-forwarded-host":q.headers.host}):px("127.0.0.1",4001,q,r)});
-srv.on("upgrade",function(q,s){var o={hostname:MH,port:MP,path:q.url,method:q.method,headers:q.headers};var p=http.request(o);p.on("upgrade",function(r,ps){var h="HTTP/1.1 101 Switching Protocols\\r\\n";Object.keys(r.headers).forEach(function(k){h+=k+": "+r.headers[k]+"\\r\\n"});h+="\\r\\n";s.write(h);ps.pipe(s);s.pipe(ps)});p.on("error",function(){s.end()});p.end()});
+function normalizePath(url){var n=(url||"").replace(/^\\\/explorer-smd(?=\\\/|$)/,"");return n||"/"}
+function px(h,p,q,r,path,x){var o={hostname:h,port:p,path:path,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
+var srv=http.createServer(function(q,r){var u=normalizePath(q.url);RE_PROXY.test(u)?px(MH,MP,q,r,u,{"x-forwarded-host":q.headers.host}):RE.test(u)?px(RH,RP,q,r,u):px("127.0.0.1",4001,q,r,u)});
+srv.on("upgrade",function(q,s){var u=normalizePath(q.url);var targetHost=RE.test(u)?RH:MH;var targetPort=RE.test(u)?RP:MP;var o={hostname:targetHost,port:targetPort,path:u,method:q.method,headers:q.headers};var p=http.request(o);p.on("upgrade",function(r,ps){var h="HTTP/1.1 101 Switching Protocols\\r\\n";Object.keys(r.headers).forEach(function(k){h+=k+": "+r.headers[k]+"\\r\\n"});h+="\\r\\n";s.write(h);ps.pipe(s);s.pipe(ps)});p.on("error",function(){s.end()});p.end()});
 srv.listen(4000);console.log("Explorer proxy on 4000, original on 4001");
 PROXYEOF`,
     '',
@@ -1563,10 +1576,12 @@ PROXYEOF`,
   proc.on('close', (code) => {
     if (code === 0) {
       explorerBuildStatus = 'built';
+      explorerBuildErrorMessage = '';
       broadcastLog('[Explorer] ✅ Image built successfully!\n');
       broadcast('EXPLORER_STATUS', { status: 'stopped' });
     } else {
       explorerBuildStatus = 'error';
+      explorerBuildErrorMessage = `Build failed (${code})`;
       broadcastLog(`[Explorer] ❌ Build failed (exit code ${code})\n`);
       broadcast('EXPLORER_STATUS', { status: 'error', message: `Build failed (${code})` });
     }
@@ -1672,6 +1687,7 @@ async function cleanupExplorer(removeImage = false): Promise<void> {
     try {
       execSync(`docker rmi ${EXPLORER_IMAGE} 2>/dev/null`);
       explorerBuildStatus = 'none';
+      explorerBuildErrorMessage = '';
       broadcastLog('[Explorer] Image removed\n');
     } catch { /* image didn't exist */ }
   }
@@ -1688,7 +1704,33 @@ app.post('/api/explorer/start', async (req, res) => {
       externalHost = '',
     } = req.body || {};
 
-    await startExplorerContainer(namespaceName, divisibility, port, networkName, externalHost);
+    let resolvedNamespaceName = String(namespaceName || 'symbol.xym');
+    let resolvedDivisibility = String(divisibility ?? '6');
+    let resolvedNetworkName = String(networkName ?? '');
+
+    // For official presets, Explorer must always use the official currency namespace.
+    try {
+      if (fs.existsSync(UI_META_PATH)) {
+        const meta = parseJsonFile(UI_META_PATH);
+        const preset = String(meta?.preset ?? '').toLowerCase();
+        if (preset === 'testnet' || preset === 'mainnet') {
+          resolvedNamespaceName = 'symbol.xym';
+          resolvedDivisibility = '6';
+          if (!resolvedNetworkName.trim()) resolvedNetworkName = preset;
+          broadcastLog(`[Explorer] Public preset (${preset}) detected: forcing namespace=symbol.xym, divisibility=6\n`);
+        }
+      }
+    } catch {
+      // ignore metadata parse failures and use request values
+    }
+
+    await startExplorerContainer(
+      resolvedNamespaceName,
+      resolvedDivisibility,
+      port,
+      resolvedNetworkName,
+      String(externalHost ?? ''),
+    );
     res.json({ success: true, port });
   } catch (err: any) {
     broadcastLog(`[Explorer] ❌ Start failed: ${err.message}\n`);
@@ -3475,6 +3517,31 @@ function patchDockerHostMode(targetDir: string): void {
 // stable container name "api-node-0" so Docker DNS always resolves correctly.
 // ---------------------------------------------------------------------------
 function patchRestJsonApiNodeHost(targetDir: string): void {
+  // In Docker Host Mode, rest.json host is patched to bridge gateway IP.
+  // Do not overwrite that value here.
+  if (isDockerHostMode()) {
+    broadcastLog('[Patch] rest.json apiNode.host: skipped in Docker Host Mode\n');
+    return;
+  }
+
+  const resolveApiNodeHost = (): string => {
+    try {
+      const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+      if (fs.existsSync(composePath)) {
+        const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
+        const services = doc?.services ?? {};
+        if (services['api-node-0']) return 'api-node-0';
+        if (services['node']) return 'node';
+      }
+    } catch {
+      // Ignore and use fallback
+    }
+    return 'api-node-0';
+  };
+
+  const desiredApiNodeHost = resolveApiNodeHost();
+  broadcastLog(`[Patch] rest.json desired apiNode.host = "${desiredApiNodeHost}"\n`);
+
   const gatewaysDir = path.join(targetDir, 'gateways');
   if (!fs.existsSync(gatewaysDir)) {
     broadcastLog('[Patch] gateways/ not found, skipping rest.json apiNode.host patch\n');
@@ -3501,18 +3568,18 @@ function patchRestJsonApiNodeHost(targetDir: string): void {
 
           // Only patch if the host looks like an IP address (not already a hostname)
           const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(current.trim());
-          const isWrongHost = current.trim() !== '' && current.trim() !== 'api-node-0';
+          const isWrongHost = current.trim() !== '' && current.trim() !== desiredApiNodeHost;
 
           if (isIp) {
-            obj.apiNode.host = 'api-node-0';
+            obj.apiNode.host = desiredApiNodeHost;
             fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
-            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host ${current} → api-node-0 ✓\n`);
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host ${current} → ${desiredApiNodeHost} ✓\n`);
             patchedCount++;
           } else if (isWrongHost) {
             // Unexpected hostname — patch defensively
-            obj.apiNode.host = 'api-node-0';
+            obj.apiNode.host = desiredApiNodeHost;
             fs.writeFileSync(restJsonPath, JSON.stringify(obj, null, 2), 'utf-8');
-            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host "${current}" → api-node-0 (unexpected value, patched) ✓\n`);
+            broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host "${current}" → ${desiredApiNodeHost} (unexpected value, patched) ✓\n`);
             patchedCount++;
           } else {
             broadcastLog(`[Patch] rest.json (${gwName}): apiNode.host already correct (skipped)\n`);
@@ -4000,6 +4067,48 @@ function backfillMosaicIds(targetDir: string): void {
 }
 
 function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, basePreset?: string) {
+  const isLikelyIniConfigFile = (filename: string): boolean =>
+    filename.endsWith('.properties') || filename.endsWith('.ini');
+
+  const findMalformedIniLine = (content: string): string | null => {
+    const malformed = content
+      .split(/\r?\n/)
+      .find((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        if (trimmed.startsWith('#') || trimmed.startsWith(';')) return false;
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) return false;
+        return !trimmed.includes('=');
+      });
+    return malformed ?? null;
+  };
+
+  const safeWritePatchedConfig = (
+    configPath: string,
+    fileName: string,
+    before: string,
+    after: string,
+    contextLabel: string,
+  ): boolean => {
+    if (before === after) return false;
+
+    if (isLikelyIniConfigFile(fileName)) {
+      const malformed = findMalformedIniLine(after);
+      if (malformed) {
+        broadcastLog(`[Patch] ⚠️ Skip write (malformed line) ${contextLabel}: ${malformed}\n`);
+        try {
+          fs.writeFileSync(configPath, before, 'utf-8');
+        } catch {
+          // Best effort rollback
+        }
+        return false;
+      }
+    }
+
+    fs.writeFileSync(configPath, after, 'utf-8');
+    return true;
+  };
+
   // For testnet/mainnet, override uniqueAggregateTransactionHash to empty
   // (the binary requires the property to exist, but '0' would block V2 txs).
   const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
@@ -4025,6 +4134,7 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
         if (!fs.existsSync(configPath)) continue;
 
         let content = fs.readFileSync(configPath, 'utf-8');
+        const originalContent = content;
         let patched = false;
 
         for (const [key, defaultValue] of Object.entries(patch.props)) {
@@ -4049,7 +4159,14 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
         }
 
         if (patched) {
-          fs.writeFileSync(configPath, content, 'utf-8');
+          const wrote = safeWritePatchedConfig(
+            configPath,
+            patch.file,
+            originalContent,
+            content,
+            `${nodeName}/${configDir}/${patch.file}`,
+          );
+          if (!wrote) continue;
           broadcastLog(`[Patch] Fixed ${patch.section} in ${nodeName}/${configDir}/${patch.file}\n`);
         }
       }
@@ -4063,6 +4180,7 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
         if (!fs.existsSync(configPath)) continue;
 
         let content = fs.readFileSync(configPath, 'utf-8');
+        const originalContent = content;
         let removed = false;
         for (const key of rmSet.keys) {
           const regex = new RegExp(`^\\s*${key}\\s*=.*\\r?\\n?`, 'gm');
@@ -4073,7 +4191,14 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
           }
         }
         if (removed) {
-          fs.writeFileSync(configPath, content, 'utf-8');
+          const wrote = safeWritePatchedConfig(
+            configPath,
+            rmSet.file,
+            originalContent,
+            content,
+            `${nodeName}/${configDir}/${rmSet.file}`,
+          );
+          if (!wrote) continue;
         }
       }
     }
@@ -4087,16 +4212,29 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
   // -----------------------------------------------------------------------
   const gatewaysDir = path.join(targetDir, 'gateways');
   if (fs.existsSync(gatewaysDir)) {
+    let desiredApiNodeHost = 'api-node-0';
+    try {
+      const composePath = path.join(targetDir, 'docker', 'docker-compose.yml');
+      if (fs.existsSync(composePath)) {
+        const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
+        const services = doc?.services ?? {};
+        if (services['api-node-0']) desiredApiNodeHost = 'api-node-0';
+        else if (services['node']) desiredApiNodeHost = 'node';
+      }
+    } catch {
+      // keep fallback
+    }
+
     for (const gwName of fs.readdirSync(gatewaysDir)) {
       const restJsonPath = path.join(gatewaysDir, gwName, 'rest.json');
       if (!fs.existsSync(restJsonPath)) continue;
       try {
         const restConfig = JSON.parse(fs.readFileSync(restJsonPath, 'utf-8'));
-        if (restConfig.apiNode?.host && restConfig.apiNode.host !== 'api-node-0') {
+        if (restConfig.apiNode?.host && restConfig.apiNode.host !== desiredApiNodeHost) {
           const oldHost = restConfig.apiNode.host;
-          restConfig.apiNode.host = 'api-node-0';
+          restConfig.apiNode.host = desiredApiNodeHost;
           fs.writeFileSync(restJsonPath, JSON.stringify(restConfig, null, 2), 'utf-8');
-          broadcastLog(`[Patch] rest.json apiNode.host: "${oldHost}" → "api-node-0"\n`);
+          broadcastLog(`[Patch] rest.json apiNode.host: "${oldHost}" → "${desiredApiNodeHost}"\n`);
         }
       } catch (e: any) {
         broadcastLog(`[Patch] Warning: could not patch ${restJsonPath}: ${e.message}\n`);
@@ -4675,6 +4813,25 @@ function patchLocalNetworks(targetDir: string) {
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
 
+  // Public presets may generate multi-line trustedHosts/localNetworks values.
+  // Rewriting them with a single-line regex can corrupt INI parsing.
+  let isPublicNetwork = false;
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      const preset = String(meta?.preset ?? '').toLowerCase();
+      if (preset === 'testnet' || preset === 'mainnet') {
+        isPublicNetwork = true;
+      }
+    }
+  } catch {
+    // Ignore metadata read failures and continue with conservative defaults.
+  }
+  if (isPublicNetwork) {
+    broadcastLog('[Patch] Skipping localNetworks/trustedHosts patch for public preset (testnet/mainnet)\n');
+    return;
+  }
+
   // In Docker Host Mode, catapult runs directly on the host network.
   // There is no Docker DNAT, so the Docker subnet prefix is not needed.
   // REST gateway still runs on the bridge network and connects to catapult
@@ -4709,6 +4866,7 @@ function patchLocalNetworks(targetDir: string) {
         if (!fs.existsSync(configPath)) continue;
 
         let content = fs.readFileSync(configPath, 'utf-8');
+        const originalContent = content;
         let changed = false;
 
         // Both trustedHosts and localNetworks need the Docker subnet prefix.
@@ -4731,6 +4889,13 @@ function patchLocalNetworks(targetDir: string) {
         //   below).  With public-key, the external peer's different public key makes
         //   it a distinct node even when its host is "@_local_".
         for (const key of ['trustedHosts', 'localNetworks']) {
+          // If the value spans continuation lines, do not touch it here.
+          const multilineRegex = new RegExp(`^${key}\\s*=\\s*.*\\n[ \\t]+\\S+`, 'm');
+          if (multilineRegex.test(content)) {
+            broadcastLog(`[Patch] Skip ${nodeName}/${configDir}: ${key} appears multiline; leaving original value intact\n`);
+            continue;
+          }
+
           const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
           const match = content.match(regex);
           if (!match) continue;
@@ -4754,6 +4919,24 @@ function patchLocalNetworks(targetDir: string) {
         }
 
         if (changed) {
+          // Safety net: reject write if a non-comment/non-section line has no '='.
+          const malformed = content
+            .split(/\r?\n/)
+            .find((line) => {
+              const trimmed = line.trim();
+              if (!trimmed) return false;
+              if (trimmed.startsWith('#') || trimmed.startsWith(';')) return false;
+              if (trimmed.startsWith('[') && trimmed.endsWith(']')) return false;
+              return !trimmed.includes('=');
+            });
+
+          if (malformed) {
+            content = originalContent;
+            broadcastLog(`[Patch] ⚠️ Detected malformed property line after patch in ${nodeName}/${configDir}; rolling back this file\n`);
+            broadcastLog(`[Patch] ⚠️ Malformed line: ${malformed}\n`);
+            continue;
+          }
+
           fs.writeFileSync(configPath, content, 'utf-8');
           patched++;
           broadcastLog(`[Patch] Patched trustedHosts/localNetworks → prefix "${prefix}" in ${nodeName}/${configDir}\n`);
@@ -5484,6 +5667,143 @@ function runBootstrapCommand(
       reject(err);
     });
   });
+}
+
+// Sync mutable node settings from custom-preset.yml to generated config files.
+// This is required when the start flow skips/changes bootstrap config inputs
+// (e.g. official presets without -c) so UI-edited node fields still apply.
+function syncMutableNodeSettingsFromPreset(targetDir: string): void {
+  try {
+    if (!fs.existsSync(PRESET_PATH)) return;
+
+    const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const presetNodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
+    if (!presetNodes || presetNodes.length === 0) return;
+
+    const nodesDirSync = path.join(targetDir, 'nodes');
+    if (!fs.existsSync(nodesDirSync)) return;
+
+    for (const nodeEntry of presetNodes) {
+      const nodeName = String(nodeEntry.name || 'api-node-0');
+      const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
+      if (!fs.existsSync(configPath)) continue;
+
+      let configContent = fs.readFileSync(configPath, 'utf-8');
+      let patched = false;
+
+      const mutableFields: Array<{ presetKey: string; propKey: string }> = [
+        { presetKey: 'friendlyName', propKey: 'friendlyName' },
+        { presetKey: 'host', propKey: 'host' },
+        { presetKey: 'minFeeMultiplier', propKey: 'minFeeMultiplier' },
+        { presetKey: 'maxTrackedNodes', propKey: 'maxTrackedNodes' },
+      ];
+
+      for (const { presetKey, propKey } of mutableFields) {
+        const newValue = nodeEntry[presetKey];
+        if (newValue === undefined || newValue === null) continue;
+        const regex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
+        if (!regex.test(configContent)) continue;
+
+        const oldMatch = configContent.match(regex)?.[0] || '';
+        const newLine = `${propKey} = ${newValue}`;
+        if (oldMatch !== newLine) {
+          configContent = configContent.replace(regex, newLine);
+          patched = true;
+          broadcastLog(`[Patch] ${nodeName}: ${oldMatch} → ${newLine}\n`);
+        }
+      }
+
+      if (patched) {
+        fs.writeFileSync(configPath, configContent, 'utf-8');
+        broadcastLog(`[Patch] config-node.properties synced for ${nodeName} ✓\n`);
+      }
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] ⚠️ config-node.properties sync warning: ${e.message}\n`);
+  }
+}
+
+// Remove malformed INI lines from generated catapult config files.
+// Some patch flows can leave orphan value-only lines (no '=') behind,
+// which makes boost::property_tree ini_parser abort broker startup.
+function sanitizeGeneratedIniFiles(targetDir: string): void {
+  try {
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (!fs.existsSync(nodesDir)) return;
+
+    let fixedFiles = 0;
+    let removedLines = 0;
+
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
+        if (!fs.existsSync(resourcesDir)) continue;
+
+        const files = fs.readdirSync(resourcesDir).filter((f) => f.endsWith('.properties') || f.endsWith('.ini'));
+        for (const file of files) {
+          const filePath = path.join(resourcesDir, file);
+          const content = fs.readFileSync(filePath, 'utf-8');
+          const lines = content.split(/\r?\n/);
+
+          const filtered: string[] = [];
+          let localRemoved = 0;
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              filtered.push(line);
+              continue;
+            }
+            if (trimmed.startsWith('#') || trimmed.startsWith(';')) {
+              filtered.push(line);
+              continue;
+            }
+            if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+              filtered.push(line);
+              continue;
+            }
+            if (!trimmed.includes('=')) {
+              let merged = false;
+              for (let i = filtered.length - 1; i >= 0; i--) {
+                const prev = filtered[i];
+                const prevTrimmed = prev.trim();
+                if (!prevTrimmed) continue;
+                if (prevTrimmed.startsWith('#') || prevTrimmed.startsWith(';')) continue;
+                if (prevTrimmed.startsWith('[') && prevTrimmed.endsWith(']')) break;
+                if (prevTrimmed.endsWith('=')) {
+                  filtered[i] = `${prev.trimEnd()} ${trimmed}`;
+                  localRemoved++;
+                  merged = true;
+                  break;
+                }
+                break;
+              }
+
+              if (merged) {
+                continue;
+              }
+              localRemoved++;
+              continue;
+            }
+            filtered.push(line);
+          }
+
+          if (localRemoved > 0) {
+            fs.writeFileSync(filePath, `${filtered.join('\n')}\n`, 'utf-8');
+            fixedFiles++;
+            removedLines += localRemoved;
+            broadcastLog(`[Patch] Sanitized malformed INI lines in ${nodeName}/${configDir}/${file} (-${localRemoved})\n`);
+          }
+        }
+      }
+    }
+
+    if (fixedFiles > 0) {
+      broadcastLog(`[Patch] ✅ INI sanitize complete (${fixedFiles} files, ${removedLines} lines removed)\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Patch] ⚠️ INI sanitize warning: ${e.message}\n`);
+  }
 }
 
 // =============================================================================
@@ -6456,56 +6776,8 @@ app.post('/api/commands/start', async (req, res) => {
         //     friendlyName, host, minFeeMultiplier etc. are NOT propagated to
         //     the generated config files.  Patch them here so Stop→Start
         //     picks up any UI changes without requiring a Full Reset.
-        {
-          try {
-            const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-            const presetNodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
-            if (presetNodes && presetNodes.length > 0) {
-              const nodesDirSync = path.join(TARGET_DIR, 'nodes');
-              if (fs.existsSync(nodesDirSync)) {
-                for (const nodeEntry of presetNodes) {
-                  const nodeName = String(nodeEntry.name || 'api-node-0');
-                  const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
-                  if (!fs.existsSync(configPath)) continue;
-
-                  let configContent = fs.readFileSync(configPath, 'utf-8');
-                  let patched = false;
-
-                  // Mutable fields that the user can change via UI without needing
-                  // a full bootstrap config regeneration.
-                  const mutableFields: Array<{ presetKey: string; propKey: string }> = [
-                    { presetKey: 'friendlyName', propKey: 'friendlyName' },
-                    { presetKey: 'host', propKey: 'host' },
-                    { presetKey: 'minFeeMultiplier', propKey: 'minFeeMultiplier' },
-                    { presetKey: 'maxTrackedNodes', propKey: 'maxTrackedNodes' },
-                  ];
-
-                  for (const { presetKey, propKey } of mutableFields) {
-                    const newValue = nodeEntry[presetKey];
-                    if (newValue === undefined || newValue === null) continue;
-                    const regex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
-                    if (regex.test(configContent)) {
-                      const oldMatch = configContent.match(regex)?.[0] || '';
-                      const newLine = `${propKey} = ${newValue}`;
-                      if (oldMatch !== newLine) {
-                        configContent = configContent.replace(regex, newLine);
-                        patched = true;
-                        broadcastLog(`[Patch] ${nodeName}: ${oldMatch} → ${newLine}\n`);
-                      }
-                    }
-                  }
-
-                  if (patched) {
-                    fs.writeFileSync(configPath, configContent, 'utf-8');
-                    broadcastLog(`[Patch] config-node.properties synced for ${nodeName} ✓\n`);
-                  }
-                }
-              }
-            }
-          } catch (e: any) {
-            broadcastLog(`[Patch] ⚠️ config-node.properties sync warning: ${e.message}\n`);
-          }
-        }
+        syncMutableNodeSettingsFromPreset(TARGET_DIR);
+        sanitizeGeneratedIniFiles(TARGET_DIR);
 
         // 4. Run containers
         broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
@@ -6945,6 +7217,16 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 3: Patch generated properties files (version-dependent)
       broadcastLog(`[System] Step 3/6 – Patching generated config files (${version.configPatches.length} patch sets)...\n`);
       patchGeneratedConfigs(TARGET_DIR, version, basePreset);
+
+      // Step 3b: Sync mutable node settings from custom-preset.yml.
+      // This keeps Nodes page fields (host/friendlyName/minFeeMultiplier/etc.)
+      // applied even when official presets run config without -c.
+      broadcastLog('[System] Step 3b/6 – Syncing mutable node settings from preset...\n');
+      syncMutableNodeSettingsFromPreset(TARGET_DIR);
+
+      // Step 3c: Remove malformed orphan INI lines before starting containers.
+      broadcastLog('[System] Step 3c/6 – Sanitizing generated INI files...\n');
+      sanitizeGeneratedIniFiles(TARGET_DIR);
 
       // Step 4: symbol-bootstrap compose (generates docker-compose.yml)
       broadcastLog('[System] Step 4/6 – Generating docker-compose.yml...\n');
