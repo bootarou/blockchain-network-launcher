@@ -5682,9 +5682,22 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
 
     const nodesDirSync = path.join(targetDir, 'nodes');
     if (!fs.existsSync(nodesDirSync)) return;
+    const availableNodeDirs = fs.readdirSync(nodesDirSync).filter((d) => fs.existsSync(path.join(nodesDirSync, d, 'server-config', 'resources', 'config-node.properties')));
 
     for (const nodeEntry of presetNodes) {
-      const nodeName = String(nodeEntry.name || 'api-node-0');
+      const requestedNodeName = String(nodeEntry.name || 'api-node-0');
+      const candidateNames = [requestedNodeName, 'api-node-0', 'node'];
+      let nodeName = candidateNames.find((name) =>
+        fs.existsSync(path.join(nodesDirSync, name, 'server-config', 'resources', 'config-node.properties')),
+      );
+
+      // If no known name matches but there is exactly one generated node dir,
+      // use it as the sync target.
+      if (!nodeName && availableNodeDirs.length === 1) {
+        nodeName = availableNodeDirs[0];
+      }
+      if (!nodeName) continue;
+
       const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
       if (!fs.existsSync(configPath)) continue;
 
