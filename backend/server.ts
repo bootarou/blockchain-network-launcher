@@ -240,6 +240,7 @@ let networkStatus: NetworkStatus = {
 };
 
 let activeProcess: ChildProcess | null = null;
+let isStartSequenceInFlight = false;
 
 // =============================================================================
 // Node health polling (GET /node/health on the local Symbol REST gateway)
@@ -2395,21 +2396,13 @@ function resolveBootstrapTemplateDirs(): string[] {
 }
 
 function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string) {
-  // For testnet/mainnet, the fork_heights properties must still EXIST (the V3
-  // binary requires them), but uniqueAggregateTransactionHash must NOT be '0'
-  // (which means 'V2 prohibited from genesis').  Official networks have V2
-  // aggregates in early blocks; set it to empty so the chain's own fork
-  // schedule applies.
-  const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
-  const patches = version.configPatches.map(p => {
-    if (isOfficialNetwork && p.file === 'config-network.properties') {
-      return { ...p, props: { ...p.props, uniqueAggregateTransactionHash: '' } };
-    }
-    return p;
-  });
+  // Keep version defaults during config generation. Nemgen requires
+  // fork_heights.uniqueAggregateTransactionHash to be parseable (non-empty).
+  // Official network fork heights are patched later from source node properties.
+  const patches = version.configPatches;
 
   const templateDirs = resolveBootstrapTemplateDirs();
-  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}${isOfficialNetwork ? ' (uniqueAggregateTransactionHash=empty for official network)' : ''}, template dirs: ${templateDirs.length}\n`);
+  broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}, template dirs: ${templateDirs.length}\n`);
 
   for (const templateDir of templateDirs) {
   for (const patch of patches) {
@@ -2423,12 +2416,38 @@ function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string
     let patched = false;
 
     for (const [key, defaultValue] of Object.entries(patch.props)) {
+      // Deterministically repair malformed defaults that break nemgen.
+      // Some cached symbol-bootstrap templates contain:
+      //   uniqueAggregateTransactionHash =
+      // or unresolved mustache placeholders with no concrete value.
+      // Normalize these to a concrete non-empty value before presence checks.
+      if (key === 'uniqueAggregateTransactionHash' && String(defaultValue).trim()) {
+        const malformedLineRegex = new RegExp(
+          `^(\\s*${key}\\s*=)\\s*(?:\\{\\{[^\\n]*\\}\\})?\\s*$`,
+          'm'
+        );
+        if (malformedLineRegex.test(content)) {
+          content = content.replace(malformedLineRegex, `$1 ${defaultValue}`);
+          patched = true;
+          broadcastLog(`[Pre-Patch]    ${key}: repaired malformed/empty template value -> ${defaultValue}\n`);
+        }
+      }
+
       // Check if key already exists OUTSIDE of mustache conditional blocks.
       // Keys inside {{#...}}...{{/...}} blocks may not be rendered, so we
       // must not treat them as "already present".
       const unconditional = content.replace(/\{\{#[^}]+\}\}[\s\S]*?\{\{\/[^}]+\}\}/g, '');
       const keyRegex = new RegExp(`^\\s*${key}\\s*=`, 'm');
-      if (keyRegex.test(unconditional)) continue;
+      if (keyRegex.test(unconditional)) {
+        // Repair stale template pollution like `uniqueAggregateTransactionHash =`
+        // (empty value), which makes nemgen fail with property_malformed_error.
+        const emptyLineRegex = new RegExp(`^(\\s*${key}\\s*=)\\s*$`, 'm');
+        if (String(defaultValue).trim() && emptyLineRegex.test(content)) {
+          content = content.replace(emptyLineRegex, `$1 ${defaultValue}`);
+          patched = true;
+        }
+        continue;
+      }
 
       // Find the section and insert at the end of it (before next section)
       const sectionIdx = content.indexOf(patch.section);
@@ -2459,6 +2478,25 @@ function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string
         (nextBoundary !== -1 ? '\n' : '') +
         content.slice(insertPos).trimStart();
       patched = true;
+    }
+
+    // Repair broken mustache block markers in cached templates.
+    // If the opening guard tag is missing, symbol-bootstrap fails with
+    // "Unknown error rendering template" parse errors.
+    if (patch.file === 'config-network.properties') {
+      const treasuryOpen = '{{#treasuryReissuanceTransactionSignatures_has_items}}';
+      const treasuryClose = '{{/treasuryReissuanceTransactionSignatures_has_items}}';
+      if (!content.includes(treasuryOpen) && content.includes(treasuryClose)) {
+        const before = content;
+        content = content.replace(
+          /(\n\s*\[treasury_reissuance_transaction_signatures\]\s*\n)/,
+          `\n${treasuryOpen}$1`
+        );
+        if (content !== before) {
+          patched = true;
+          broadcastLog('[Pre-Patch]    repaired missing treasuryReissuanceTransactionSignatures_has_items open tag\n');
+        }
+      }
     }
 
     if (patched) {
@@ -3778,7 +3816,13 @@ function readMosaicIdFromNemesisSeed(targetDir: string): string {
 // nemesis signer + nonce, and we need them in custom-preset.yml for export
 // and display in the UI.
 // ---------------------------------------------------------------------------
-function backfillMosaicIds(targetDir: string): void {
+function backfillMosaicIds(targetDir: string, basePreset?: string): void {
+  const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
+  if (isOfficialPreset) {
+    broadcastLog(`[MosaicID] Official preset (${basePreset}) detected — skipping MosaicID/generationHash backfill from custom-preset.yml\n`);
+    return;
+  }
+
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) {
     broadcastLog('[MosaicID] No nodes directory found — skipping MosaicID backfill\n');
@@ -4109,15 +4153,9 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
     return true;
   };
 
-  // For testnet/mainnet, override uniqueAggregateTransactionHash to empty
-  // (the binary requires the property to exist, but '0' would block V2 txs).
-  const isOfficialNetwork = basePreset === 'testnet' || basePreset === 'mainnet';
-  const patches = version.configPatches.map(p => {
-    if (isOfficialNetwork && p.file === 'config-network.properties') {
-      return { ...p, props: { ...p.props, uniqueAggregateTransactionHash: '' } };
-    }
-    return p;
-  });
+  // Keep version defaults here as well. Official fork heights are
+  // synchronized later from source node network properties.
+  const patches = version.configPatches;
   const removePropsSet = version.removeProps ?? [];
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
@@ -4155,6 +4193,14 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
               (nextSection !== -1 ? '\n' : '') +
               content.slice(insertPos).trimStart();
             patched = true;
+          } else {
+            // If key exists but value is empty, repair it with default.
+            const emptyLineRegex = new RegExp(`^(\\s*${key}\\s*=)\\s*$`, 'm');
+            if (String(defaultValue).trim() && emptyLineRegex.test(content)) {
+              content = content.replace(emptyLineRegex, `$1 ${defaultValue}`);
+              patched = true;
+              broadcastLog(`[Patch] Repaired empty property '${key}' in ${nodeName}/${configDir}/${patch.file}\n`);
+            }
           }
         }
 
@@ -4423,6 +4469,158 @@ async function fetchPeerEntriesFromManualUrls(urls: string[]): Promise<PeerEntry
   }
 
   return dedupePeerEntries(collected);
+}
+
+async function replacePeerFilesFromUrls(targetDir: string, urls: string[], infoMessage: string): Promise<boolean> {
+  const fetched = await fetchPeerEntriesFromManualUrls(urls);
+  if (fetched.length === 0) return false;
+
+  const p2pPeers = dedupePeerEntries(fetched.filter((p) => p.metadata.roles.includes('Peer')));
+  const apiOnly = fetched.filter((p) => p.metadata.roles.includes('Api'));
+  const apiPeers = dedupePeerEntries(apiOnly.length > 0 ? apiOnly : fetched);
+
+  writePeerFiles(targetDir, p2pPeers, apiPeers, infoMessage);
+  return true;
+}
+
+async function fetchOfficialNetworkPeerUrls(basePreset: string): Promise<string[]> {
+  const networkIdentifier = basePreset === 'testnet'
+    ? 152
+    : basePreset === 'mainnet'
+      ? 104
+      : 0;
+  if (!networkIdentifier) return [];
+
+  const endpoints = basePreset === 'testnet'
+    ? [
+        'https://testnet.symbol.services/nodes?limit=100',
+        'https://symbol.services/nodes?network=testnet&limit=100',
+      ]
+    : [
+        'https://symbol.services/nodes?network=mainnet&limit=100',
+      ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint);
+      if (!res.ok) {
+        broadcastLog(`[Peers] ⚠️  Official nodes API returned HTTP ${res.status}: ${endpoint}\n`);
+        continue;
+      }
+
+      const data = await res.json() as any;
+      const rows = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+
+      const urls = new Set<string>();
+      for (const row of rows) {
+        if (typeof row === 'object' && row) {
+          const nid = Number(row.networkIdentifier ?? row?.network?.identifier ?? 0);
+          if (nid && nid !== networkIdentifier) continue;
+        }
+
+        const host = typeof row === 'string'
+          ? row
+          : String(row?.host || row?.endpoint?.host || '').trim();
+        if (!host) continue;
+        urls.add(`http://${host}:3000`);
+      }
+
+      if (urls.size > 0) {
+        broadcastLog(`[Peers] ✅ Fetched official ${basePreset} nodes from ${endpoint} (${urls.size})\n`);
+        return [...urls];
+      }
+    } catch (e: any) {
+      broadcastLog(`[Peers] ⚠️  Failed to fetch official node list from ${endpoint}: ${e.message}\n`);
+    }
+  }
+
+  return [];
+}
+
+async function fetchOfficialNetworkForkHeights(basePreset: string): Promise<Record<string, string>> {
+  const peerUrls = await fetchOfficialNetworkPeerUrls(basePreset);
+  for (const url of peerUrls) {
+    try {
+      const networkUrl = `${url.replace(/\/+$/, '').replace(/:3000$/, ':3001')}/network/properties`;
+      const response = await fetch(networkUrl);
+      if (!response.ok) continue;
+      const data = await response.json() as Record<string, any>;
+      const forkHeights = (data?.forkHeights ?? {}) as Record<string, unknown>;
+      const normalized: Record<string, string> = {};
+      for (const [key, value] of Object.entries(forkHeights)) {
+        const text = String(value ?? '').trim();
+        if (text) normalized[key] = text;
+      }
+      if (Object.keys(normalized).length > 0) {
+        broadcastLog(`[Network] ✅ Fetched official ${basePreset} fork heights from ${url}\n`);
+        return normalized;
+      }
+    } catch {
+      // Try next peer
+    }
+  }
+  return {};
+}
+
+function getOfficialForkHeightsFallback(basePreset: string): Record<string, string> {
+  if (basePreset === 'testnet') {
+    return {
+      uniqueAggregateTransactionHash: "2'742'000",
+    };
+  }
+  if (basePreset === 'mainnet') {
+    return {
+      totalVotingBalanceCalculationFix: "528'000",
+      treasuryReissuance: "689'761",
+      strictAggregateTransactionHash: "1'690'500",
+      skipSecretLockUniquenessChecks: "3'191'538",
+      skipSecretLockExpirations: "3'197'860, 3'197'866",
+      forceSecretLockExpirations: "3'197'458, 3'197'781",
+      uniqueAggregateTransactionHash: "4'759'100",
+    };
+  }
+  return {};
+}
+
+function patchForkHeightsInGeneratedConfigs(targetDir: string, forkHeights: Record<string, string>): void {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return;
+
+  const patchFile = (filePath: string): boolean => {
+    if (!fs.existsSync(filePath)) return false;
+    let content = fs.readFileSync(filePath, 'utf-8');
+    let changed = false;
+    for (const [key, value] of Object.entries(forkHeights)) {
+      const regex = new RegExp(`^(${key}\\s*=\\s*).*$`, 'm');
+      if (regex.test(content)) {
+        const next = content.replace(regex, `$1${value}`);
+        if (next !== content) {
+          content = next;
+          changed = true;
+          broadcastLog(`[Network] fork_heights.${key} -> ${value} in ${path.relative(targetDir, filePath)}\n`);
+        }
+      }
+    }
+    if (changed) fs.writeFileSync(filePath, content, 'utf-8');
+    return changed;
+  };
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    for (const configDir of ['server-config', 'broker-config']) {
+      patchFile(path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties'));
+    }
+  }
+
+  const gatewaysDir = path.join(targetDir, 'gateways');
+  if (fs.existsSync(gatewaysDir)) {
+    for (const gwName of fs.readdirSync(gatewaysDir)) {
+      patchFile(path.join(gatewaysDir, gwName, 'api-node-config', 'config-network.properties'));
+    }
+  }
 }
 
 async function mergeManualPeerUrlsIntoPeerFiles(targetDir: string, manualUrls: string[]): Promise<void> {
@@ -5618,16 +5816,49 @@ function runBootstrapCommand(
       }
     }
 
+    // Prefer a cached symbol-bootstrap binary to avoid npx network stalls.
+    // Fallback to npx only when no cached/global binary exists.
+    let bootstrapCmd = '';
+    let bootstrapArgs: string[] = [];
+    try {
+      const cached = execSync(
+        'find /root/.npm/_npx -type l -path "*/node_modules/.bin/symbol-bootstrap" 2>/dev/null | sort | tail -n 1',
+        { timeout: 5_000, stdio: 'pipe' },
+      ).toString().trim();
+      if (cached && fs.existsSync(cached)) {
+        bootstrapCmd = cached;
+        bootstrapArgs = [command, ...resolvedArgs];
+      }
+    } catch { /* fall through */ }
+
+    if (!bootstrapCmd) {
+      try {
+        const globalBin = execSync('command -v symbol-bootstrap 2>/dev/null || true', {
+          timeout: 3_000,
+          stdio: 'pipe',
+        }).toString().trim();
+        if (globalBin && fs.existsSync(globalBin)) {
+          bootstrapCmd = globalBin;
+          bootstrapArgs = [command, ...resolvedArgs];
+        }
+      } catch { /* fall through */ }
+    }
+
+    if (!bootstrapCmd) {
+      bootstrapCmd = 'npx';
+      bootstrapArgs = ['-y', '--prefer-offline', 'symbol-bootstrap@1.1.10', command, ...resolvedArgs];
+    }
+
     // CWD must be '/' because symbol-bootstrap internally does
     //   path.join(process.cwd(), target)  — in ComposeService
     // but also uses `target` directly     — in RunService.
     // If CWD were '/app/shared', join('/app/shared', '/opt/symbol-target')
     // becomes '/app/shared/opt/symbol-target' (wrong).
     // With CWD='/', join('/', '/opt/symbol-target') = '/opt/symbol-target' (correct).
-    const cp = spawn('npx', ['-y', 'symbol-bootstrap', command, ...resolvedArgs], {
+    const cp = spawn(bootstrapCmd, bootstrapArgs, {
       cwd: '/',
       env: { ...process.env, FORCE_COLOR: '0' },
-      shell: true,
+      shell: false,
     });
 
     activeProcess = cp;
@@ -5674,29 +5905,28 @@ function runBootstrapCommand(
 // (e.g. official presets without -c) so UI-edited node fields still apply.
 function syncMutableNodeSettingsFromPreset(targetDir: string): void {
   try {
-    if (!fs.existsSync(PRESET_PATH)) return;
-
-    const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-    const presetNodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
-    if (!presetNodes || presetNodes.length === 0) return;
+    const presetNodes: Array<Record<string, unknown>> = [];
+    if (fs.existsSync(PRESET_PATH)) {
+      const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+      const nodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(nodes)) {
+        presetNodes.push(...nodes);
+      }
+    }
 
     const nodesDirSync = path.join(targetDir, 'nodes');
     if (!fs.existsSync(nodesDirSync)) return;
     const availableNodeDirs = fs.readdirSync(nodesDirSync).filter((d) => fs.existsSync(path.join(nodesDirSync, d, 'server-config', 'resources', 'config-node.properties')));
 
-    for (const nodeEntry of presetNodes) {
-      const requestedNodeName = String(nodeEntry.name || 'api-node-0');
-      const candidateNames = [requestedNodeName, 'api-node-0', 'node'];
-      let nodeName = candidateNames.find((name) =>
-        fs.existsSync(path.join(nodesDirSync, name, 'server-config', 'resources', 'config-node.properties')),
-      );
-
-      // If no known name matches but there is exactly one generated node dir,
-      // use it as the sync target.
-      if (!nodeName && availableNodeDirs.length === 1) {
-        nodeName = availableNodeDirs[0];
-      }
-      if (!nodeName) continue;
+    // Process all generated node dirs so required properties are present even
+    // when preset nodes are missing or use a different alias.
+    for (const nodeName of availableNodeDirs) {
+      // Resolve best matching preset node entry for this generated node dir.
+      const nodeEntry = presetNodes.find((n) => String(n.name || '') === nodeName)
+        ?? presetNodes.find((n) => String(n.name || '') === 'api-node-0')
+        ?? presetNodes.find((n) => String(n.name || '') === 'node')
+        ?? presetNodes[0]
+        ?? ({} as Record<string, unknown>);
 
       const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
       if (!fs.existsSync(configPath)) continue;
@@ -5715,15 +5945,34 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
         const newValue = nodeEntry[presetKey];
         if (newValue === undefined || newValue === null) continue;
         const regex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
-        if (!regex.test(configContent)) continue;
+        const newLine = `${propKey} = ${newValue}`;
+
+        if (!regex.test(configContent)) {
+          // Missing top-level key: inject into [localnode] section.
+          const result = upsertIniSectionProperty(configContent, '[localnode]', propKey, String(newValue));
+          if (result.changed) {
+            configContent = result.content;
+            patched = true;
+            broadcastLog(`[Patch] ${nodeName}: inserted ${newLine} into [localnode]\n`);
+          }
+          continue;
+        }
 
         const oldMatch = configContent.match(regex)?.[0] || '';
-        const newLine = `${propKey} = ${newValue}`;
         if (oldMatch !== newLine) {
           configContent = configContent.replace(regex, newLine);
           patched = true;
           broadcastLog(`[Patch] ${nodeName}: ${oldMatch} → ${newLine}\n`);
         }
+      }
+
+      // Hard requirement for catapult startup: [localnode].friendlyName.
+      const fallbackFriendlyName = String(nodeEntry.friendlyName || nodeName || 'Local Node');
+      const friendlyNameResult = upsertIniSectionProperty(configContent, '[localnode]', 'friendlyName', fallbackFriendlyName);
+      if (friendlyNameResult.changed) {
+        configContent = friendlyNameResult.content;
+        patched = true;
+        broadcastLog(`[Patch] ${nodeName}: ensured required localnode.friendlyName = ${fallbackFriendlyName}\n`);
       }
 
       if (patched) {
@@ -5734,6 +5983,178 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
   } catch (e: any) {
     broadcastLog(`[Patch] ⚠️ config-node.properties sync warning: ${e.message}\n`);
   }
+}
+
+function upsertIniSectionProperty(
+  iniContent: string,
+  section: string,
+  propKey: string,
+  propValue: string,
+): { content: string; changed: boolean; sectionFound: boolean } {
+  const sectionIndex = iniContent.indexOf(section);
+  if (sectionIndex === -1) {
+    return { content: iniContent, changed: false, sectionFound: false };
+  }
+
+  const nextSectionMatch = iniContent.slice(sectionIndex + section.length).match(/\n\[[^\]]+\]/);
+  const sectionEnd = nextSectionMatch
+    ? sectionIndex + section.length + nextSectionMatch.index!
+    : iniContent.length;
+
+  const sectionBody = iniContent.slice(sectionIndex, sectionEnd);
+  const propRegex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
+  const targetLine = `${propKey} = ${propValue}`;
+
+  if (propRegex.test(sectionBody)) {
+    const currentLine = sectionBody.match(propRegex)?.[0] || '';
+    if (currentLine === targetLine) {
+      return { content: iniContent, changed: false, sectionFound: true };
+    }
+    const updatedSection = sectionBody.replace(propRegex, targetLine);
+    const updatedContent = iniContent.slice(0, sectionIndex) + updatedSection + iniContent.slice(sectionEnd);
+    return { content: updatedContent, changed: true, sectionFound: true };
+  }
+
+  const updatedSection = `${sectionBody.trimEnd()}\n${targetLine}\n`;
+  const updatedContent = iniContent.slice(0, sectionIndex) + updatedSection + iniContent.slice(sectionEnd);
+  return { content: updatedContent, changed: true, sectionFound: true };
+}
+
+function hardenGeneratedConfigs(targetDir: string, version: CatapultVersionDef): void {
+  try {
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (!fs.existsSync(nodesDir)) return;
+
+    let touchedFiles = 0;
+
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      for (const configDir of ['server-config', 'broker-config']) {
+        const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
+        if (!fs.existsSync(resourcesDir)) continue;
+
+        const configNodePath = path.join(resourcesDir, 'config-node.properties');
+        if (fs.existsSync(configNodePath)) {
+          let content = fs.readFileSync(configNodePath, 'utf-8');
+          let changed = false;
+
+          const friendlyNameResult = upsertIniSectionProperty(content, '[localnode]', 'friendlyName', nodeName || 'Local Node');
+          if (friendlyNameResult.changed) {
+            content = friendlyNameResult.content;
+            changed = true;
+            broadcastLog(`[Safety] ${nodeName}/${configDir}: enforced [localnode].friendlyName\n`);
+          }
+
+          if (changed) {
+            fs.writeFileSync(configNodePath, content, 'utf-8');
+            touchedFiles += 1;
+          }
+        }
+
+        const configNetworkPath = path.join(resourcesDir, 'config-network.properties');
+        if (fs.existsSync(configNetworkPath)) {
+          let content = fs.readFileSync(configNetworkPath, 'utf-8');
+          let changed = false;
+
+          for (const patch of version.configPatches) {
+            if (patch.file !== 'config-network.properties') continue;
+            for (const [key, value] of Object.entries(patch.props)) {
+              if (!String(value).trim()) continue;
+              const result = upsertIniSectionProperty(content, patch.section, key, String(value));
+              if (result.changed) {
+                content = result.content;
+                changed = true;
+                broadcastLog(`[Safety] ${nodeName}/${configDir}: enforced ${patch.section}.${key}=${value}\n`);
+              }
+            }
+          }
+
+          if (changed) {
+            fs.writeFileSync(configNetworkPath, content, 'utf-8');
+            touchedFiles += 1;
+          }
+        }
+      }
+    }
+
+    if (touchedFiles > 0) {
+      broadcastLog(`[Safety] Hardened generated config files: ${touchedFiles} file(s) updated\n`);
+    } else {
+      broadcastLog('[Safety] Generated config invariants already satisfied\n');
+    }
+  } catch (e: any) {
+    broadcastLog(`[Safety] ⚠️ Hardening warning: ${e.message}\n`);
+  }
+}
+
+function validateGeneratedConfigsOrThrow(targetDir: string, version: CatapultVersionDef): void {
+  const errors: string[] = [];
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) {
+    throw new Error('[FailFast] nodes directory not found');
+  }
+
+  const readSectionBody = (content: string, section: string): string | null => {
+    const sectionIndex = content.indexOf(section);
+    if (sectionIndex === -1) return null;
+    const nextSectionMatch = content.slice(sectionIndex + section.length).match(/\n\[[^\]]+\]/);
+    const sectionEnd = nextSectionMatch
+      ? sectionIndex + section.length + nextSectionMatch.index!
+      : content.length;
+    return content.slice(sectionIndex, sectionEnd);
+  };
+
+  const hasNonEmptyProperty = (content: string, section: string, key: string): boolean => {
+    const sectionBody = readSectionBody(content, section);
+    if (!sectionBody) return false;
+    const keyMatch = sectionBody.match(new RegExp(`^${key}\\s*=\\s*(.*)$`, 'm'));
+    if (!keyMatch) return false;
+    const value = (keyMatch[1] || '').replace(/[;#].*$/, '').trim();
+    return value.length > 0;
+  };
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    for (const configDir of ['server-config', 'broker-config']) {
+      const resourcesDir = path.join(nodesDir, nodeName, configDir, 'resources');
+      if (!fs.existsSync(resourcesDir)) {
+        errors.push(`${nodeName}/${configDir}: resources directory missing`);
+        continue;
+      }
+
+      const nodeConfigPath = path.join(resourcesDir, 'config-node.properties');
+      if (!fs.existsSync(nodeConfigPath)) {
+        errors.push(`${nodeName}/${configDir}: config-node.properties missing`);
+      } else {
+        const nodeContent = fs.readFileSync(nodeConfigPath, 'utf-8');
+        if (!hasNonEmptyProperty(nodeContent, '[localnode]', 'friendlyName')) {
+          errors.push(`${nodeName}/${configDir}: missing required [localnode].friendlyName`);
+        }
+      }
+
+      const networkConfigPath = path.join(resourcesDir, 'config-network.properties');
+      if (!fs.existsSync(networkConfigPath)) {
+        errors.push(`${nodeName}/${configDir}: config-network.properties missing`);
+      } else {
+        const networkContent = fs.readFileSync(networkConfigPath, 'utf-8');
+        for (const patch of version.configPatches) {
+          if (patch.file !== 'config-network.properties') continue;
+          for (const [key, value] of Object.entries(patch.props)) {
+            // Only enforce properties that must have concrete values.
+            if (!String(value).trim()) continue;
+            if (!hasNonEmptyProperty(networkContent, patch.section, key)) {
+              errors.push(`${nodeName}/${configDir}: missing required ${patch.section}.${key}`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    const details = errors.slice(0, 12).join('; ');
+    throw new Error(`[FailFast] Generated config validation failed (${errors.length} issue(s)): ${details}`);
+  }
+
+  broadcastLog('[FailFast] Generated config validation passed\n');
 }
 
 // Remove malformed INI lines from generated catapult config files.
@@ -6647,6 +7068,20 @@ app.post('/api/commands/start', async (req, res) => {
       return res.status(400).json({ error: 'Network encryption password is required.' });
     }
 
+    const isActiveProcessAlive = !!(activeProcess && !activeProcess.killed);
+    if (isStartSequenceInFlight || networkStatus.state === 'starting' || isActiveProcessAlive) {
+      const reason = isStartSequenceInFlight
+        ? 'start-sequence-in-flight'
+        : (networkStatus.state === 'starting' ? 'network-state-starting' : 'active-process-running');
+      broadcastLog(`[System] Start rejected: another start is already in progress (${reason}).\n`);
+      return res.status(409).json({
+        error: 'Start is already in progress. Please wait for current startup to finish.',
+        state: networkStatus.state,
+        reason,
+      });
+    }
+    isStartSequenceInFlight = true;
+
     // Save current config first
     broadcastLog('[System] Saving preset before start...\n');
 
@@ -6791,6 +7226,9 @@ app.post('/api/commands/start', async (req, res) => {
         //     picks up any UI changes without requiring a Full Reset.
         syncMutableNodeSettingsFromPreset(TARGET_DIR);
         sanitizeGeneratedIniFiles(TARGET_DIR);
+        const restartVersion = resolveVersion();
+        hardenGeneratedConfigs(TARGET_DIR, restartVersion);
+        validateGeneratedConfigsOrThrow(TARGET_DIR, restartVersion);
 
         // 4. Run containers
         broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
@@ -6935,24 +7373,11 @@ app.post('/api/commands/start', async (req, res) => {
       const patchedTag = await ensurePatchedImage(version);
 
       // Step 0c: Pre-patch mustache templates so nemgen sees all required props
-      //   IMPORTANT: runBootstrapCommand uses `npx -y symbol-bootstrap`, so the
-      //   actual templates live in the npx cache (~/.npm/_npx/...).  This cache
-      //   is lazily created on first npx invocation.  We must prime it BEFORE
-      //   patching so resolveBootstrapTemplateDirs() can find it.
+      //   IMPORTANT: npx cache priming can hang on unstable networks and block
+      //   startup. We skip explicit priming here and patch whatever template
+      //   copies are currently discoverable.
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
-      try {
-        const { execSync } = require('child_process') as typeof import('child_process');
-        broadcastLog('[Pre-Patch] Priming npx cache (npx -y symbol-bootstrap --version)...\n');
-        const ver = execSync('npx -y symbol-bootstrap --version 2>&1', {
-          timeout: 60_000,
-          stdio: 'pipe',
-          cwd: '/',
-          env: { ...process.env, FORCE_COLOR: '0' },
-        }).toString().trim();
-        broadcastLog(`[Pre-Patch] npx cache primed — bootstrap version: ${ver}\n`);
-      } catch (e: any) {
-        broadcastLog(`[Pre-Patch] ⚠️  npx prime failed (non-fatal): ${e.message}\n`);
-      }
+      broadcastLog('[Pre-Patch] Skipping npx cache priming for startup stability\n');
       patchMustacheTemplates(version, basePreset);
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
@@ -7012,16 +7437,24 @@ app.post('/api/commands/start', async (req, res) => {
       // Check for the actual nemesis block file, not just the directory.
       // An empty data/00000/ dir from a previous failed run must NOT trigger --upgrade,
       // because --upgrade skips nemgen → the node has no genesis block → crash.
+      const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
       const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
       const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
       const targetHasContent = fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length > 0;
-      const needsReset = !generatedPresetExists && !dataExists && targetHasContent;
+      const forceFreshOfficialTarget = isOfficialPreset && targetHasContent && !dataExists;
+      const needsReset = forceFreshOfficialTarget || (!generatedPresetExists && !dataExists && targetHasContent);
 
       // Stash restored identity files so config sees an empty target dir
       // NOTE: TARGET_DIR is a Docker volume mount, so fs.renameSync across
       // to /tmp fails with EXDEV.  Use copy + delete instead.
       const STASH_DIR = '/tmp/restore-stash';
-      if (needsReset) {
+      if (forceFreshOfficialTarget) {
+        broadcastLog(`[System] Official preset (${basePreset}) with stale generated artifacts detected — cleaning target for fresh config.\n`);
+        for (const item of fs.readdirSync(TARGET_DIR)) {
+          const p = path.join(TARGET_DIR, item);
+          fs.rmSync(p, { recursive: true, force: true });
+        }
+      } else if (needsReset) {
         broadcastLog('[System] Post-restore detected: stashing identity files for clean config...\n');
         if (fs.existsSync(STASH_DIR)) fs.rmSync(STASH_DIR, { recursive: true, force: true });
         fs.mkdirSync(STASH_DIR, { recursive: true });
@@ -7166,7 +7599,6 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog('[System] 📦 Join mode detected (imported seed exists) — preserving network identity keys in custom-preset.yml.\n');
       }
 
-      const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
       const configArgs = [
         '-p', basePreset,
         '-a', assembly,
@@ -7187,7 +7619,7 @@ app.post('/api/commands/start', async (req, res) => {
       });
 
       // After config, restore stashed identity files (overwrite generated ones)
-      if (needsReset && fs.existsSync(STASH_DIR)) {
+      if (!forceFreshOfficialTarget && needsReset && fs.existsSync(STASH_DIR)) {
         // Restore addresses.yml (node private keys)
         const addrSrc = path.join(STASH_DIR, 'addresses.yml');
         if (fs.existsSync(addrSrc)) {
@@ -7215,7 +7647,7 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 1b: Read generated MosaicIDs from config-network.properties
       //   and backfill them into custom-preset.yml for export/UI display.
       broadcastLog('[System] Step 1b – Reading generated MosaicIDs...\n');
-      backfillMosaicIds(TARGET_DIR);
+      backfillMosaicIds(TARGET_DIR, basePreset);
 
       // Step 2: Rewrite generated preset + configs with patched image
       //   Must happen AFTER config so the generated preset.yml exists,
@@ -7240,6 +7672,13 @@ app.post('/api/commands/start', async (req, res) => {
       // Step 3c: Remove malformed orphan INI lines before starting containers.
       broadcastLog('[System] Step 3c/6 – Sanitizing generated INI files...\n');
       sanitizeGeneratedIniFiles(TARGET_DIR);
+
+      // Step 3d: Final safety net — enforce required config invariants.
+      // This prevents startup failures when templates or previous runs left
+      // missing/empty required properties.
+      broadcastLog('[System] Step 3d/6 – Hardening generated config invariants...\n');
+      hardenGeneratedConfigs(TARGET_DIR, version);
+      validateGeneratedConfigsOrThrow(TARGET_DIR, version);
 
       // Step 4: symbol-bootstrap compose (generates docker-compose.yml)
       broadcastLog('[System] Step 4/6 – Generating docker-compose.yml...\n');
@@ -7268,6 +7707,36 @@ app.post('/api/commands/start', async (req, res) => {
           : {};
         sourceUrl = meta.sourceNodeUrl;
         manualPeerUrls = readManualPeerUrlsFromPreset(PRESET_PATH);
+
+        if (isOfficialPreset) {
+          if (sourceUrl) {
+            broadcastLog('[Peers] ℹ️  Ignoring sourceNodeUrl on official preset to avoid stale network overrides\n');
+            sourceUrl = undefined;
+          }
+
+          broadcastLog(`[System] Step 4c – Refreshing peers from official ${basePreset} node list...\n`);
+          const officialUrls = await fetchOfficialNetworkPeerUrls(basePreset);
+          if (officialUrls.length > 0) {
+            const replaced = await replacePeerFilesFromUrls(
+              TARGET_DIR,
+              officialUrls,
+              `this file contains peers auto-generated from official ${basePreset} node list`,
+            );
+            if (replaced) {
+              broadcastLog(`[Peers] ✅ Replaced peer files from official ${basePreset} list (${officialUrls.length} URLs)\n`);
+            } else {
+              broadcastLog(`[Peers] ⚠️  Official ${basePreset} list fetched but no valid peers resolved\n`);
+            }
+          } else {
+            broadcastLog(`[Peers] ⚠️  Could not fetch official ${basePreset} node list\n`);
+          }
+
+          if (manualPeerUrls.length > 0) {
+            broadcastLog('[Peers] ℹ️  Ignoring nodes[].peerNodeUrls on official preset to avoid stale peer pinning\n');
+            manualPeerUrls = [];
+          }
+        }
+
         if (sourceUrl) {
           broadcastLog('[System] Step 4c – Fetching peers from source node...\n');
           await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
@@ -7294,6 +7763,40 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog(`[Peers] ⚠️  Peer key refresh failed (non-fatal): ${e.message}\n`);
       }
 
+      if (isOfficialPreset) {
+        try {
+          broadcastLog(`[System] Step 4c4 – Refreshing official ${basePreset} fork heights...\n`);
+          const fetchedForkHeights = await fetchOfficialNetworkForkHeights(basePreset);
+          const fallbackForkHeights = getOfficialForkHeightsFallback(basePreset);
+          const officialForkHeights = {
+            ...fallbackForkHeights,
+            ...fetchedForkHeights,
+          };
+          if (Object.keys(officialForkHeights).length > 0) {
+            if (Object.keys(fetchedForkHeights).length === 0 && Object.keys(fallbackForkHeights).length > 0) {
+              broadcastLog(`[Network] ℹ️  Using fallback official ${basePreset} fork heights\n`);
+            }
+
+            patchForkHeightsInGeneratedConfigs(TARGET_DIR, officialForkHeights);
+
+            try {
+              const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+              if (!presetDoc.networkProperties) presetDoc.networkProperties = {};
+              const np = presetDoc.networkProperties as Record<string, unknown>;
+              np.forkHeights = { ...(np.forkHeights as Record<string, unknown> | undefined), ...officialForkHeights };
+              fs.writeFileSync(PRESET_PATH, yaml.dump(presetDoc, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false }), 'utf-8');
+              broadcastLog(`[Network] ✅ Saved official ${basePreset} fork heights to custom-preset.yml\n`);
+            } catch (e: any) {
+              broadcastLog(`[Network] ⚠️  Could not persist official fork heights: ${e.message}\n`);
+            }
+          } else {
+            broadcastLog(`[Network] ⚠️  Could not fetch official ${basePreset} fork heights\n`);
+          }
+        } catch (e: any) {
+          broadcastLog(`[Network] ⚠️  Official fork-height refresh failed (non-fatal): ${e.message}\n`);
+        }
+      }
+
       // Step 4c2: Patch config-node.properties so that the Docker subnet is
       //           listed in trustedHosts / localNetworks (REST gateway access).
       broadcastLog('[System] Step 4c2 – Patching localNetworks & generating REST cert...\n');
@@ -7304,26 +7807,30 @@ app.post('/api/commands/start', async (req, res) => {
       //   Priority: 1) Imported seed files from network admin (shared/seed/)
       //             2) REST API reconstruction (fallback, may not work for all networks)
       {
-        const importedSeedDir = path.join(SEED_DIR, '00000');
-        const hasImportedSeed = fs.existsSync(path.join(importedSeedDir, '00001.dat'));
-        if (hasImportedSeed) {
-          try {
-            broadcastLog('[System] Step 4d – Installing imported nemesis seed...\n');
-            await installImportedSeed(TARGET_DIR);
-          } catch (e: any) {
-            broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
-            broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
-          }
-        } else if (sourceUrl) {
-          try {
-            broadcastLog('[System] Step 4d – No imported seed found; attempting REST API reconstruction...\n');
-            await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl);
-          } catch (e: any) {
-            broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
-            broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
-          }
+        if (isOfficialPreset) {
+          broadcastLog(`[System] Step 4d – Skipped for official preset (${basePreset}); keeping bootstrap-provided nemesis data.\n`);
         } else {
-          broadcastLog('[System] Step 4d – No imported seed and no source node URL; using local generation.\n');
+          const importedSeedDir = path.join(SEED_DIR, '00000');
+          const hasImportedSeed = fs.existsSync(path.join(importedSeedDir, '00001.dat'));
+          if (hasImportedSeed) {
+            try {
+              broadcastLog('[System] Step 4d – Installing imported nemesis seed...\n');
+              await installImportedSeed(TARGET_DIR);
+            } catch (e: any) {
+              broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
+              broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
+            }
+          } else if (sourceUrl) {
+            try {
+              broadcastLog('[System] Step 4d – No imported seed found; attempting REST API reconstruction...\n');
+              await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl);
+            } catch (e: any) {
+              broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
+              broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
+            }
+          } else {
+            broadcastLog('[System] Step 4d – No imported seed and no source node URL; using local generation.\n');
+          }
         }
       }
 
@@ -7340,6 +7847,9 @@ app.post('/api/commands/start', async (req, res) => {
       //       restart scenario where the container would SKIP the copy).
       //   On a fresh start data/00000/ is empty → container handles the copy.
       {
+        if (isOfficialPreset) {
+          broadcastLog(`[System] Step 4e – Skipped manual seed overwrite for official preset (${basePreset}).\n`);
+        } else {
         const nemSeedDir00 = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
         const nodesBaseDir  = path.join(TARGET_DIR, 'nodes');
         const seed00001     = path.join(nemSeedDir00, '00001.dat');
@@ -7397,6 +7907,7 @@ app.post('/api/commands/start', async (req, res) => {
         } else {
           broadcastLog('[System] Step 4e – nemesis/seed/00000/00001.dat not found, skipping\n');
         }
+        }
       }
 
       // Step 4f: Re-apply generationHashSeed from custom-preset.yml to all
@@ -7410,6 +7921,9 @@ app.post('/api/commands/start', async (req, res) => {
       //     • This step guarantees gateways/ are correct even if Step 4c failed
       //       or sourceUrl was not set, by reading directly from custom-preset.yml.
       {
+        if (isOfficialPreset) {
+          broadcastLog(`[System] Step 4f – Skipped for official preset (${basePreset}); preserving bootstrap generation hash and mosaic IDs.\n`);
+        } else {
         try {
           const presetDocForHash = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
           const npForHash = presetDocForHash?.networkProperties as Record<string, unknown> | undefined;
@@ -7466,6 +7980,7 @@ app.post('/api/commands/start', async (req, res) => {
           }
         } catch (e: any) {
           broadcastLog(`[GenerationHash] Step 4f warning: ${e.message}\n`);
+        }
         }
       }
 
@@ -7596,12 +8111,19 @@ app.post('/api/commands/start', async (req, res) => {
     };
 
     // Fire-and-forget
-    startSequence().catch((err) => {
-      broadcastLog(`[Error] Start failed: ${err.message}\n`);
-    });
+    startSequence()
+      .catch((err) => {
+        networkStatus.state = 'error';
+        broadcastStatus();
+        broadcastLog(`[Error] Start failed: ${err.message}\n`);
+      })
+      .finally(() => {
+        isStartSequenceInFlight = false;
+      });
 
     res.json({ success: true, message: 'Start command initiated.' });
   } catch (err: any) {
+    isStartSequenceInFlight = false;
     res.status(500).json({ error: err.message });
   }
 });
