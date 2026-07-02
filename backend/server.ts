@@ -2693,17 +2693,24 @@ function resolveVersion(): CatapultVersionDef {
   try {
     if (fs.existsSync(PRESET_PATH)) {
       const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-      const img = String(doc.symbolServerImage ?? '');
+      const img = String(doc.symbolServerImage ?? '').toLowerCase();
       broadcastLog(`[resolveVersion] custom-preset symbolServerImage=${img}\n`);
+      
       for (const ver of CATAPULT_VERSIONS) {
-        const tag = ver.serverImage.split(':')[1];
-        if (tag && img.includes(tag)) {
-          broadcastLog(`[resolveVersion] Matched from symbolServerImage: ${ver.id} (tag=${tag})\n`);
+        // 'symbolplatform/symbol-server:gcc-1.0.3.9' から 'gcc-1.0.3.9' を抽出
+        const expectedTag = ver.serverImage.split(':')[1]?.toLowerCase();
+        // より柔軟にするため、'gcc-1.0.3.9' からさらに '1.0.3.9' だけのバージョン番号も抽出
+        const versionNum = expectedTag?.includes('-') ? expectedTag.split('-')[1] : expectedTag;
+
+        if (expectedTag && (img.includes(expectedTag) || (versionNum && img.includes(versionNum)))) {
+          broadcastLog(`[resolveVersion] Matched from symbolServerImage: ${ver.id} (tag=${expectedTag})\n`);
           return ver;
         }
       }
     }
-  } catch { /* ignore */ }
+  } catch (err) { 
+    broadcastLog(`[resolveVersion] Error reading preset: ${err}\n`);
+  }
 
   // Secondary: catapultVersion field in ui-meta.json
   // (can be stale/incorrect if Join detected version as v2 when node.version=0)
@@ -2717,7 +2724,9 @@ function resolveVersion(): CatapultVersionDef {
         return ver;
       }
     }
-  } catch { /* ignore */ }
+  } catch (err) { 
+    broadcastLog(`[resolveVersion] Error reading ui-meta: ${err}\n`);
+  }
 
   // Default to V3
   broadcastLog(`[resolveVersion] No match — defaulting to V3\n`);
