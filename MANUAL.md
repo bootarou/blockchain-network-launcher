@@ -647,6 +647,8 @@ BIND_ADDRESS=0.0.0.0
 docker compose up -d
 ```
 
+> ⚠️ **Windows + WSL2 環境の場合、`BIND_ADDRESS` の設定だけでは LAN からアクセスできません。** WSL2 は NAT 配下で動作するため、mirrored モードへの切り替えまたはポート転送が追加で必要です。手順は [docs/wsl-lan-setup.md](docs/wsl-lan-setup.md) を参照してください。
+
 ---
 
 ## トラブルシューティング
