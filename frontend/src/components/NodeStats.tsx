@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {  AlertTriangle,  BarChart3,
   Box,
+  Coins,
   Users,
   Shield,
   Server,
@@ -59,9 +60,17 @@ interface PeerInfo {
   roles: number;
 }
 
+interface CurrencyInfo {
+  name: string;
+  mosaicId: string;
+  divisibility: number;
+}
+
 interface NodeStatsData {
   available: boolean;
   timestamp: string;
+  currency?: CurrencyInfo;
+  harvest?: CurrencyInfo | null;
   chain?: ChainStats;
   node?: NodeInfo;
   peers?: { count: number; list: PeerInfo[] };
@@ -926,6 +935,47 @@ export function NodeStats() {
           </button>
         </div>
       </div>
+
+      {/* ── Network currency (always shown — lets the user confirm the
+             configured currency of a custom network even before start).
+             In dual-currency mode the harvest mosaic gets its own row. ── */}
+      {stats?.currency?.name && (
+        <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-2">
+          <div className="flex items-center gap-2 text-xs text-zinc-500">
+            <Coins className="w-4 h-4 text-yellow-400" />
+            {t('stats.currencyName')}
+          </div>
+          {[
+            { key: 'currency', label: stats.harvest ? t('stats.currencyLabel') : null, info: stats.currency },
+            ...(stats.harvest ? [{ key: 'harvest', label: t('stats.harvestLabel'), info: stats.harvest }] : []),
+          ].map(({ key, label, info }) => (
+            <div key={key} className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <span className="text-lg font-bold text-zinc-100 tracking-tight truncate">
+                  {info.name}
+                </span>
+                {label && (
+                  <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded align-middle ${
+                    key === 'harvest'
+                      ? 'bg-emerald-500/15 text-emerald-400'
+                      : 'bg-yellow-500/15 text-yellow-400'
+                  }`}>
+                    {label}
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-zinc-500 font-mono truncate text-right">
+                {info.mosaicId
+                  ? `${t('stats.currencyMosaicId')}: ${info.mosaicId}`
+                  : t('stats.currencyIdPending')}
+                <span className="text-zinc-600 ml-2">
+                  {t('stats.currencyDivisibility')}: {info.divisibility}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {notAvailable ? (
         <div className="flex items-center gap-3 py-8 justify-center text-zinc-500">

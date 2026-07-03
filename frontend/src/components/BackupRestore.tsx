@@ -24,6 +24,7 @@ const FILE_LABELS: Record<string, string> = {
   'addresses.yml': 'backup.files.addresses',
   'nemesis/seed/': 'backup.files.seed',
   'nemesis/transactions/': 'backup.files.transactions',
+  'harvesters.dat': 'backup.files.harvesters',
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
