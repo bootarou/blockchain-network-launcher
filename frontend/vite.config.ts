@@ -21,6 +21,11 @@ export default defineConfig({
                 target: 'http://localhost:4000',
                 changeOrigin: true,
             },
+            // Manager log/status WebSocket (backend own WS, not REST /ws)
+            '/manager-ws': {
+                target: 'ws://localhost:4000',
+                ws: true,
+            },
             // WebSocket upgrade — the backend WS server listens on /
             // but we scope the proxy to avoid conflicting with Vite HMR
             '/ws': {

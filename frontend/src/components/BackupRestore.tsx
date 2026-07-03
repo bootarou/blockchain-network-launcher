@@ -8,7 +8,16 @@ import { api } from '../lib/api';
 interface BackupStatus {
   canBackup: boolean;
   files: Record<string, boolean>;
+  fullBackup?: { available: boolean; bytes: number };
   nodeState: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const val = bytes / Math.pow(1024, i);
+  return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 interface RestoreResult {
@@ -24,6 +33,7 @@ const FILE_LABELS: Record<string, string> = {
   'addresses.yml': 'backup.files.addresses',
   'nemesis/seed/': 'backup.files.seed',
   'nemesis/transactions/': 'backup.files.transactions',
+  'harvesters.dat': 'backup.files.harvesters',
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -37,6 +47,7 @@ export function BackupRestore() {
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [fullBackup, setFullBackup] = useState(false);
 
   // ── Restore state ──
   const [dragOver, setDragOver] = useState(false);
@@ -67,7 +78,7 @@ export function BackupRestore() {
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      const url = api.getBackupDownloadUrl();
+      const url = api.getBackupDownloadUrl(fullBackup);
       const a = document.createElement('a');
       a.href = url;
       a.download = '';
@@ -96,6 +107,11 @@ export function BackupRestore() {
       setRestoreResult(result);
       // Refresh status after restore
       fetchStatus();
+      // The restored preset replaced the configuration on disk, but the app
+      // still holds the PRE-restore config in memory — and Start saves that
+      // in-memory config back to disk before launching, which would clobber
+      // the restored settings.  Reload so everything re-reads from disk.
+      setTimeout(() => window.location.reload(), 4000);
     } catch (err: any) {
       setRestoreError(err.message || 'Unknown error');
     } finally {
@@ -219,6 +235,37 @@ export function BackupRestore() {
             </p>
           </div>
 
+          {/* Full backup toggle (block data + MongoDB) */}
+          {status?.fullBackup?.available && (
+            <label className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-colors ${
+              fullBackup
+                ? 'bg-teal-950/30 border-teal-700/50'
+                : 'bg-zinc-800/50 border-zinc-700/50'
+            } ${isStopped ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}>
+              <input
+                type="checkbox"
+                checked={fullBackup && isStopped}
+                disabled={!isStopped}
+                onChange={(e) => setFullBackup(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded border-zinc-600 bg-zinc-900 text-teal-500 focus:ring-teal-500/30"
+              />
+              <div className="min-w-0">
+                <div className="text-sm text-zinc-200 font-medium">
+                  {t('backup.full.label')}
+                  <span className="ml-2 text-xs text-zinc-500 font-mono">
+                    (+{formatBytes(status.fullBackup.bytes)})
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
+                  {t('backup.full.desc')}
+                </p>
+                {!isStopped && (
+                  <p className="text-xs text-amber-400 mt-1">{t('backup.full.requireStop')}</p>
+                )}
+              </div>
+            </label>
+          )}
+
           {/* Download button */}
           <button
             onClick={handleDownload}
@@ -321,6 +368,10 @@ export function BackupRestore() {
                     <li key={f}>{f}</li>
                   ))}
                 </ul>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-sky-400">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                {t('backup.restore.reloading')}
               </div>
             </div>
           )}

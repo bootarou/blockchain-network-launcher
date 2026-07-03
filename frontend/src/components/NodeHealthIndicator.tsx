@@ -4,8 +4,8 @@ import { api, getAuthToken } from '../lib/api';
 import { cn } from '../lib/utils';
 import { useTranslation } from '../i18n';
 
-// In production the backend serves the frontend on the same port → same host.
-// In dev mode Vite proxies /ws → ws://localhost:4000 (see vite.config.ts).
+// In production the backend serves the frontend on the same port -> same host.
+// In dev mode Vite proxies /manager-ws -> ws://localhost:4000 (see vite.config.ts).
 const WS_URL =
   import.meta.env.VITE_WS_URL ??
   `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
@@ -52,11 +52,11 @@ export function NodeHealthIndicator() {
 
     const connect = () => {
       if (disposed) return;
-      // In dev mode, Vite proxies /ws → ws://localhost:4000
+      // In dev mode, Vite proxies /manager-ws -> ws://localhost:4000
       // In production, the backend handles the upgrade on the same port
       const token = getAuthToken();
       const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
-      const wsTarget = import.meta.env.DEV ? `${WS_URL}/ws${tokenParam}` : `${WS_URL}${tokenParam}`;
+      const wsTarget = import.meta.env.DEV ? `${WS_URL}/manager-ws${tokenParam}` : `${WS_URL}${tokenParam}`;
       ws = new WebSocket(wsTarget);
 
       ws.onopen = () => {

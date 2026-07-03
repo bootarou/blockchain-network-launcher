@@ -44,7 +44,7 @@ interface FetchResult {
 // Pre-defined known Symbol endpoints
 const KNOWN_NODES = [
   { label: 'Mainnet (symbol.services)', url: 'http://wolf.importance.jp:3000' },
-  { label: 'Mainnet (allnodes)', url: 'http://symbol-mainnet.allnodes.me:3000' },
+  { label: 'Mainnet (symbol.ninja)', url: 'http://symbol.ninja:3000' },
   { label: 'Testnet (401-sai-dual)', url: 'http://401-sai-dual.symboltest.net:3000' },
 ];
 

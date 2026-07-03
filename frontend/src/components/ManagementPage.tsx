@@ -14,7 +14,6 @@ import { useTranslation } from '../i18n';
 import { api } from '../lib/api';
 import { AddressViewer } from './AddressViewer';
 import { ImageManager } from './ImageManager';
-import { TerminalLogs } from './TerminalLogs';
 
 interface VolumeInfo {
   mountPoint: string;
@@ -329,7 +328,6 @@ export function ManagementPage() {
 
       <AddressViewer />
       <ImageManager />
-      <TerminalLogs />
     </div>
   );
 }
