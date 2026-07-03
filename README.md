@@ -13,11 +13,14 @@ Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・
 
 - 🖥️ **Web UI** — React + Tailwind CSS によるモダンなダッシュボード
 - 🔧 **ノード管理** — 起動 / 停止 / 再起動 / フルリセットをワンクリック
-- 🌐 **ネットワーク参加** — Seed ファイルのインポートで簡単にカスタムネットワークへ参加
-- 📊 **リアルタイム監視** — ブロック高・ファイナリティ高・ピア数・ハーベスト状態を表示
+- 🌐 **ネットワーク参加** — Seed ファイルのインポートでカスタムネットワークへ、または公式ネットワーク（mainnet / testnet）へ参加
+- 📊 **リアルタイム監視** — ブロック高・ファイナリティ高・ピア数・ハーベスト状態・ネットワーク通貨を表示
 - 📜 **ターミナルログ** — Docker コンテナログを WebSocket でリアルタイム表示
 - 🔑 **アドレス管理** — ノードのアドレス・公開鍵をワンクリックでコピー
-- 💾 **バックアップ / リストア** — 設定ファイルの zip ダウンロード・アップロード
+- 💾 **バックアップ / リストア** — 設定のみ / フル（ブロックデータ含む）の 2 種類の zip バックアップに対応
+- 🔍 **Explorer** — Symbol Explorer をビルド・起動して自ネットワークのブロックを閲覧
+- ☁️ **ネットワーク公開** — Cloudflare 連携でノードをインターネットに公開
+- 🔒 **ログイン認証** — `ADMIN_PASSWORD` を設定するとパスワード保護を有効化
 - 🌍 **多言語対応** — 日本語 / English 切り替え
 - 🌙 **ダーク / ライトテーマ** — 好みに応じて切り替え
 
@@ -73,7 +76,19 @@ git clone https://github.com/bootarou/blockchain-network-launcher.git
 cd blockchain-network-launcher
 ```
 
-### 2. Docker イメージをビルド
+### 2. 環境設定ファイルを作成（任意）
+
+```bash
+cp .env.example .env
+```
+
+デフォルト設定のままでも起動できます。以下を変更したい場合のみ `.env` を編集してください。
+
+- `SYMBOL_TARGET_DIR` — ブロックチェーンデータの保存先（大容量ディスクに変更する場合）
+- `ADMIN_PASSWORD` — 設定すると Web UI にログイン認証がかかります
+- `BIND_ADDRESS` — デフォルトは `127.0.0.1`（ローカルのみ）。LAN や他 PC からアクセスする場合は `0.0.0.0` に変更（`ADMIN_PASSWORD` との併用推奨）
+
+### 3. Docker イメージをビルド
 
 ```bash
 docker compose build
@@ -90,17 +105,20 @@ docker compose build
 > COMPOSE_BAKE=false docker compose build
 > ```
 
-### 3. コンテナを起動
+### 4. コンテナを起動
 
 ```bash
 docker compose up -d
 ```
 
-### 4. ブラウザでアクセス
+### 5. ブラウザでアクセス
 
 ```
 http://localhost:5173
 ```
+
+> 💡 デフォルトでは `127.0.0.1` にのみバインドされるため、同じマシンからしかアクセスできません。他の PC からアクセスする場合は `.env` で `BIND_ADDRESS=0.0.0.0` を設定してください。
+> `ADMIN_PASSWORD` を設定している場合は、初回アクセス時にログイン画面が表示されます。
 
 ## 使い方
 
@@ -116,10 +134,29 @@ http://localhost:5173
 2. **Import Seed File** でネットワーク管理者から受け取った Seed ファイルをインポート
 3. **Configuration** タブで設定を確認 → **Save** → **Start**
 
+### 公式ネットワーク（mainnet / testnet）に参加
+
+1. **Join Network** タブで既知ノード（mainnet / testnet）を選択、または REST API URL を入力して設定を取り込み
+2. **Configuration** タブで設定を確認 → **Save** → **Start**
+
+公式ネットワークでは Seed ファイルは不要です。ネットワーク設定は自動で取得されます。
+
 ### ネットワーク共有（他ノードの招待）
 
 1. **Share Network** タブで Seed ファイルをダウンロード
 2. 参加者に Seed ファイルと REST API URL を配布
+
+### バックアップ / リストア
+
+1. **Backup** タブで「設定のみ」または「フル（ブロックデータ含む）」を選んで zip をダウンロード
+2. リストアは zip をアップロードするだけ。復元後は画面が自動で再読み込みされます
+
+詳細な手順・注意事項は [docs/backup-restore.md](docs/backup-restore.md) を参照してください。
+
+### Explorer / ネットワーク公開
+
+- **Explorer** タブで Symbol Explorer をビルド・起動し、自ネットワークのブロックやトランザクションをブラウザで閲覧できます（デフォルトポート: `8090`）
+- **Publish** タブで Cloudflare（API トークン・Zone ID・Account ID）を設定すると、ノードをインターネットに公開できます
 
 詳しい操作手順は [MANUAL.md](MANUAL.md) を参照してください。
 
@@ -140,6 +177,10 @@ http://localhost:5173
 │   └── vite.config.ts
 ├── shared/
 │   └── custom-preset.yml   # symbol-bootstrap カスタムプリセット
+├── docs/
+│   ├── backup-restore.md   # バックアップ/リストア手順書
+│   └── screenshots/        # スクリーンショット
+├── .env.example            # 環境設定のテンプレート
 ├── docker-compose.yml
 ├── Dockerfile
 ├── start.sh                # コンテナ起動スクリプト
@@ -166,10 +207,14 @@ http://localhost:5173
 
 ## 環境変数
 
+`.env` ファイル（`.env.example` をコピーして作成）で設定します。
+
 | 変数 | デフォルト | 説明 |
 |------|-----------|------|
-| `SYMBOL_TARGET_DIR` | `/var/lib/symbol-target` | symbol-bootstrap のターゲットディレクトリ |
-| `SYMBOL_BOOTSTRAP_REPO` | `https://github.com/bootarou/symbol-bootstrap.git` | symbol-bootstrap の Git リポジトリ URL |
+| `SYMBOL_TARGET_DIR` | `/var/lib/symbol-target` | symbol-bootstrap のターゲットディレクトリ（ブロックデータ保存先） |
+| `ADMIN_PASSWORD` | （空 = 認証なし） | Web UI の管理パスワード。設定するとログイン認証が有効化 |
+| `BIND_ADDRESS` | `127.0.0.1` | Web UI ポート (4000, 5173) のバインドアドレス。`0.0.0.0` で LAN / リモートからアクセス可 |
+| `SYMBOL_BOOTSTRAP_REPO` | `https://github.com/bootarou/symbol-bootstrap.git` | symbol-bootstrap の Git リポジトリ URL（ビルド時） |
 | `NODE_ENV` | `development` | 実行環境 |
 | `PORT` | `4000` | バックエンド API ポート |
 
@@ -177,14 +222,16 @@ http://localhost:5173
 
 | ポート | 用途 |
 |--------|------|
-| `5173` | Frontend (Vite dev server) |
-| `4000` | Backend API & WebSocket |
+| `5173` | Frontend (Vite dev server) — `BIND_ADDRESS` にバインド（デフォルト: ローカルのみ） |
+| `4000` | Backend API & WebSocket — `BIND_ADDRESS` にバインド（デフォルト: ローカルのみ） |
 | `3000` | Symbol REST Gateway (symbol-bootstrap が管理) |
 | `7900` | Symbol P2P ノード (symbol-bootstrap が管理) |
+| `8090` | Symbol Explorer（Explorer 起動時のデフォルト、変更可） |
 
 ## ドキュメント
 
 - [MANUAL.md](MANUAL.md) — 詳細なユーザーマニュアル（Docker Host Mode、nodeEqualityStrategy、トラブルシューティング等）
+- [docs/backup-restore.md](docs/backup-restore.md) — バックアップ / リストア手順書（バックアップの種類、ケース別の復元動作、注意事項）
 
 ## ライセンス
 
