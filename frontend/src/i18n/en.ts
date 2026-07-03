@@ -894,6 +894,7 @@ export const en: TranslationDict = {
   'backup.restore.dropzoneActive': 'Drop here',
   'backup.restore.uploading': 'Uploading... {percent}%',
   'backup.restore.success': 'Restore complete! Existing blockchain data was cleared. Start the node to sync from scratch.',
+  'backup.restore.reloading': 'Reloading the page shortly to apply the restored configuration…',
   'backup.restore.requireStop': 'Please stop the node before restoring.',
   'backup.restore.confirm': '⚠️ Restoring will delete all current blockchain data, databases, and configuration files, replacing them with the backup contents.\n\nThe node will sync from scratch. Continue?',
   'backup.restore.restoredFiles': 'Restored files:',

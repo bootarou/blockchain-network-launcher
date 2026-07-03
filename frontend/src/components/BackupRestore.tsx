@@ -107,6 +107,11 @@ export function BackupRestore() {
       setRestoreResult(result);
       // Refresh status after restore
       fetchStatus();
+      // The restored preset replaced the configuration on disk, but the app
+      // still holds the PRE-restore config in memory — and Start saves that
+      // in-memory config back to disk before launching, which would clobber
+      // the restored settings.  Reload so everything re-reads from disk.
+      setTimeout(() => window.location.reload(), 4000);
     } catch (err: any) {
       setRestoreError(err.message || 'Unknown error');
     } finally {
@@ -363,6 +368,10 @@ export function BackupRestore() {
                     <li key={f}>{f}</li>
                   ))}
                 </ul>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-sky-400">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                {t('backup.restore.reloading')}
               </div>
             </div>
           )}

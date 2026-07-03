@@ -894,6 +894,7 @@ export const ja: TranslationDict = {
   'backup.restore.dropzoneActive': 'ここにドロップしてください',
   'backup.restore.uploading': 'アップロード中... {percent}%',
   'backup.restore.success': 'リストア完了！既存のブロックチェーンデータはクリアされました。ノードを起動して設定を反映してください。',
+  'backup.restore.reloading': '復元した設定を画面に反映するため、まもなくページを再読み込みします…',
   'backup.restore.requireStop': 'リストアするにはノードを停止してください。',
   'backup.restore.confirm': '⚠️ リストアを実行すると、現在のブロックチェーンデータ・設定ファイルがすべて削除され、バックアップの内容で置き換えられます。\n\nノードは最初から同期し直します。続行しますか？',
   'backup.restore.restoredFiles': 'リストアされたファイル:',
