@@ -6232,6 +6232,10 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
         { presetKey: 'host', propKey: 'host' },
         { presetKey: 'minFeeMultiplier', propKey: 'minFeeMultiplier' },
         { presetKey: 'maxTrackedNodes', propKey: 'maxTrackedNodes' },
+        // Advertised roles (Peer,Api,Voting) — finalization sync peers are
+        // selected by the Voting role, so it must follow the preset on
+        // quick restart too (the full path applies it via bootstrap config).
+        { presetKey: 'roles', propKey: 'roles' },
       ];
 
       for (const { presetKey, propKey } of mutableFields) {
