@@ -81,6 +81,8 @@ export interface FieldMeta {
   max?: number;
   placeholder?: string;
   autoGenOnBootstrap?: boolean;
+  /** true = 公式ネットワーク(mainnet/testnet)参加時もユーザーが変更できるノードローカル設定 */
+  editableOnPublicNetwork?: boolean;
 }
 
 export interface CategoryMeta {
@@ -91,6 +93,8 @@ export interface CategoryMeta {
   fields: FieldMeta[];
   /** true = ネットワークレベル設定。変更にはFull Resetが必要 */
   requiresFullReset?: boolean;
+  /** true = 公式ネットワーク(mainnet/testnet)参加時もサイドバーに表示するカテゴリ */
+  visibleOnPublicNetwork?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,9 +307,10 @@ export const CATEGORIES: CategoryMeta[] = [
     icon: 'settings',
     description: 'ネットワーク基本設定・ジェネシス情報',
     requiresFullReset: true,
+    visibleOnPublicNetwork: true,
     fields: [
-      { key: 'preset', label: 'Base Preset', type: 'select', description: 'symbol-bootstrap のベーステンプレート', options: [{ value: 'bootstrap', label: 'bootstrap (local dev)' }, { value: 'testnet', label: 'testnet' }, { value: 'mainnet', label: 'mainnet' }] },
-      { key: 'assembly', label: 'Assembly', type: 'select', description: 'ノードアセンブリタイプ', options: [{ value: 'dual', label: 'dual (Peer + API)' }, { value: 'peer', label: 'peer' }, { value: 'api', label: 'api' }, { value: 'demo', label: 'demo' }, { value: 'multinode', label: 'multinode' }] },
+      { key: 'preset', label: 'Base Preset', type: 'select', description: 'symbol-bootstrap のベーステンプレート', options: [{ value: 'bootstrap', label: 'bootstrap (local dev)' }, { value: 'testnet', label: 'testnet' }, { value: 'mainnet', label: 'mainnet' }], editableOnPublicNetwork: true },
+      { key: 'assembly', label: 'Assembly', type: 'select', description: 'ノードアセンブリタイプ', options: [{ value: 'dual', label: 'dual (Peer + API)' }, { value: 'peer', label: 'peer' }, { value: 'api', label: 'api' }, { value: 'demo', label: 'demo' }, { value: 'multinode', label: 'multinode' }], editableOnPublicNetwork: true },
       { key: 'networkType', label: 'Network Type', type: 'select', description: 'networkType（テキスト）と networkIdentifier（数値）は1対1対応。選択変更すると数値IDが自動設定される。アドレス生成のネットワークバイトになる。', options: [{ value: 'mainnet', label: 'mainnet — 104' }, { value: 'testnet', label: 'testnet — 152' }, { value: 'private', label: 'private — 120' }, { value: 'privateTest', label: 'privateTest — 168' }] },
       { key: 'networkName', label: 'Network Name', type: 'text', description: 'ネットワーク名' },
       { key: 'nemesisGenerationHashSeed', label: 'Generation Hash Seed', type: 'text', description: 'ジェネシスブロックのSHA3-256ハッシュ' },
@@ -313,10 +318,10 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'epochAdjustment', label: 'Epoch Adjustment', type: 'text', description: 'Unix epochからの秒数（末尾に s を付ける）。新規ネットワークは作成時刻に近い値を推奨', placeholder: `${_todayEpochSec}s` },
       { key: 'currencyMosaicId', label: 'Currency Mosaic ID', type: 'text', description: '基軸通貨のモザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
       { key: 'harvestingMosaicId', label: 'Harvesting Mosaic ID', type: 'text', description: 'ハーベスト用モザイクID', placeholder: "0x6BED'913F'A202'23F8" , autoGenOnBootstrap: true },
-      { key: 'privateKeySecurityMode', label: 'Private Key Security', type: 'select', description: '秘密鍵保管モード', options: [{ value: 'PROMPT_MAIN', label: 'PROMPT_MAIN' }, { value: 'PROMPT_MAIN_TRANSPORT', label: 'PROMPT_MAIN_TRANSPORT' }, { value: 'ENCRYPT', label: 'ENCRYPT' }] },
-      { key: 'caCertificateExpirationInDays', label: 'CA Certificate Expiration (days)', type: 'number', description: 'CA証明書の有効期間(日) — デフォルト7300日(約20年)', min: 1 },
-      { key: 'nodeCertificateExpirationInDays', label: 'Node Certificate Expiration (days)', type: 'number', description: 'ノード証明書の有効期間(日) — デフォルト375日(約1年)', min: 1 },
-      { key: 'certificateExpirationWarningInDays', label: 'Certificate Warning (days)', type: 'number', description: '期限切れ警告を出す日数', min: 1 },
+      { key: 'privateKeySecurityMode', label: 'Private Key Security', type: 'select', description: '秘密鍵保管モード', options: [{ value: 'PROMPT_MAIN', label: 'PROMPT_MAIN' }, { value: 'PROMPT_MAIN_TRANSPORT', label: 'PROMPT_MAIN_TRANSPORT' }, { value: 'ENCRYPT', label: 'ENCRYPT' }], editableOnPublicNetwork: true },
+      { key: 'caCertificateExpirationInDays', label: 'CA Certificate Expiration (days)', type: 'number', description: 'CA証明書の有効期間(日) — デフォルト7300日(約20年)', min: 1, editableOnPublicNetwork: true },
+      { key: 'nodeCertificateExpirationInDays', label: 'Node Certificate Expiration (days)', type: 'number', description: 'ノード証明書の有効期間(日) — デフォルト375日(約1年)', min: 1, editableOnPublicNetwork: true },
+      { key: 'certificateExpirationWarningInDays', label: 'Certificate Warning (days)', type: 'number', description: '期限切れ警告を出す日数', min: 1, editableOnPublicNetwork: true },
     ],
   },
   {
@@ -334,11 +339,13 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'Images',
     icon: 'image',
     description: 'Catapultバージョン & Dockerイメージ',
+    visibleOnPublicNetwork: true,
     fields: [
+      // catapultVersion is locked on official networks (mainnet/testnet are V3-only)
       { key: 'catapultVersion', label: 'Catapult Version', type: 'select', description: 'V2/V3選択でイメージ自動設定', options: CATAPULT_VERSIONS.map(v => ({ value: v.id, label: v.label })) },
-      { key: 'symbolServerImage', label: 'Server Image', type: 'text', description: 'Catapultサーバーイメージ' },
-      { key: 'symbolRestImage', label: 'REST Image', type: 'text', description: 'REST Gatewayイメージ' },
-      { key: 'symbolServerToolsImage', label: 'Tools Image', type: 'text', description: 'サーバーツールイメージ' },
+      { key: 'symbolServerImage', label: 'Server Image', type: 'text', description: 'Catapultサーバーイメージ', editableOnPublicNetwork: true },
+      { key: 'symbolRestImage', label: 'REST Image', type: 'text', description: 'REST Gatewayイメージ', editableOnPublicNetwork: true },
+      { key: 'symbolServerToolsImage', label: 'Tools Image', type: 'text', description: 'サーバーツールイメージ', editableOnPublicNetwork: true },
       // Explorer is managed by ExplorerManager (SMD build), not via bootstrap preset image
       // Faucet/Agent images are not used in the current setup
     ],
@@ -535,9 +542,10 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'Nodes',
     icon: 'nodes',
     description: 'ピア / API / 投票ノード設定',
+    visibleOnPublicNetwork: true,
     fields: [
-      { key: 'dockerHostMode', label: 'Docker Host Network Mode', type: 'boolean', description: 'catapultコンテナをDockerホストネットワークで実行。外部ピアのIPアドレスがDNATで書き換えられず正しく認識されるため、3台以上のネットワーク構成で推奨。変更はノード再起動のみで反映。' },
-      { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法。public-key: 公開鍵で識別（Docker NAT環境・同一サーバー上の複数ノードや動的IPに対応）。host: IPアドレスで識別（固定IP・シンプルな構成向け）。変更はノード再起動のみで反映（Full Reset 不要）。', options: [{ value: 'public-key', label: 'public-key' }, { value: 'host', label: 'host' }] },
+      { key: 'dockerHostMode', label: 'Docker Host Network Mode', type: 'boolean', description: 'catapultコンテナをDockerホストネットワークで実行。外部ピアのIPアドレスがDNATで書き換えられず正しく認識されるため、3台以上のネットワーク構成で推奨。変更はノード再起動のみで反映。', editableOnPublicNetwork: true },
+      { key: 'nodeEqualityStrategy', label: 'Node Equality Strategy', type: 'select', description: 'ノード同一性の判定方法。public-key: 公開鍵で識別（Docker NAT環境・同一サーバー上の複数ノードや動的IPに対応）。host: IPアドレスで識別（固定IP・シンプルな構成向け）。変更はノード再起動のみで反映（Full Reset 不要）。', options: [{ value: 'public-key', label: 'public-key' }, { value: 'host', label: 'host' }], editableOnPublicNetwork: true },
     ],
   },
   {
@@ -545,6 +553,7 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'Gateways',
     icon: 'gateways',
     description: 'REST Gatewayインスタンス',
+    visibleOnPublicNetwork: true,
     fields: [],
   },
   {
@@ -552,12 +561,13 @@ export const CATEGORIES: CategoryMeta[] = [
     label: 'Explorer / Faucet',
     icon: 'explorer',
     description: 'エクスプローラー & Faucet',
+    visibleOnPublicNetwork: true,
     fields: [
-      { key: 'explorerEnabled', label: 'Enable Explorer', type: 'boolean', description: 'エクスプローラーをデプロイ' },
-      { key: 'explorerPort', label: 'Explorer Port', type: 'number', description: 'エクスプローラーポート', min: 1, max: 65535 },
-      { key: 'faucetEnabled', label: 'Enable Faucet', type: 'boolean', description: 'Faucetをデプロイ' },
-      { key: 'faucetPort', label: 'Faucet Port', type: 'number', description: 'Faucetポート', min: 1, max: 65535 },
-      { key: 'faucetAmount', label: 'Faucet Amount', type: 'number', description: '1回あたり配布額(atomic)', min: 0 },
+      { key: 'explorerEnabled', label: 'Enable Explorer', type: 'boolean', description: 'エクスプローラーをデプロイ', editableOnPublicNetwork: true },
+      { key: 'explorerPort', label: 'Explorer Port', type: 'number', description: 'エクスプローラーポート', min: 1, max: 65535, editableOnPublicNetwork: true },
+      { key: 'faucetEnabled', label: 'Enable Faucet', type: 'boolean', description: 'Faucetをデプロイ', editableOnPublicNetwork: true },
+      { key: 'faucetPort', label: 'Faucet Port', type: 'number', description: 'Faucetポート', min: 1, max: 65535, editableOnPublicNetwork: true },
+      { key: 'faucetAmount', label: 'Faucet Amount', type: 'number', description: '1回あたり配布額(atomic)', min: 0, editableOnPublicNetwork: true },
     ],
   },
 ];
@@ -675,6 +685,12 @@ export const OFFICIAL_MAINNET_GENERATION_HASH =
   '57F7DA205008026C776CB6AED843393F04CD458E0AA2D9F1D5F31A402072B2D6';
 export const OFFICIAL_TESTNET_GENERATION_HASH =
   '49D6E1CE276A85B70EAFE52349AACCA389302E7A9754BCF1221E79494FC665A4';
+
+// preset name is only ever 'mainnet'/'testnet' for the official networks —
+// custom networks that reuse those identifiers resolve to 'bootstrap' via
+// the generation-hash check above (see lib/utils networkPropertiesToConfig).
+export const isPublicNetworkPreset = (preset: string): boolean =>
+  preset === 'mainnet' || preset === 'testnet';
 
 // ---------------------------------------------------------------------------
 // Preset overrides

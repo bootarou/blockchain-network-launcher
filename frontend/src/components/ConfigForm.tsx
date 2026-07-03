@@ -10,6 +10,7 @@ import {
   DEFAULT_HARVEST_MOSAIC,
   NEMESIS_MOSAIC_FIELDS,
   PRESET_OVERRIDES,
+  isPublicNetworkPreset,
   type PresetConfig,
   type FieldMeta,
   type NodeConfig,
@@ -276,6 +277,24 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     api.getDockerEnv().then((env) => setIsDockerDesktop(env.isDockerDesktop));
   }, []);
 
+  // Official mainnet/testnet: network-level parameters are fixed by the chain,
+  // so only node-local categories/fields are shown.
+  const isPublicNet = isPublicNetworkPreset(config.preset);
+  const visibleCategories = isPublicNet
+    ? CATEGORIES.filter((c) => c.visibleOnPublicNetwork)
+    : CATEGORIES;
+  const visibleFields = (fields: FieldMeta[]) =>
+    isPublicNet ? fields.filter((f) => f.editableOnPublicNetwork) : fields;
+
+  // If the active tab disappears after switching to an official network,
+  // fall back to General.
+  useEffect(() => {
+    if (isPublicNet && !visibleCategories.some((c) => c.id === activeTab)) {
+      setActiveTab('general');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPublicNet, activeTab]);
+
   // Scalar field change — with preset auto-switch & version auto-fill
   const handleFieldChange = (key: string, value: unknown) => {
     if (key === 'preset') {
@@ -430,13 +449,14 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     }
   };
 
-  // Current category
-  const category = CATEGORIES.find((c) => c.id === activeTab)!;
+  // Current category (fall back to the first visible one while the
+  // active-tab effect settles after a preset switch)
+  const category = visibleCategories.find((c) => c.id === activeTab) ?? visibleCategories[0];
 
   // Render content per category
   const renderContent = () => {
     // ── Nemesis Mosaics ──
-    if (activeTab === 'nemesisMosaics') {
+    if (category.id === 'nemesisMosaics') {
       const isBootstrap = config.preset === 'bootstrap';
       const inputBase =
         'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
@@ -551,9 +571,10 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
       );
     }
 
-    if (activeTab === 'nodes') {
-      const catBoolFields = category.fields.filter((f) => f.type === 'boolean');
-      const catOtherFields = category.fields.filter((f) => f.type !== 'boolean');
+    if (category.id === 'nodes') {
+      const catFields = visibleFields(category.fields);
+      const catBoolFields = catFields.filter((f) => f.type === 'boolean');
+      const catOtherFields = catFields.filter((f) => f.type !== 'boolean');
       return (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -570,7 +591,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
           </div>
 
           {/* Category-level settings (Docker Host Mode, nodeEqualityStrategy) */}
-          {category.fields.length > 0 && (
+          {catFields.length > 0 && (
             <div className="bg-zinc-800/40 border border-zinc-700/40 rounded-xl p-4 space-y-3">
               {catOtherFields.length > 0 && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -619,7 +640,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
       );
     }
 
-    if (activeTab === 'gateways') {
+    if (category.id === 'gateways') {
       const gwInputBase =
         'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
       const nodeNames = config.nodes.map((n) => n.name).filter(Boolean);
@@ -697,7 +718,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
       );
     }
 
-    if (activeTab === 'inflation') {
+    if (category.id === 'inflation') {
       const isPublic = config.preset === 'testnet' || config.preset === 'mainnet';
       const inputBase =
         'w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors';
@@ -793,8 +814,9 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
 
     // Generic category (general, images, network, explorer)
     // Split boolean fields from the rest for cleaner layout
-    const boolFields = category.fields.filter((f) => f.type === 'boolean');
-    const otherFields = category.fields.filter((f) => f.type !== 'boolean');
+    const genericFields = visibleFields(category.fields);
+    const boolFields = genericFields.filter((f) => f.type === 'boolean');
+    const otherFields = genericFields.filter((f) => f.type !== 'boolean');
 
     return (
       <div className="space-y-5">
@@ -802,6 +824,12 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
           <h3 className="text-xl font-semibold text-indigo-300">{t(`cat.${category.id}.label`, category.label)}</h3>
           <p className="text-xs text-zinc-500 mt-1">{t(`cat.${category.id}.desc`, category.description)}</p>
         </div>
+        {isPublicNet && category.id === 'general' && (
+          <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-5 text-sm text-blue-300 space-y-2">
+            <p className="font-medium">{t('config.officialNetworkNotice')}</p>
+            <p className="text-blue-400/80">{t('config.officialNetworkDesc')}</p>
+          </div>
+        )}
         {category.requiresFullReset && (
           <div className="flex items-start gap-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 text-xs text-amber-300">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -842,7 +870,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               </span>
             </div>
             <div className="space-y-1">
-              {CATEGORIES.filter((c) => !c.requiresFullReset).map((cat) => {
+              {visibleCategories.filter((c) => !c.requiresFullReset).map((cat) => {
                 const Icon = ICON_MAP[cat.id] ?? Settings;
                 const isActive = activeTab === cat.id;
                 return (
@@ -881,7 +909,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
               </span>
             </div>
             <div className="space-y-1">
-              {CATEGORIES.filter((c) => c.requiresFullReset).map((cat) => {
+              {visibleCategories.filter((c) => c.requiresFullReset).map((cat) => {
                 const Icon = ICON_MAP[cat.id] ?? Settings;
                 const isActive = activeTab === cat.id;
                 return (

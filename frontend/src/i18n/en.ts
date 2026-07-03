@@ -136,6 +136,8 @@ export const en: TranslationDict = {
   'config.nodeHostRequired': 'Host is not set. Enter the IP address or FQDN reachable from other nodes',
   'config.publicNetworkNotice': 'ℹ️ Public Network (testnet / mainnet)',
   'config.publicNetworkInflation': 'Inflation schedule uses standard network values and cannot be customized.',
+  'config.officialNetworkNotice': 'ℹ️ Official network (testnet / mainnet) join mode',
+  'config.officialNetworkDesc': 'Chain-wide parameters (network ID, genesis info, fees, harvesting rules, etc.) are fixed by the official network and hidden here. Only node-local settings can be changed.',
   'config.noInflation': 'No inflation entries. Click "Add Entry" to start.',
   'config.inflationHelp': '💡 How to use:',
   'config.inflationDesc': 'Each entry defines the "reward per block" starting from the specified block height (in atomic units).',

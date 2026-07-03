@@ -136,6 +136,8 @@ export const ja: TranslationDict = {
   'config.nodeHostRequired': 'Host が未設定です。他ノードから到達できるIPアドレスまたはFQDNを入力してください',
   'config.publicNetworkNotice': 'ℹ️ 公開ネットワーク (testnet / mainnet)',
   'config.publicNetworkInflation': 'インフレスケジュールはネットワーク標準値が自動適用されるため、カスタム設定は無効です。',
+  'config.officialNetworkNotice': 'ℹ️ 公式ネットワーク (testnet / mainnet) 参加モード',
+  'config.officialNetworkDesc': 'チェーン共通のパラメータ（ネットワークID・ジェネシス情報・手数料・ハーベスト条件など）は公式ネットワーク側で固定されているため非表示です。ここではノード固有の設定のみ変更できます。',
   'config.noInflation': 'インフレエントリがありません。「エントリ追加」をクリックして設定を開始してください。',
   'config.inflationHelp': '💡 使い方:',
   'config.inflationDesc': '各エントリは指定ブロック高からの「1ブロックあたり報酬額」を定義します（atomic単位）。',
