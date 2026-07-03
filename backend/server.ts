@@ -23,10 +23,28 @@ app.use(express.json({ limit: '50mb' }));
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const AUTH_ENABLED = ADMIN_PASSWORD.length > 0;
-const AUTH_TOKEN_SECRET = AUTH_ENABLED
-  ? crypto.randomBytes(32).toString('hex')
-  : '';
-const AUTH_TOKEN_TTL = 60 * 60 * 1000; // 1 hour
+
+// Persist the HMAC secret across backend restarts — a per-process random
+// secret invalidates every logged-in session on each restart, which the UI
+// surfaces as a "random" forced reload on the next button press.  Mixing in
+// ADMIN_PASSWORD still invalidates all tokens when the password changes.
+function loadOrCreateAuthSecret(): string {
+  const secretPath = path.resolve(__dirname, '../shared/.auth-secret');
+  let fileSecret = '';
+  try {
+    fileSecret = fs.readFileSync(secretPath, 'utf-8').trim();
+  } catch { /* first run */ }
+  if (!fileSecret) {
+    fileSecret = crypto.randomBytes(32).toString('hex');
+    try {
+      fs.writeFileSync(secretPath, fileSecret, { mode: 0o600 });
+    } catch { /* fall back to in-memory secret (old behaviour) */ }
+  }
+  return crypto.createHash('sha256').update(`${fileSecret}:${ADMIN_PASSWORD}`).digest('hex');
+}
+
+const AUTH_TOKEN_SECRET = AUTH_ENABLED ? loadOrCreateAuthSecret() : '';
+const AUTH_TOKEN_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 // ── Simple in-memory rate limiter for login ──
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -359,7 +377,8 @@ async function waitForNodeHealth(timeoutSec: number): Promise<void> {
   // ── Crash detection: check api-node-0 logs for known fatal errors ──
   try {
     const { execSync } = await import('child_process');
-    const logs = execSync('docker logs api-node-0 --tail 60 2>&1 || true', {
+    // Container is "api-node-0" for custom networks, "node" for official presets
+    const logs = execSync('docker logs api-node-0 --tail 60 2>/dev/null || docker logs node --tail 60 2>&1 || true', {
       timeout: 10_000,
       stdio: 'pipe',
     }).toString();
@@ -742,6 +761,13 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
   ];
   for (const k of topKeys) {
     if (doc[k] !== undefined) flat[k] = doc[k];
+  }
+
+  // databaseHost is stripped from gateways on save (symbol-bootstrap resolves
+  // the DB service name itself) — refill the default so the UI field is not
+  // blank/uncontrolled when the preset is loaded back.
+  if (Array.isArray(flat.gateways)) {
+    flat.gateways = (flat.gateways as Record<string, unknown>[]).map((gw) => ({ databaseHost: 'db', ...gw }));
   }
 
   // Flatten networkProperties
@@ -1233,6 +1259,70 @@ app.post('/api/node-health/refresh', async (_req, res) => {
 // =============================================================================
 // Node statistics endpoint — aggregates chain/node/peers info from REST gateway
 // =============================================================================
+// Resolve the network currency (name / mosaic ID / divisibility) for display.
+// Custom networks define it via baseNamespace + nemesis.mosaics[0]; official
+// networks are fixed to symbol.xym.  Works whether the node is running or not.
+// `harvest` is non-null only in dual-currency mode (a 2nd nemesis mosaic
+// exists, e.g. cat.harvest) — in single-currency mode and on official
+// networks the harvesting mosaic equals the currency and is not repeated.
+interface CurrencyDisplayInfo { name: string; mosaicId: string; divisibility: number }
+function resolveCurrencyInfo(): { currency: CurrencyDisplayInfo; harvest: CurrencyDisplayInfo | null } {
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      if (meta.preset === 'mainnet' || meta.preset === 'testnet') {
+        return {
+          currency: {
+            name: 'symbol.xym',
+            mosaicId: meta.preset === 'mainnet' ? "0x6BED'913F'A202'23F8" : "0x72C0'212E'67A0'8BCE",
+            divisibility: 6,
+          },
+          harvest: null,
+        };
+      }
+    }
+  } catch { /* fall through to preset-based resolution */ }
+
+  const currency: CurrencyDisplayInfo = { name: '', mosaicId: '', divisibility: 6 };
+  let harvest: CurrencyDisplayInfo | null = null;
+  try {
+    const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const base = String(doc?.baseNamespace ?? 'cat');
+    const mosaics = (doc?.nemesis as Record<string, unknown> | undefined)?.mosaics as Array<Record<string, unknown>> | undefined;
+    currency.name = `${base}.${String(mosaics?.[0]?.name ?? 'currency')}`;
+    if (mosaics?.[0]?.divisibility != null) currency.divisibility = Number(mosaics[0].divisibility);
+    if (mosaics && mosaics.length >= 2) {
+      harvest = {
+        name: `${base}.${String(mosaics[1].name ?? 'harvest')}`,
+        mosaicId: '',
+        divisibility: mosaics[1].divisibility != null ? Number(mosaics[1].divisibility) : 3,
+      };
+    }
+    const chain = (doc?.networkProperties as Record<string, unknown> | undefined)?.chain as Record<string, unknown> | undefined;
+    if (chain?.currencyMosaicId) currency.mosaicId = String(chain.currencyMosaicId);
+    if (harvest && chain?.harvestingMosaicId) harvest.mosaicId = String(chain.harvestingMosaicId);
+  } catch { /* preset not written yet */ }
+
+  // Generated config is authoritative for the mosaic IDs (bootstrap computes
+  // them at nemesis generation; the preset copy may lag behind).
+  try {
+    const nodesDir = path.join(TARGET_DIR, 'nodes');
+    if (fs.existsSync(nodesDir)) {
+      for (const d of fs.readdirSync(nodesDir)) {
+        const cfg = path.join(nodesDir, d, 'server-config', 'resources', 'config-network.properties');
+        if (!fs.existsSync(cfg)) continue;
+        const content = fs.readFileSync(cfg, 'utf-8');
+        const mc = content.match(/^currencyMosaicId[ \t]*=[ \t]*(\S+)/m);
+        if (mc && mc[1].trim()) currency.mosaicId = mc[1].trim();
+        const mh = content.match(/^harvestingMosaicId[ \t]*=[ \t]*(\S+)/m);
+        if (harvest && mh && mh[1].trim()) harvest.mosaicId = mh[1].trim();
+        break;
+      }
+    }
+  } catch { /* keep preset values */ }
+  return { currency, harvest };
+}
+
 app.get('/api/node-stats', async (_req, res) => {
   const base = `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
   const timeout = 5000;
@@ -1258,9 +1348,14 @@ app.get('/api/node-stats', async (_req, res) => {
     safeFetch('/node/server'),
   ]);
 
+  const currencyInfo = resolveCurrencyInfo();
   const stats: Record<string, unknown> = {
     available: !!(chainInfo || nodeInfo),
     timestamp: new Date().toISOString(),
+    // Included even when the node is down so the user can confirm the
+    // configured currency before starting a custom network.
+    currency: currencyInfo.currency,
+    harvest: currencyInfo.harvest,
   };
 
   if (chainInfo) {
@@ -1599,6 +1694,15 @@ PROXYEOF`,
 function readExplorerNamespaceFromPreset(): { namespaceName: string; divisibility: string } {
   const defaults = { namespaceName: 'symbol.xym', divisibility: '6' };
   try {
+    // Official networks always use symbol.xym — ignore any leftover
+    // baseNamespace (e.g. "cat") in custom-preset.yml from a previous
+    // custom-network session.
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      if (meta.preset === 'testnet' || meta.preset === 'mainnet') return defaults;
+    }
+  } catch { /* fall through to preset-based resolution */ }
+  try {
     if (!fs.existsSync(PRESET_PATH)) return defaults;
     const content = fs.readFileSync(PRESET_PATH, 'utf-8');
     const doc = yaml.load(content) as Record<string, unknown>;
@@ -1794,7 +1898,7 @@ app.get('/api/certificate-info', async (_req, res) => {
       }
     };
 
-    const nodeCertDir = path.join(TARGET_DIR, 'nodes', 'api-node-0', 'cert');
+    const nodeCertDir = resolveNodeCertDir(TARGET_DIR);
     const gatewayCertDir = path.join(TARGET_DIR, 'gateways', 'rest-gateway', 'api-node-config', 'cert');
 
     const nodeCert = readCert(path.join(nodeCertDir, 'node.crt.pem'));
@@ -1849,7 +1953,7 @@ app.post('/api/certificate-renew', async (req, res) => {
     }
 
     // Certificate files must exist
-    const nodeCertDir = path.join(TARGET_DIR, 'nodes', 'api-node-0', 'cert');
+    const nodeCertDir = resolveNodeCertDir(TARGET_DIR);
     if (!fs.existsSync(path.join(nodeCertDir, 'node.crt.pem'))) {
       return res.status(404).json({ error: 'NO_CERTIFICATES' });
     }
@@ -3248,7 +3352,8 @@ function patchStopGracePeriod(targetDir: string): void {
   try {
     const content = fs.readFileSync(composePath, 'utf-8');
     const lines = content.split('\n');
-    const targetServices = new Set(['api-node-0', 'api-node-0-broker']);
+    // "node"/"broker" are the official-preset service names (no -c file)
+    const targetServices = new Set(['api-node-0', 'api-node-0-broker', 'node', 'broker']);
     let currentService: string | null = null;
     let serviceIndent = '';
     const patchedLines: string[] = [];
@@ -3337,7 +3442,7 @@ function patchDockerHostMode(targetDir: string): void {
 
       let needsWrite = false;
 
-      for (const svcName of ['api-node-0', 'api-node-0-broker', 'broker']) {
+      for (const svcName of ['api-node-0', 'api-node-0-broker', 'node', 'broker']) {
         const svc = doc.services[svcName];
         if (!svc || svc.network_mode !== 'host') continue;
 
@@ -3346,8 +3451,8 @@ function patchDockerHostMode(targetDir: string): void {
         needsWrite = true;
         broadcastLog(`[HostMode] ↩️  ${svcName}: removed network_mode=host (rollback to bridge)\n`);
 
-        // Restore default ports for api-node-0
-        if (svcName === 'api-node-0') {
+        // Restore default ports for the catapult node service
+        if (svcName === 'api-node-0' || svcName === 'node') {
           if (!svc.ports || !svc.ports.some((p: string) => String(p).includes('7900'))) {
             if (!svc.ports) svc.ports = [];
             svc.ports.push('7900:7900');
@@ -3410,12 +3515,12 @@ function patchDockerHostMode(targetDir: string): void {
     const doc = yaml.load(fs.readFileSync(composePath, 'utf-8')) as any;
     if (!doc?.services) return;
 
-    // --- 1. Patch api-node-0 and api-node-0-broker → network_mode: "host" ---
-    // Service names vary by symbol-bootstrap version/assembly:
-    //   - "api-node-0-broker" (some assemblies)
-    //   - "broker" (dual assembly)
+    // --- 1. Patch the catapult node + broker services → network_mode: "host" ---
+    // Service names vary by symbol-bootstrap version/assembly/preset:
+    //   - "api-node-0" (custom networks) / "node" (official presets)
+    //   - "api-node-0-broker" (some assemblies) / "broker" (dual assembly)
     // Patch whichever exists.
-    for (const svcName of ['api-node-0', 'api-node-0-broker', 'broker']) {
+    for (const svcName of ['api-node-0', 'api-node-0-broker', 'node', 'broker']) {
       const svc = doc.services[svcName];
       if (!svc) continue;
 
@@ -5159,7 +5264,7 @@ function patchLocalNetworks(targetDir: string) {
     }
   }
 
-  // ── Patch nodeEqualityStrategy = public-key in config-network.properties ──
+  // ── Patch nodeEqualityStrategy in config-network.properties ──────────────
   // When an external peer (join-PC) connects to this node via the host's mapped
   // port, Docker DNAT rewrites the source IP to the bridge gateway (172.20.0.1).
   // This IP is inside localNetworks, so catapult labels that connection "@_local_".
@@ -5170,32 +5275,45 @@ function patchLocalNetworks(targetDir: string) {
   // it is accepted as a new peer even though its host resolves to "@_local_".
   // (The REST gateway, which shares the same key as the local node, is still
   // accepted because same key + same host = self-connection, no conflict.)
+  //
+  // The user can explicitly select "host" on the Nodes page (fixed-IP setups);
+  // that choice is stored in custom-preset.yml and must be honoured here —
+  // only default to public-key when the preset does not specify a strategy.
+  let desiredStrategy = 'public-key';
+  try {
+    const presetDocNES = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const npNES = presetDocNES?.networkProperties as Record<string, unknown> | undefined;
+    const s = String(npNES?.nodeEqualityStrategy ?? '').trim();
+    if (s === 'host' || s === 'public-key') desiredStrategy = s;
+  } catch { /* keep public-key default */ }
+
+  const patchStrategyFile = (cfgPath: string, label: string): void => {
+    if (!fs.existsSync(cfgPath)) return;
+    let c = fs.readFileSync(cfgPath, 'utf-8');
+    const m = c.match(/^(nodeEqualityStrategy[ \t]*=[ \t]*)(\S+)/m);
+    if (!m) return;
+    if (m[2].trim() === desiredStrategy) return;
+    c = c.replace(/^(nodeEqualityStrategy[ \t]*=[ \t]*)\S+/m, `$1${desiredStrategy}`);
+    fs.writeFileSync(cfgPath, c, 'utf-8');
+    broadcastLog(`[Patch] nodeEqualityStrategy = ${desiredStrategy} in ${label}\n`);
+  };
+
   for (const nodeName of fs.readdirSync(nodesDir)) {
     for (const configDir of ['server-config', 'broker-config']) {
-      const cfgNetPath = path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties');
-      if (!fs.existsSync(cfgNetPath)) continue;
-      let c = fs.readFileSync(cfgNetPath, 'utf-8');
-      const m = c.match(/^(nodeEqualityStrategy\s*=\s*)(\S+)/m);
-      if (!m) continue;
-      if (m[2].trim() === 'public-key') continue;
-      c = c.replace(/^(nodeEqualityStrategy\s*=\s*)\S+/m, '$1public-key');
-      fs.writeFileSync(cfgNetPath, c, 'utf-8');
-      broadcastLog(`[Patch] nodeEqualityStrategy = public-key in ${nodeName}/${configDir}\n`);
+      patchStrategyFile(
+        path.join(nodesDir, nodeName, configDir, 'resources', 'config-network.properties'),
+        `${nodeName}/${configDir}`,
+      );
     }
   }
   // Also patch gateways (api-node-config copy)
   const gwDirNES = path.join(targetDir, 'gateways');
   if (fs.existsSync(gwDirNES)) {
     for (const gw of fs.readdirSync(gwDirNES)) {
-      const cfgPath = path.join(gwDirNES, gw, 'api-node-config', 'config-network.properties');
-      if (!fs.existsSync(cfgPath)) continue;
-      let c = fs.readFileSync(cfgPath, 'utf-8');
-      const m = c.match(/^(nodeEqualityStrategy\s*=\s*)(\S+)/m);
-      if (!m) continue;
-      if (m[2].trim() === 'public-key') continue;
-      c = c.replace(/^(nodeEqualityStrategy\s*=\s*)\S+/m, '$1public-key');
-      fs.writeFileSync(cfgPath, c, 'utf-8');
-      broadcastLog(`[Patch] nodeEqualityStrategy = public-key in gateways/${gw}\n`);
+      patchStrategyFile(
+        path.join(gwDirNES, gw, 'api-node-config', 'config-network.properties'),
+        `gateways/${gw}`,
+      );
     }
   }
 }
@@ -5225,7 +5343,7 @@ function generateRestGatewayCert(targetDir: string, _forceRegen = false) {
       fs.mkdirSync(certDir, { recursive: true });
     }
 
-    const apiCertDir = path.join(targetDir, 'nodes', 'api-node-0', 'cert');
+    const apiCertDir = resolveNodeCertDir(targetDir);
     if (!fs.existsSync(apiCertDir)) {
       broadcastLog(`[Cert] ⚠️  API-node cert dir not found, skipping REST cert sync\n`);
       continue;
@@ -5911,6 +6029,22 @@ function runBootstrapCommand(
       reject(err);
     });
   });
+}
+
+// Resolve the certificate dir of the primary catapult node.  The node dir
+// is "api-node-0" for custom networks but "node" for official presets, so
+// prefer api-node-0 and fall back to any node dir that has a cert/.
+function resolveNodeCertDir(targetDir: string): string {
+  const nodesDir = path.join(targetDir, 'nodes');
+  const preferred = path.join(nodesDir, 'api-node-0', 'cert');
+  if (fs.existsSync(preferred) || !fs.existsSync(nodesDir)) return preferred;
+  try {
+    for (const d of fs.readdirSync(nodesDir)) {
+      const certDir = path.join(nodesDir, d, 'cert');
+      if (fs.existsSync(certDir)) return certDir;
+    }
+  } catch { /* fall through */ }
+  return preferred;
 }
 
 // True when ANY generated node dir has stored block data.  Two gotchas:
@@ -7403,6 +7537,12 @@ app.post('/api/commands/start', async (req, res) => {
           }
         }
 
+        // 3e. Re-apply localNetworks/trustedHosts + nodeEqualityStrategy.
+        //     These are documented as restart-only settings in the UI, but
+        //     were previously only applied in the full config sequence.
+        //     patchLocalNetworks() self-skips official presets & host mode.
+        patchLocalNetworks(TARGET_DIR);
+
         sanitizeGeneratedIniFiles(TARGET_DIR);
         const restartVersion = resolveVersion();
         hardenGeneratedConfigs(TARGET_DIR, restartVersion);
@@ -7507,7 +7647,7 @@ app.post('/api/commands/start', async (req, res) => {
         }
 
         // 2. Explicit docker stop by known container names (fallback)
-        for (const cname of ['api-node-0', 'api-node-0-broker', 'broker', 'rest-gateway', 'db']) {
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'node', 'broker', 'rest-gateway', 'db']) {
           try {
             execSyncPre(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
           } catch { /* ignore */ }
@@ -8191,7 +8331,7 @@ app.post('/api/commands/start', async (req, res) => {
             );
           } catch { /* ignore */ }
         }
-        for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+        for (const cname of ['api-node-0', 'api-node-0-broker', 'node', 'broker', 'rest-gateway', 'db']) {
           try {
             execSync4g(`docker stop ${cname} 2>/dev/null || true`, { timeout: 30_000, stdio: 'pipe' });
           } catch { /* ignore */ }
@@ -8569,7 +8709,7 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
     // Use `docker rm -f` instead of `docker stop` so that restart:unless-stopped
     // cannot recreate a container (and its lock files) before we delete them.
     broadcastLog('[Cleanup] Force-removing known containers...\n');
-    for (const cname of ['api-node-0', 'api-node-0-broker', 'rest-gateway', 'db']) {
+    for (const cname of ['api-node-0', 'api-node-0-broker', 'node', 'broker', 'rest-gateway', 'db']) {
       try {
         const out = execSyncCL(`docker rm -f ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' }).toString().trim();
         broadcastLog(`[Cleanup] docker rm -f ${cname}: ${out || 'ok'}\n`);

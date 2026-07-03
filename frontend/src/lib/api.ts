@@ -41,9 +41,12 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
     ) : undefined
   );
   const res = await fetch(url, { ...init, headers });
-  // Token expired or invalid → force re-login
+  // Token expired or invalid → force re-login.
+  // Note: the requested action was rejected with 401 and did NOT run —
+  // tell the user why the page is about to reload instead of failing silently.
   if (res.status === 401 && getAuthToken()) {
     clearAuthToken();
+    alert('セッションの有効期限が切れました。再ログインしてください。\nSession expired. Please log in again.\n(直前の操作は実行されていません / The last action was not executed.)');
     window.location.reload();
   }
   return res;
