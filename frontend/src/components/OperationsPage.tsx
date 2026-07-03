@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   XCircle,
   Unlock,
+  RefreshCw,
 } from 'lucide-react';
 import { useTranslation } from '../i18n';
 import { api } from '../lib/api';
@@ -102,6 +103,19 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
     }
     await api.savePreset(config);
     await runCommand('start', { password });
+  };
+
+  // Full-apply start: forces the "full" start mode so symbol-bootstrap
+  // regenerates every config file from the preset (keys/data preserved).
+  // Escape hatch for settings the quick-restart path does not sync.
+  const handleFullApply = async () => {
+    if (!password) {
+      alert(t('dashboard.alertNoPassword'));
+      return;
+    }
+    if (!confirm(t('dashboard.confirmFullApply'))) return;
+    await api.savePreset(config);
+    await runCommand('start', { password, mode: 'full' });
   };
 
   const handleStop = () => runCommand('stop');
@@ -270,6 +284,18 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
             {t('dashboard.healthCheck')}
             <StatusIcon cmd="healthCheck" />
           </button>
+
+          {nodeStopped && (
+            <button
+              onClick={handleFullApply}
+              disabled={cmdStatus.start === 'running'}
+              title={t('dashboard.fullApplyHint')}
+              className="flex items-center gap-2 px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-emerald-300 rounded-lg font-medium transition-colors border border-emerald-800"
+            >
+              <RefreshCw className="w-4 h-4" />
+              {t('dashboard.fullApply')}
+            </button>
+          )}
 
           {nodeStopped && (
             <button
