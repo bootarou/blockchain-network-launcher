@@ -6101,6 +6101,59 @@ function installPendingHarvesters(targetDir: string): void {
   }
 }
 
+// Install block data + MongoDB staged by a full-backup /api/restore.
+// Must run after `symbol-bootstrap config` (and after the nemesis seed
+// steps) so the generated nodes/ layout exists and nothing overwrites the
+// restored chain afterwards.  Renames are instant — staging lives on the
+// same filesystem as the target.
+async function installPendingRestoreData(targetDir: string): Promise<void> {
+  const pendingDir = path.join(targetDir, '.pending-restore');
+  if (!fs.existsSync(pendingDir)) return;
+  try {
+    const { execSync } = await import('child_process');
+    // MongoDB — replace wholesale (REST index matching the block store)
+    const dbSrc = path.join(pendingDir, 'databases');
+    if (fs.existsSync(dbSrc)) {
+      const dbDst = path.join(targetDir, 'databases');
+      fs.rmSync(dbDst, { recursive: true, force: true });
+      fs.renameSync(dbSrc, dbDst);
+      // The official mongo image drops privileges to the "mongodb" user
+      // (uid/gid 999) even when the compose service says user '0:0', and
+      // WiredTiger opens files with O_NOATIME — which fails with EPERM
+      // unless the process OWNS the files.  Restored files are root-owned
+      // (extracted by this backend), so hand them to the mongo user.
+      try {
+        execSync(`chown -R 999:999 "${dbDst}"`, { timeout: 300_000, stdio: 'pipe' });
+      } catch (e: any) {
+        broadcastLog(`[Restore] ⚠️ databases chown warning: ${e.message}\n`);
+      }
+      broadcastLog('[Restore] 📦 Installed databases/ (MongoDB restored)\n');
+    }
+    // Block data: blockdata/<backup-node> → nodes/<matched-node>/data
+    const bdSrc = path.join(pendingDir, 'blockdata');
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (fs.existsSync(bdSrc) && fs.existsSync(nodesDir)) {
+      const generatedDirs = fs.readdirSync(nodesDir).filter((d) =>
+        fs.statSync(path.join(nodesDir, d)).isDirectory());
+      for (const backupNode of fs.readdirSync(bdSrc)) {
+        const src = path.join(bdSrc, backupNode);
+        if (!fs.statSync(src).isDirectory()) continue;
+        // Node dir names differ between custom ("api-node-0") and official
+        // ("node") presets — same alias handling as harvesters.
+        const destNode = generatedDirs.includes(backupNode) ? backupNode : generatedDirs[0];
+        if (!destNode) continue;
+        const dataDst = path.join(nodesDir, destNode, 'data');
+        fs.rmSync(dataDst, { recursive: true, force: true });
+        fs.renameSync(src, dataDst);
+        broadcastLog(`[Restore] 📦 Installed block data → ${destNode}/data (chain height preserved)\n`);
+      }
+    }
+    fs.rmSync(pendingDir, { recursive: true, force: true });
+  } catch (e: any) {
+    broadcastLog(`[Restore] ⚠️ Block data install failed (non-fatal): ${e.message}\n`);
+  }
+}
+
 // Load the nodes list from custom-preset.yml (empty array on any failure).
 function loadPresetNodes(): Array<Record<string, unknown>> {
   try {
@@ -7021,9 +7074,19 @@ app.post('/api/share/import', (req, res) => {
 // =============================================================================
 
 /** GET /api/backup — download a ZIP containing node identity files */
-app.get('/api/backup', (_req, res) => {
+app.get('/api/backup', (req, res) => {
   try {
-    broadcastLog('[Backup] Creating node backup ZIP...\n');
+    // ?full=1 → include block data + MongoDB.  Essential for custom networks
+    // where this node's block store IS the chain (no peers to resync from).
+    const full = String(req.query.full ?? '') === '1' || String(req.query.full ?? '') === 'true';
+    if (full && networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
+      return res.status(409).json({
+        error: 'NODE_RUNNING',
+        message: 'Full backup (block data) requires the node to be stopped for consistency.',
+      });
+    }
+
+    broadcastLog(`[Backup] Creating ${full ? 'FULL' : 'identity'} node backup ZIP...\n`);
 
     // Collect files to backup
     const filesToBackup: { diskPath: string; zipPath: string }[] = [];
@@ -7095,16 +7158,36 @@ app.get('/api/backup', (_req, res) => {
       }
     }
 
+    // 7) Full backup: block data (nodes/*/data) + MongoDB (databases/).
+    //    Restored via .pending-restore staging on the next start.
+    const dirsToBackup: { diskPath: string; zipPath: string }[] = [];
+    if (full) {
+      const nodesDirFull = path.join(TARGET_DIR, 'nodes');
+      if (fs.existsSync(nodesDirFull)) {
+        for (const nodeName of fs.readdirSync(nodesDirFull)) {
+          const dataDir = path.join(nodesDirFull, nodeName, 'data');
+          if (fs.existsSync(dataDir)) {
+            dirsToBackup.push({ diskPath: dataDir, zipPath: `blockdata/${nodeName}` });
+          }
+        }
+      }
+      const databasesDir = path.join(TARGET_DIR, 'databases');
+      if (fs.existsSync(databasesDir)) {
+        dirsToBackup.push({ diskPath: databasesDir, zipPath: 'databases' });
+      }
+    }
+
     // Build backup metadata
     const backupMeta = {
       formatVersion: 1,
-      type: 'node-backup',
+      type: full ? 'node-full-backup' : 'node-backup',
+      full,
       createdAt: new Date().toISOString(),
-      files: filesToBackup.map((f) => f.zipPath),
+      files: [...filesToBackup.map((f) => f.zipPath), ...dirsToBackup.map((d) => `${d.zipPath}/`)],
     };
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `node-backup-${timestamp}.zip`;
+    const filename = `node-${full ? 'full-' : ''}backup-${timestamp}.zip`;
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -7125,8 +7208,20 @@ app.get('/api/backup', (_req, res) => {
       archive.file(f.diskPath, { name: f.zipPath });
     }
 
+    // Add block data / database directories (full backup only).
+    // Exclude runtime debris that must not survive a restore.
+    for (const d of dirsToBackup) {
+      archive.directory(d.diskPath, d.zipPath, (entry) => {
+        const n = entry.name;
+        if (n.endsWith('.lock') || n.endsWith('server-recovery.started') || n.endsWith('mongod.lock')) {
+          return false;
+        }
+        return entry;
+      });
+    }
+
     archive.finalize();
-    broadcastLog(`[Backup] ✅ Exporting backup: ${filename} (${filesToBackup.length} files)\n`);
+    broadcastLog(`[Backup] ✅ Exporting backup: ${filename} (${filesToBackup.length} files${full ? ` + ${dirsToBackup.length} data dirs` : ''})\n`);
   } catch (err: any) {
     broadcastLog(`[Backup] ❌ Failed: ${err.message}\n`);
     if (!res.headersSent) res.status(500).json({ error: err.message });
@@ -7134,7 +7229,7 @@ app.get('/api/backup', (_req, res) => {
 });
 
 /** GET /api/backup/status — check which backup files are available */
-app.get('/api/backup/status', (_req, res) => {
+app.get('/api/backup/status', async (_req, res) => {
   const addressesPath = path.join(TARGET_DIR, 'addresses.yml');
   const nemesisSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
   const nemesisTxDir = path.join(TARGET_DIR, 'nemesis', 'transactions');
@@ -7147,6 +7242,20 @@ app.get('/api/backup/status', (_req, res) => {
   const hasHarvesters = fs.existsSync(nodesDirStatus) && fs.readdirSync(nodesDirStatus)
     .some((d) => fs.existsSync(path.join(nodesDirStatus, d, 'data', 'harvesters.dat')));
 
+  // Approximate size of a full backup (block data + MongoDB), for the UI hint
+  let blockDataBytes = 0;
+  try {
+    const { execSync } = await import('child_process');
+    const out = execSync(
+      `du -sb ${TARGET_DIR}/nodes/*/data ${TARGET_DIR}/databases 2>/dev/null || true`,
+      { timeout: 60_000, stdio: 'pipe' },
+    ).toString();
+    for (const line of out.split('\n')) {
+      const m = line.match(/^(\d+)\s/);
+      if (m) blockDataBytes += Number(m[1]);
+    }
+  } catch { /* size unknown */ }
+
   res.json({
     canBackup: hasPreset,
     files: {
@@ -7155,6 +7264,10 @@ app.get('/api/backup/status', (_req, res) => {
       'nemesis/seed/': hasSeed,
       'nemesis/transactions/': hasTx,
       'harvesters.dat': hasHarvesters,
+    },
+    fullBackup: {
+      available: blockDataBytes > 0,
+      bytes: blockDataBytes,
     },
     nodeState: networkStatus.state,
   });
@@ -7169,23 +7282,79 @@ app.post('/api/restore', (req, res) => {
     });
   }
 
-  const chunks: Buffer[] = [];
-  req.on('data', (chunk: Buffer) => chunks.push(chunk));
-  req.on('end', async () => {
+  // Stream the upload to disk — full backups carry gigabytes of block data
+  // and must never be buffered in memory.  Staging lives inside TARGET_DIR
+  // so later renames into place are instant (same filesystem).
+  fs.mkdirSync(TARGET_DIR, { recursive: true });
+  const uploadPath = path.join(TARGET_DIR, '.restore-upload.zip');
+  const extractDir = path.join(TARGET_DIR, '.restore-extract');
+  const cleanupStaging = () => {
+    try { fs.rmSync(uploadPath, { force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  };
+
+  const uploadStream = fs.createWriteStream(uploadPath);
+  req.pipe(uploadStream);
+  uploadStream.on('error', (err: Error) => {
+    cleanupStaging();
+    if (!res.headersSent) res.status(500).json({ error: `Upload failed: ${err.message}` });
+  });
+  uploadStream.on('finish', async () => {
     try {
-      const zipBuf = Buffer.concat(chunks);
-      if (zipBuf.length < 4) {
+      const zipSize = fs.existsSync(uploadPath) ? fs.statSync(uploadPath).size : 0;
+      if (zipSize < 4) {
+        cleanupStaging();
         return res.status(400).json({ error: 'Empty or invalid ZIP file.' });
       }
+      broadcastLog(`[Restore] Received backup ZIP (${(zipSize / (1024 * 1024)).toFixed(1)} MB)\n`);
 
-      const zip = new AdmZip(zipBuf);
-      const entries = zip.getEntries();
-      const entryNames = entries.map((e: any) => e.entryName);
+      // Extract on disk.  CLI unzip streams; AdmZip (in-memory) is only a
+      // fallback for small archives when the CLI is unavailable.
+      fs.rmSync(extractDir, { recursive: true, force: true });
+      fs.mkdirSync(extractDir, { recursive: true });
+      const { execSync: execSyncRestore } = await import('child_process');
+      try {
+        execSyncRestore(`unzip -o -q "${uploadPath}" -d "${extractDir}"`, {
+          timeout: 1_800_000,
+          stdio: 'pipe',
+        });
+      } catch (unzipErr: any) {
+        if (zipSize <= 200 * 1024 * 1024) {
+          broadcastLog('[Restore] unzip CLI unavailable/failed — falling back to AdmZip\n');
+          new AdmZip(uploadPath).extractAllTo(extractDir, true);
+        } else {
+          throw new Error(`unzip failed on large archive: ${unzipErr.message}`);
+        }
+      }
+      fs.rmSync(uploadPath, { force: true });
 
-      broadcastLog(`[Restore] Received backup ZIP (${(zipBuf.length / 1024).toFixed(1)} KB, ${entries.length} entries)\n`);
+      // Collect extracted files (paths relative to extractDir, / separators)
+      const extractedFiles: string[] = [];
+      const walkExtract = (dir: string, prefix: string) => {
+        for (const item of fs.readdirSync(dir)) {
+          const p = path.join(dir, item);
+          const rel = prefix ? `${prefix}/${item}` : item;
+          if (fs.statSync(p).isDirectory()) walkExtract(p, rel);
+          else extractedFiles.push(rel);
+        }
+      };
+      walkExtract(extractDir, '');
+
+      // Compat shims so the per-file restore logic below reads from disk.
+      // getData() is only ever called for small identity files — block data
+      // is moved wholesale via rename, never loaded into memory.
+      const entries = extractedFiles.map((rel) => ({
+        entryName: rel,
+        isDirectory: false,
+        getData: () => fs.readFileSync(path.join(extractDir, rel)),
+      }));
+      const zip = { getEntry: (name: string) => entries.find((e) => e.entryName === name) ?? null };
+
+      broadcastLog(`[Restore] Extracted ${entries.length} entries\n`);
 
       // Validate: must contain custom-preset.yml
-      if (!entryNames.includes('custom-preset.yml')) {
+      if (!extractedFiles.includes('custom-preset.yml')) {
+        cleanupStaging();
         return res.status(400).json({ error: 'Invalid backup: custom-preset.yml not found.' });
       }
 
@@ -7325,21 +7494,56 @@ app.post('/api/restore', (req, res) => {
         fs.writeFileSync(destPath, entry.getData());
       }
 
+      // 7) Full backup: stage block data + MongoDB (renamed, not copied —
+      //    same filesystem).  Installed into the regenerated nodes/ layout by
+      //    installPendingRestoreData() during the next start.
+      const pendingRestoreDir = path.join(TARGET_DIR, '.pending-restore');
+      fs.rmSync(pendingRestoreDir, { recursive: true, force: true });
+      const extractedBlockdata = path.join(extractDir, 'blockdata');
+      const extractedDatabases = path.join(extractDir, 'databases');
+      let hasFullData = false;
+      if (fs.existsSync(extractedBlockdata) || fs.existsSync(extractedDatabases)) {
+        fs.mkdirSync(pendingRestoreDir, { recursive: true });
+        if (fs.existsSync(extractedBlockdata)) {
+          fs.renameSync(extractedBlockdata, path.join(pendingRestoreDir, 'blockdata'));
+          restoredFiles.push('blockdata/');
+        }
+        if (fs.existsSync(extractedDatabases)) {
+          fs.renameSync(extractedDatabases, path.join(pendingRestoreDir, 'databases'));
+          restoredFiles.push('databases/');
+        }
+        // Containers run under their own uids — make restored data writable.
+        try {
+          execSync(`chmod -R a+rwX "${pendingRestoreDir}"`, { timeout: 600_000, stdio: 'pipe' });
+        } catch { /* best effort */ }
+        hasFullData = true;
+        broadcastLog('[Restore] 📦 Block data & databases staged — installed on next start (chain height preserved)\n');
+      }
+
+      cleanupStaging();
+
       broadcastLog(`[Restore] ✅ Restored ${restoredFiles.length} files successfully\n`);
-      broadcastLog('[Restore] ℹ️  Runtime data was cleared. Start the node to regenerate configs and sync from scratch.\n');
+      broadcastLog(hasFullData
+        ? '[Restore] ℹ️  Full backup detected. Start the node to restore configs AND block data.\n'
+        : '[Restore] ℹ️  Runtime data was cleared. Start the node to regenerate configs and sync from scratch.\n');
 
       res.json({
         success: true,
         restoredFiles,
-        message: 'Backup restored successfully. Existing data was cleared. Start the node to apply.',
+        full: hasFullData,
+        message: hasFullData
+          ? 'Full backup restored. Start the node to apply — block data will be installed automatically.'
+          : 'Backup restored successfully. Existing data was cleared. Start the node to apply.',
       });
     } catch (err: any) {
+      cleanupStaging();
       broadcastLog(`[Restore] ❌ Failed: ${err.message}\n`);
       res.status(400).json({ error: `Failed to process backup ZIP: ${err.message}` });
     }
   });
   req.on('error', (err) => {
-    res.status(500).json({ error: err.message });
+    cleanupStaging();
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   });
 });
 
@@ -7512,9 +7716,10 @@ app.post('/api/commands/start', async (req, res) => {
         //     picks up any UI changes without requiring a Full Reset.
         syncMutableNodeSettingsFromPreset(TARGET_DIR);
 
-        // 3c2. Install delegated harvesters staged by /api/restore (no-op
-        //      unless a restore staged them).
+        // 3c2. Install delegated harvesters / block data staged by
+        //      /api/restore (no-op unless a restore staged them).
         installPendingHarvesters(TARGET_DIR);
+        await installPendingRestoreData(TARGET_DIR);
 
         // 3d. Official networks: re-assert official fork heights.
         //     Restart mode skips Step 4c4 of the full sequence, and earlier
@@ -7779,7 +7984,11 @@ app.post('/api/commands/start', async (req, res) => {
         }
         if (fs.existsSync(STASH_DIR)) fs.rmSync(STASH_DIR, { recursive: true, force: true });
         fs.mkdirSync(STASH_DIR, { recursive: true });
-        const items = fs.readdirSync(TARGET_DIR);
+        // Staging dirs stay in place: symbol-bootstrap config only checks
+        // target/preset.yml (verified in ConfigService), and .pending-restore
+        // can hold gigabytes of block data that must not be copied to /tmp.
+        const STASH_SKIP = new Set(['.pending-restore', '.pending-harvesters', '.restore-extract', '.restore-upload.zip']);
+        const items = fs.readdirSync(TARGET_DIR).filter((i) => !STASH_SKIP.has(i));
         for (const item of items) {
           const src = path.join(TARGET_DIR, item);
           const dst = path.join(STASH_DIR, item);
@@ -7947,15 +8156,8 @@ app.post('/api/commands/start', async (req, res) => {
           fs.copyFileSync(addrSrc, path.join(TARGET_DIR, 'addresses.yml'));
           broadcastLog('[System] ✅ Restored backed-up addresses.yml (node identity preserved).\n');
         }
-        // Restore staged delegated harvesters — installed into the generated
-        // node data dirs later in the sequence (installPendingHarvesters).
-        const pendingSrc = path.join(STASH_DIR, '.pending-harvesters');
-        if (fs.existsSync(pendingSrc)) {
-          const pendingDst = path.join(TARGET_DIR, '.pending-harvesters');
-          fs.rmSync(pendingDst, { recursive: true, force: true });
-          fs.cpSync(pendingSrc, pendingDst, { recursive: true });
-          broadcastLog('[System] ✅ Restored staged harvesters.dat (delegators).\n');
-        }
+        // (Staged .pending-* dirs are excluded from the stash and remain in
+        //  TARGET_DIR — they are installed later in the sequence.)
         // Restore nemesis/ directory (genesis block data) — ONLY if there is
         // a real backed-up addresses.yml (= this is a genuine backup-restore
         // scenario, not just stale crash debris).  When addresses.yml is absent
@@ -8316,6 +8518,11 @@ app.post('/api/commands/start', async (req, res) => {
         }
         }
       }
+
+      // Step 4f2: Install block data + MongoDB staged by a full-backup
+      //   restore.  Runs after the nemesis seed steps (4d/4e) so nothing
+      //   overwrites the restored chain files afterwards.
+      await installPendingRestoreData(TARGET_DIR);
 
       // Step 4g: Stop existing node containers, then remove stale lock files
       //   before running.  This is a safety net for the full mode.

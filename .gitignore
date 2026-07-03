@@ -64,3 +64,4 @@ Thumbs.db
 *.swp
 *~
 shared/.auth-secret
+shared/seed/

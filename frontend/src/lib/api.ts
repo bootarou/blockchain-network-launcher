@@ -436,10 +436,13 @@ export const api = {
     }
   },
 
-  getBackupDownloadUrl: () => {
+  getBackupDownloadUrl: (full = false) => {
     const t = getAuthToken();
-    const auth = t ? `?_token=${encodeURIComponent(t)}` : '';
-    return `${API_BASE}/backup${auth}`;
+    const params = new URLSearchParams();
+    if (full) params.set('full', '1');
+    if (t) params.set('_token', t);
+    const qs = params.toString();
+    return `${API_BASE}/backup${qs ? `?${qs}` : ''}`;
   },
 
   uploadRestore: async (
