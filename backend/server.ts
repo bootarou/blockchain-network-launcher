@@ -931,7 +931,7 @@ app.get('/api/preset', (req, res) => {
             ['namespaceRentalFeeSinkAddress',  'namespaceRentalFeeSinkAddress'],
           ];
           for (const [propKey, flatKey] of sinkAddressFields) {
-            const m = cfgContent.match(new RegExp(`^${propKey}\\s*=\\s*(\\S+)`, 'm'));
+            const m = cfgContent.match(new RegExp(`^${propKey}[ \\t]*=[ \\t]*(\\S+)`, 'm'));
             if (m) flat[flatKey] = m[1].trim();
           }
 
@@ -4554,7 +4554,11 @@ async function fetchOfficialNetworkForkHeights(basePreset: string): Promise<Reco
   const peerUrls = await fetchOfficialNetworkPeerUrls(basePreset);
   for (const url of peerUrls) {
     try {
-      const networkUrl = `${url.replace(/\/+$/, '').replace(/:3000$/, ':3001')}/network/properties`;
+      // Official nodes serve plain HTTP on :3000 and HTTPS on :3001.
+      const base = url.replace(/\/+$/, '');
+      const networkUrl = base.endsWith(':3000')
+        ? `${base.replace(/^http:/, 'https:').replace(/:3000$/, ':3001')}/network/properties`
+        : `${base}/network/properties`;
       const response = await fetch(networkUrl);
       if (!response.ok) continue;
       const data = await response.json() as Record<string, any>;
@@ -4604,7 +4608,7 @@ function patchForkHeightsInGeneratedConfigs(targetDir: string, forkHeights: Reco
     let content = fs.readFileSync(filePath, 'utf-8');
     let changed = false;
     for (const [key, value] of Object.entries(forkHeights)) {
-      const regex = new RegExp(`^(${key}\\s*=\\s*).*$`, 'm');
+      const regex = new RegExp(`^(${key}[ \\t]*=[ \\t]*).*$`, 'm');
       if (regex.test(content)) {
         const next = content.replace(regex, `$1${value}`);
         if (next !== content) {
@@ -4893,7 +4897,7 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
       let content = fs.readFileSync(filePath, 'utf-8');
       let changed = false;
       for (const [key, value] of Object.entries(networkOverrides)) {
-        const regex = new RegExp(`^(${key}\\s*=\\s*).*$`, 'm');
+        const regex = new RegExp(`^(${key}[ \\t]*=[ \\t]*).*$`, 'm');
         if (regex.test(content)) {
           content = content.replace(regex, `$1${value}`);
           changed = true;
@@ -5097,13 +5101,13 @@ function patchLocalNetworks(targetDir: string) {
         //   it a distinct node even when its host is "@_local_".
         for (const key of ['trustedHosts', 'localNetworks']) {
           // If the value spans continuation lines, do not touch it here.
-          const multilineRegex = new RegExp(`^${key}\\s*=\\s*.*\\n[ \\t]+\\S+`, 'm');
+          const multilineRegex = new RegExp(`^${key}[ \\t]*=[ \\t]*.*\\n[ \\t]+\\S+`, 'm');
           if (multilineRegex.test(content)) {
             broadcastLog(`[Patch] Skip ${nodeName}/${configDir}: ${key} appears multiline; leaving original value intact\n`);
             continue;
           }
 
-          const regex = new RegExp(`^(${key}\\s*=\\s*)(.*)$`, 'm');
+          const regex = new RegExp(`^(${key}[ \\t]*=[ \\t]*)(.*)$`, 'm');
           const match = content.match(regex);
           if (!match) continue;
 
@@ -5909,19 +5913,105 @@ function runBootstrapCommand(
   });
 }
 
+// True when ANY generated node dir has stored block data.  Two gotchas:
+//   - The node dir name depends on the preset: the UI names it "api-node-0"
+//     for custom networks, but official presets (testnet/mainnet, run
+//     without -c) generate a dir literally named "node".
+//   - The first block file name differs too: custom networks store the
+//     nemesis as 00001.dat, while official-preset nodes store 00000.dat.
+// So look for ANY NNNNN.dat block file instead of a hardcoded path.  An
+// empty data/00000/ dir from a failed run still counts as "no data", which
+// is required so --upgrade doesn't skip nemgen on a dataless target.
+function anyNodeDataExists(targetDir: string): boolean {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return false;
+  try {
+    return fs.readdirSync(nodesDir).some((d) => {
+      const blockDir = path.join(nodesDir, d, 'data', '00000');
+      if (!fs.existsSync(blockDir)) return false;
+      return fs.readdirSync(blockDir).some((f) => /^\d{5}\.dat$/.test(f));
+    });
+  } catch {
+    return false;
+  }
+}
+
+// Install delegated-harvester files staged by /api/restore into the
+// generated node data dirs.  Must run after `symbol-bootstrap config`
+// because nodes/ does not exist at restore time.  The entries stay
+// decryptable because addresses.yml (same node keys) is restored alongside.
+function installPendingHarvesters(targetDir: string): void {
+  const pendingDir = path.join(targetDir, '.pending-harvesters');
+  if (!fs.existsSync(pendingDir)) return;
+  try {
+    const nodesDir = path.join(targetDir, 'nodes');
+    if (!fs.existsSync(nodesDir)) return; // config has not run yet — keep staged
+    const generatedDirs = fs.readdirSync(nodesDir).filter((d) =>
+      fs.statSync(path.join(nodesDir, d)).isDirectory());
+    if (generatedDirs.length === 0) return;
+    for (const backupNode of fs.readdirSync(pendingDir)) {
+      const src = path.join(pendingDir, backupNode, 'harvesters.dat');
+      if (!fs.existsSync(src)) continue;
+      // Prefer the same node name; fall back to the first generated dir —
+      // node dir names differ between custom ("api-node-0") and official
+      // ("node") presets.
+      const destNode = generatedDirs.includes(backupNode) ? backupNode : generatedDirs[0];
+      const destDataDir = path.join(nodesDir, destNode, 'data');
+      fs.mkdirSync(destDataDir, { recursive: true });
+      fs.copyFileSync(src, path.join(destDataDir, 'harvesters.dat'));
+      broadcastLog(`[Restore] 🌾 Installed harvesters.dat → ${destNode}/data/ (delegators carried over)\n`);
+    }
+    fs.rmSync(pendingDir, { recursive: true, force: true });
+  } catch (e: any) {
+    broadcastLog(`[Restore] ⚠️ harvesters.dat install failed (non-fatal): ${e.message}\n`);
+  }
+}
+
+// Load the nodes list from custom-preset.yml (empty array on any failure).
+function loadPresetNodes(): Array<Record<string, unknown>> {
+  try {
+    if (!fs.existsSync(PRESET_PATH)) return [];
+    const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+    const nodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
+    return Array.isArray(nodes) ? nodes : [];
+  } catch {
+    return [];
+  }
+}
+
+// Resolve the best matching preset node entry for a generated node dir.
+// Official presets generate a dir literally named "node" while the UI names
+// its node "api-node-0", so fall back through the known aliases.
+function resolvePresetNodeEntry(
+  presetNodes: Array<Record<string, unknown>>,
+  nodeName: string,
+): Record<string, unknown> {
+  return presetNodes.find((n) => String(n.name || '') === nodeName)
+    ?? presetNodes.find((n) => String(n.name || '') === 'api-node-0')
+    ?? presetNodes.find((n) => String(n.name || '') === 'node')
+    ?? presetNodes[0]
+    ?? ({} as Record<string, unknown>);
+}
+
+// Read a property value from an INI section (null when section/key missing).
+function readIniSectionProperty(iniContent: string, section: string, propKey: string): string | null {
+  const sectionIndex = iniContent.indexOf(section);
+  if (sectionIndex === -1) return null;
+  const nextSectionMatch = iniContent.slice(sectionIndex + section.length).match(/\n\[[^\]]+\]/);
+  const sectionEnd = nextSectionMatch
+    ? sectionIndex + section.length + nextSectionMatch.index!
+    : iniContent.length;
+  const body = iniContent.slice(sectionIndex, sectionEnd);
+  const m = body.match(new RegExp(`^${propKey}[ \\t]*=[ \\t]*(.*)$`, 'm'));
+  return m ? m[1].trim() : null;
+}
+
 // Sync mutable node settings from custom-preset.yml to generated config files.
 // This is required when the start flow skips/changes bootstrap config inputs
 // (e.g. official presets without -c) so UI-edited node fields still apply.
 function syncMutableNodeSettingsFromPreset(targetDir: string): void {
   try {
-    const presetNodes: Array<Record<string, unknown>> = [];
-    if (fs.existsSync(PRESET_PATH)) {
-      const presetDoc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-      const nodes = presetDoc?.nodes as Array<Record<string, unknown>> | undefined;
-      if (Array.isArray(nodes)) {
-        presetNodes.push(...nodes);
-      }
-    }
+    const presetNodes = loadPresetNodes();
 
     const nodesDirSync = path.join(targetDir, 'nodes');
     if (!fs.existsSync(nodesDirSync)) return;
@@ -5930,12 +6020,7 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
     // Process all generated node dirs so required properties are present even
     // when preset nodes are missing or use a different alias.
     for (const nodeName of availableNodeDirs) {
-      // Resolve best matching preset node entry for this generated node dir.
-      const nodeEntry = presetNodes.find((n) => String(n.name || '') === nodeName)
-        ?? presetNodes.find((n) => String(n.name || '') === 'api-node-0')
-        ?? presetNodes.find((n) => String(n.name || '') === 'node')
-        ?? presetNodes[0]
-        ?? ({} as Record<string, unknown>);
+      const nodeEntry = resolvePresetNodeEntry(presetNodes, nodeName);
 
       const configPath = path.join(nodesDirSync, nodeName, 'server-config', 'resources', 'config-node.properties');
       if (!fs.existsSync(configPath)) continue;
@@ -5953,7 +6038,9 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
       for (const { presetKey, propKey } of mutableFields) {
         const newValue = nodeEntry[presetKey];
         if (newValue === undefined || newValue === null) continue;
-        const regex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
+        // [ \t] only — \s would match the newline of an empty value
+        // (e.g. "host = ") and swallow the NEXT line (friendlyName) too.
+        const regex = new RegExp(`^${propKey}[ \\t]*=[ \\t]*.*$`, 'm');
         const newLine = `${propKey} = ${newValue}`;
 
         if (!regex.test(configContent)) {
@@ -6011,7 +6098,9 @@ function upsertIniSectionProperty(
     : iniContent.length;
 
   const sectionBody = iniContent.slice(sectionIndex, sectionEnd);
-  const propRegex = new RegExp(`^${propKey}\\s*=\\s*.*$`, 'm');
+  // [ \t] only — \s would let an empty value match across the newline
+  // and the replacement would swallow the next property line.
+  const propRegex = new RegExp(`^${propKey}[ \\t]*=[ \\t]*.*$`, 'm');
   const targetLine = `${propKey} = ${propValue}`;
 
   if (propRegex.test(sectionBody)) {
@@ -6034,6 +6123,7 @@ function hardenGeneratedConfigs(targetDir: string, version: CatapultVersionDef):
     const nodesDir = path.join(targetDir, 'nodes');
     if (!fs.existsSync(nodesDir)) return;
 
+    const presetNodes = loadPresetNodes();
     let touchedFiles = 0;
 
     for (const nodeName of fs.readdirSync(nodesDir)) {
@@ -6046,11 +6136,21 @@ function hardenGeneratedConfigs(targetDir: string, version: CatapultVersionDef):
           let content = fs.readFileSync(configNodePath, 'utf-8');
           let changed = false;
 
-          const friendlyNameResult = upsertIniSectionProperty(content, '[localnode]', 'friendlyName', nodeName || 'Local Node');
-          if (friendlyNameResult.changed) {
-            content = friendlyNameResult.content;
-            changed = true;
-            broadcastLog(`[Safety] ${nodeName}/${configDir}: enforced [localnode].friendlyName\n`);
+          // friendlyName is required for catapult startup, but it is
+          // user-facing: prefer the value from custom-preset.yml, keep an
+          // existing non-empty value, and only fall back to the node dir
+          // name as a last resort.  Never clobber a user value with the
+          // generated dir name (official presets name the dir "node").
+          const presetFriendly = String(resolvePresetNodeEntry(presetNodes, nodeName).friendlyName ?? '').trim();
+          const currentFriendly = (readIniSectionProperty(content, '[localnode]', 'friendlyName') ?? '').trim();
+          const desiredFriendly = presetFriendly || currentFriendly || nodeName || 'Local Node';
+          if (currentFriendly !== desiredFriendly) {
+            const friendlyNameResult = upsertIniSectionProperty(content, '[localnode]', 'friendlyName', desiredFriendly);
+            if (friendlyNameResult.changed) {
+              content = friendlyNameResult.content;
+              changed = true;
+              broadcastLog(`[Safety] ${nodeName}/${configDir}: enforced [localnode].friendlyName = ${desiredFriendly}\n`);
+            }
           }
 
           if (changed) {
@@ -6068,6 +6168,14 @@ function hardenGeneratedConfigs(targetDir: string, version: CatapultVersionDef):
             if (patch.file !== 'config-network.properties') continue;
             for (const [key, value] of Object.entries(patch.props)) {
               if (!String(value).trim()) continue;
+              // These patch values are "key must exist" defaults for V3 —
+              // never overwrite an existing non-empty value.  Official
+              // presets carry real fork heights (e.g. testnet's
+              // uniqueAggregateTransactionHash = 2'742'000); clobbering
+              // them with the generic '0' stalls sync with
+              // Failure_Aggregate_V2_Prohibited.
+              const existing = (readIniSectionProperty(content, patch.section, key) ?? '').trim();
+              if (existing) continue;
               const result = upsertIniSectionProperty(content, patch.section, key, String(value));
               if (result.changed) {
                 content = result.content;
@@ -6115,7 +6223,7 @@ function validateGeneratedConfigsOrThrow(targetDir: string, version: CatapultVer
   const hasNonEmptyProperty = (content: string, section: string, key: string): boolean => {
     const sectionBody = readSectionBody(content, section);
     if (!sectionBody) return false;
-    const keyMatch = sectionBody.match(new RegExp(`^${key}\\s*=\\s*(.*)$`, 'm'));
+    const keyMatch = sectionBody.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.*)$`, 'm'));
     if (!keyMatch) return false;
     const value = (keyMatch[1] || '').replace(/[;#].*$/, '').trim();
     return value.length > 0;
@@ -6839,6 +6947,20 @@ app.get('/api/backup', (_req, res) => {
       }
     }
 
+    // 6) Delegated harvesters (nodes/<node>/data/harvesters.dat).
+    //    Carries the delegators over to the restored node.  The entries are
+    //    encrypted with the node's transport key, so they stay decryptable
+    //    because addresses.yml (same keys) is part of the same backup.
+    const nodesDirBackup = path.join(TARGET_DIR, 'nodes');
+    if (fs.existsSync(nodesDirBackup)) {
+      for (const nodeName of fs.readdirSync(nodesDirBackup)) {
+        const harvestersPath = path.join(nodesDirBackup, nodeName, 'data', 'harvesters.dat');
+        if (fs.existsSync(harvestersPath)) {
+          filesToBackup.push({ diskPath: harvestersPath, zipPath: `harvesters/${nodeName}/harvesters.dat` });
+        }
+      }
+    }
+
     // Build backup metadata
     const backupMeta = {
       formatVersion: 1,
@@ -6887,6 +7009,9 @@ app.get('/api/backup/status', (_req, res) => {
   const hasAddresses = fs.existsSync(addressesPath);
   const hasSeed = fs.existsSync(nemesisSeedDir) && fs.readdirSync(nemesisSeedDir).length > 0;
   const hasTx = fs.existsSync(nemesisTxDir) && fs.readdirSync(nemesisTxDir).length > 0;
+  const nodesDirStatus = path.join(TARGET_DIR, 'nodes');
+  const hasHarvesters = fs.existsSync(nodesDirStatus) && fs.readdirSync(nodesDirStatus)
+    .some((d) => fs.existsSync(path.join(nodesDirStatus, d, 'data', 'harvesters.dat')));
 
   res.json({
     canBackup: hasPreset,
@@ -6895,6 +7020,7 @@ app.get('/api/backup/status', (_req, res) => {
       'addresses.yml': hasAddresses,
       'nemesis/seed/': hasSeed,
       'nemesis/transactions/': hasTx,
+      'harvesters.dat': hasHarvesters,
     },
     nodeState: networkStatus.state,
   });
@@ -7038,6 +7164,23 @@ app.post('/api/restore', (req, res) => {
         broadcastLog(`[Restore] 📦 ${entry.entryName} (${entry.getData().length}B)\n`);
       }
 
+      // 6) Stage delegated harvesters (harvesters/<node>/harvesters.dat).
+      //    nodes/ does not exist yet — it is regenerated by the next start's
+      //    `symbol-bootstrap config`.  Stage the files in a pending dir; the
+      //    start sequence installs them via installPendingHarvesters().
+      const pendingHarvestersDir = path.join(TARGET_DIR, '.pending-harvesters');
+      fs.rmSync(pendingHarvestersDir, { recursive: true, force: true });
+      const harvesterEntries = entries.filter(
+        (e: any) => e.entryName.startsWith('harvesters/') && !e.isDirectory,
+      );
+      for (const entry of harvesterEntries) {
+        const destPath = path.join(pendingHarvestersDir, entry.entryName.replace(/^harvesters\//, ''));
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, entry.getData());
+        restoredFiles.push(entry.entryName);
+        broadcastLog(`[Restore] 🌾 ${entry.entryName} (${entry.getData().length}B — installed on next start)\n`);
+      }
+
       // Also copy seed files to SEED_DIR for the share/join system
       const seedDir00 = path.join(SEED_DIR, '00000');
       fs.mkdirSync(seedDir00, { recursive: true });
@@ -7133,7 +7276,7 @@ app.post('/api/commands/start', async (req, res) => {
     //   - dataExists AND generatedPresetExists AND composeExists → "restart"
     //   - otherwise → "full"
     // ---------------------------------------------------------------
-    const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
+    const dataExists = anyNodeDataExists(TARGET_DIR);
     const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
     const composeExists = fs.existsSync(path.join(TARGET_DIR, 'docker', 'docker-compose.yml'));
 
@@ -7234,6 +7377,32 @@ app.post('/api/commands/start', async (req, res) => {
         //     the generated config files.  Patch them here so Stop→Start
         //     picks up any UI changes without requiring a Full Reset.
         syncMutableNodeSettingsFromPreset(TARGET_DIR);
+
+        // 3c2. Install delegated harvesters staged by /api/restore (no-op
+        //      unless a restore staged them).
+        installPendingHarvesters(TARGET_DIR);
+
+        // 3d. Official networks: re-assert official fork heights.
+        //     Restart mode skips Step 4c4 of the full sequence, and earlier
+        //     versions of hardenGeneratedConfigs may have clobbered them
+        //     with the generic V3 defaults (e.g. uniqueAggregateTransactionHash=0,
+        //     which stalls sync with Failure_Aggregate_V2_Prohibited).
+        if (basePreset === 'testnet' || basePreset === 'mainnet') {
+          try {
+            broadcastLog(`[System] Re-asserting official ${basePreset} fork heights...\n`);
+            const fetchedForkHeights = await fetchOfficialNetworkForkHeights(basePreset);
+            const officialForkHeights = {
+              ...getOfficialForkHeightsFallback(basePreset),
+              ...fetchedForkHeights,
+            };
+            if (Object.keys(officialForkHeights).length > 0) {
+              patchForkHeightsInGeneratedConfigs(TARGET_DIR, officialForkHeights);
+            }
+          } catch (e: any) {
+            broadcastLog(`[Network] ⚠️  Fork height refresh failed (non-fatal): ${e.message}\n`);
+          }
+        }
+
         sanitizeGeneratedIniFiles(TARGET_DIR);
         const restartVersion = resolveVersion();
         hardenGeneratedConfigs(TARGET_DIR, restartVersion);
@@ -7447,7 +7616,7 @@ app.post('/api/commands/start', async (req, res) => {
       // An empty data/00000/ dir from a previous failed run must NOT trigger --upgrade,
       // because --upgrade skips nemgen → the node has no genesis block → crash.
       const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
-      const dataExists = fs.existsSync(path.join(TARGET_DIR, 'nodes', 'api-node-0', 'data', '00000', '00001.dat'));
+      const dataExists = anyNodeDataExists(TARGET_DIR);
       const generatedPresetExists = fs.existsSync(path.join(TARGET_DIR, 'preset.yml'));
       const targetHasContent = fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length > 0;
       const forceFreshOfficialTarget = isOfficialPreset && targetHasContent && !dataExists;
@@ -7457,14 +7626,17 @@ app.post('/api/commands/start', async (req, res) => {
       // NOTE: TARGET_DIR is a Docker volume mount, so fs.renameSync across
       // to /tmp fails with EXDEV.  Use copy + delete instead.
       const STASH_DIR = '/tmp/restore-stash';
-      if (forceFreshOfficialTarget) {
-        broadcastLog(`[System] Official preset (${basePreset}) with stale generated artifacts detected — cleaning target for fresh config.\n`);
-        for (const item of fs.readdirSync(TARGET_DIR)) {
-          const p = path.join(TARGET_DIR, item);
-          fs.rmSync(p, { recursive: true, force: true });
+      if (needsReset) {
+        // forceFreshOfficialTarget also goes through the stash path: the
+        // target is cleaned for a fresh config, but identity files
+        // (addresses.yml, staged harvesters.dat) are stashed and restored
+        // after config so a backup-restore keeps the node identity and its
+        // delegators instead of silently regenerating new keys.
+        if (forceFreshOfficialTarget) {
+          broadcastLog(`[System] Official preset (${basePreset}) with stale generated artifacts detected — cleaning target for fresh config (identity files stashed).\n`);
+        } else {
+          broadcastLog('[System] Post-restore detected: stashing identity files for clean config...\n');
         }
-      } else if (needsReset) {
-        broadcastLog('[System] Post-restore detected: stashing identity files for clean config...\n');
         if (fs.existsSync(STASH_DIR)) fs.rmSync(STASH_DIR, { recursive: true, force: true });
         fs.mkdirSync(STASH_DIR, { recursive: true });
         const items = fs.readdirSync(TARGET_DIR);
@@ -7628,12 +7800,21 @@ app.post('/api/commands/start', async (req, res) => {
       });
 
       // After config, restore stashed identity files (overwrite generated ones)
-      if (!forceFreshOfficialTarget && needsReset && fs.existsSync(STASH_DIR)) {
+      if (needsReset && fs.existsSync(STASH_DIR)) {
         // Restore addresses.yml (node private keys)
         const addrSrc = path.join(STASH_DIR, 'addresses.yml');
         if (fs.existsSync(addrSrc)) {
           fs.copyFileSync(addrSrc, path.join(TARGET_DIR, 'addresses.yml'));
           broadcastLog('[System] ✅ Restored backed-up addresses.yml (node identity preserved).\n');
+        }
+        // Restore staged delegated harvesters — installed into the generated
+        // node data dirs later in the sequence (installPendingHarvesters).
+        const pendingSrc = path.join(STASH_DIR, '.pending-harvesters');
+        if (fs.existsSync(pendingSrc)) {
+          const pendingDst = path.join(TARGET_DIR, '.pending-harvesters');
+          fs.rmSync(pendingDst, { recursive: true, force: true });
+          fs.cpSync(pendingSrc, pendingDst, { recursive: true });
+          broadcastLog('[System] ✅ Restored staged harvesters.dat (delegators).\n');
         }
         // Restore nemesis/ directory (genesis block data) — ONLY if there is
         // a real backed-up addresses.yml (= this is a genuine backup-restore
@@ -7677,6 +7858,9 @@ app.post('/api/commands/start', async (req, res) => {
       // applied even when official presets run config without -c.
       broadcastLog('[System] Step 3b/6 – Syncing mutable node settings from preset...\n');
       syncMutableNodeSettingsFromPreset(TARGET_DIR);
+
+      // Step 3b2: Install delegated harvesters staged by /api/restore.
+      installPendingHarvesters(TARGET_DIR);
 
       // Step 3c: Remove malformed orphan INI lines before starting containers.
       broadcastLog('[System] Step 3c/6 – Sanitizing generated INI files...\n');
