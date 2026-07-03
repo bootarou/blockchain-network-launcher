@@ -65,3 +65,6 @@ Thumbs.db
 *~
 shared/.auth-secret
 shared/seed/
+
+# sample-share
+bda-test.symbol-network.zip

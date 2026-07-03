@@ -499,7 +499,19 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
   // (bootarou/explorer-smd build), not via the official symbolplatform image.
 
   // ── Nodes / Gateways ──
-  if (flat.nodes) doc.nodes = flat.nodes;
+  // Normalize advertised roles to match the voting flag. Catapult's
+  // finalization sync only pulls from peers advertising the Voting role,
+  // so a voting node that omits it stalls finalization on every joiner.
+  if (flat.nodes) {
+    doc.nodes = (flat.nodes as Record<string, unknown>[]).map((node) => {
+      if (typeof node.roles !== 'string' || typeof node.voting !== 'boolean') return node;
+      const roles = node.roles.split(',').map((r) => r.trim()).filter(Boolean);
+      const hasVoting = roles.includes('Voting');
+      if (node.voting && !hasVoting) roles.push('Voting');
+      if (!node.voting && hasVoting) roles.splice(roles.indexOf('Voting'), 1);
+      return { ...node, roles: roles.join(',') };
+    });
+  }
   if (flat.gateways) {
     // Strip databaseHost — symbol-bootstrap resolves the correct DB service
     // name internally; overriding it in the custom preset causes a mismatch
@@ -6220,6 +6232,10 @@ function syncMutableNodeSettingsFromPreset(targetDir: string): void {
         { presetKey: 'host', propKey: 'host' },
         { presetKey: 'minFeeMultiplier', propKey: 'minFeeMultiplier' },
         { presetKey: 'maxTrackedNodes', propKey: 'maxTrackedNodes' },
+        // Advertised roles (Peer,Api,Voting) — finalization sync peers are
+        // selected by the Voting role, so it must follow the preset on
+        // quick restart too (the full path applies it via bootstrap config).
+        { presetKey: 'roles', propKey: 'roles' },
       ];
 
       for (const { presetKey, propKey } of mutableFields) {

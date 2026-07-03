@@ -126,18 +126,18 @@ http://localhost:5173
 
 1. **Configuration** タブで Assembly = `dual`、Preset = `bootstrap` を選択
 2. ホスト IP、フレンドリーネーム等を設定
-3. **Save** → **Start** でネメシスブロックが生成されノードが起動
+3. **Start** で起動（設定は自動保存されます）— ネメシスブロックが生成されノードが起動
 
 ### 既存ネットワークに参加
 
 1. **Join Network** タブでソースノードの REST API URL を入力
 2. **Import Seed File** でネットワーク管理者から受け取った Seed ファイルをインポート
-3. **Configuration** タブで設定を確認 → **Save** → **Start**
+3. **Configuration** タブで設定を確認 → 操作ページで **Start**（設定は自動保存されます）
 
 ### 公式ネットワーク（mainnet / testnet）に参加
 
 1. **Join Network** タブで既知ノード（mainnet / testnet）を選択、または REST API URL を入力して設定を取り込み
-2. **Configuration** タブで設定を確認 → **Save** → **Start**
+2. **Configuration** タブで設定を確認 → 操作ページで **Start**（設定は自動保存されます）
 
 公式ネットワークでは Seed ファイルは不要です。ネットワーク設定は自動で取得されます。
 
@@ -232,6 +232,7 @@ http://localhost:5173
 
 - [MANUAL.md](MANUAL.md) — 詳細なユーザーマニュアル（Docker Host Mode、nodeEqualityStrategy、トラブルシューティング等）
 - [docs/backup-restore.md](docs/backup-restore.md) — バックアップ / リストア手順書（バックアップの種類、ケース別の復元動作、注意事項）
+- [docs/wsl-lan-setup.md](docs/wsl-lan-setup.md) — WSL2 ホストの LAN 公開手順書（mirrored モード / portproxy、ファイアウォール設定）
 
 ## ライセンス
 

@@ -652,7 +652,7 @@ export const DEFAULT_NODE: NodeConfig = {
   host: '',
   peerNodeUrls: '',
   friendlyName: 'My API Node',
-  roles: 'Peer,Api',
+  roles: 'Peer,Api,Voting',
   harvesting: true,
   api: true,
   voting: true,
@@ -844,7 +844,7 @@ export const DEFAULT_PRESET: PresetConfig = {
   dockerHostMode: false,
 
   nodes: [{
-    name: 'api-node-0', host: '', friendlyName: 'My API Node', roles: 'Peer,Api',
+    name: 'api-node-0', host: '', friendlyName: 'My API Node', roles: 'Peer,Api,Voting',
     peerNodeUrls: '',
     harvesting: true, api: true, voting: true, database: true,
     minFeeMultiplier: 100, enableTransactionSpamThrottling: true, transactionSpamThrottlingMaxBoostFee: 10000000,
