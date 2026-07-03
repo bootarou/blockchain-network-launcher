@@ -7111,6 +7111,16 @@ app.get('/api/backup', (req, res) => {
       broadcastLog('[Backup] ⚠️  addresses.yml not found — skipping (not yet generated?)\n');
     }
 
+    // 3b) Generated preset.yml — REQUIRED for key reuse on restore.
+    //     `symbol-bootstrap config --upgrade` only reuses the keys in
+    //     addresses.yml when target/preset.yml also exists; without it a
+    //     NEW identity is generated and (on a restored custom chain) the
+    //     new harvester has no importance → no blocks are ever produced.
+    const generatedPresetPath = path.join(TARGET_DIR, 'preset.yml');
+    if (fs.existsSync(generatedPresetPath)) {
+      filesToBackup.push({ diskPath: generatedPresetPath, zipPath: 'preset.yml' });
+    }
+
     // 4) nemesis/seed directory
     const nemesisSeedDir = path.join(TARGET_DIR, 'nemesis', 'seed', '00000');
     if (fs.existsSync(nemesisSeedDir)) {
@@ -7441,6 +7451,18 @@ app.post('/api/restore', (req, res) => {
         fs.writeFileSync(destPath, addressesEntry.getData());
         restoredFiles.push('addresses.yml');
         broadcastLog(`[Restore] 🔑 addresses.yml (${addressesEntry.getData().length}B)\n`);
+      }
+
+      // 3b) Restore the generated preset.yml.  Together with addresses.yml
+      //     this switches the next `symbol-bootstrap config --upgrade` into
+      //     the upgrade path, which REUSES the backed-up node keys instead
+      //     of generating a new identity.  A new identity cannot harvest on
+      //     a restored custom chain (its accounts hold no importance).
+      const genPresetEntry = zip.getEntry('preset.yml');
+      if (genPresetEntry && addressesEntry) {
+        fs.writeFileSync(path.join(TARGET_DIR, 'preset.yml'), genPresetEntry.getData());
+        restoredFiles.push('preset.yml');
+        broadcastLog('[Restore] 📄 preset.yml (generated — node keys will be reused on next start)\n');
       }
 
       // 4) Restore nemesis/seed files
@@ -8139,7 +8161,16 @@ app.post('/api/commands/start', async (req, res) => {
       } else {
         broadcastLog(`[System] Official preset (${basePreset}) detected — using symbol-bootstrap defaults (no custom preset file).\n`);
       }
-      if (dataExists) {
+      // --upgrade when block data exists, OR when a restored identity pair
+      // (preset.yml + addresses.yml) is present — bootstrap then takes the
+      // upgrade path and reuses the backed-up keys.  Without --upgrade an
+      // existing preset.yml makes config skip generation entirely
+      // ("already exist, ignoring configuration") and nodes/ never appears.
+      // Re-check on disk here: the stash step above may have moved them out.
+      const canUpgradeFromIdentity =
+        fs.existsSync(path.join(TARGET_DIR, 'preset.yml')) &&
+        fs.existsSync(path.join(TARGET_DIR, 'addresses.yml'));
+      if (dataExists || canUpgradeFromIdentity) {
         configArgs.push('--upgrade');
       }
       // needsReset: target was cleared above, no flag needed
@@ -8344,6 +8375,13 @@ app.post('/api/commands/start', async (req, res) => {
       {
         if (isOfficialPreset) {
           broadcastLog(`[System] Step 4d – Skipped for official preset (${basePreset}); keeping bootstrap-provided nemesis data.\n`);
+        } else if (dataExists) {
+          // installImportedSeed() resets data/index.dat to 1 and wipes
+          // statedb — running it over an existing chain (e.g. after a
+          // full-backup restore or a config --upgrade start) would destroy
+          // the chain state.  Existing block data always already contains
+          // the genesis block, so nothing needs installing.
+          broadcastLog('[System] Step 4d – Skipped (existing chain data present; genesis already in block store).\n');
         } else {
           const importedSeedDir = path.join(SEED_DIR, '00000');
           const hasImportedSeed = fs.existsSync(path.join(importedSeedDir, '00001.dat'));
