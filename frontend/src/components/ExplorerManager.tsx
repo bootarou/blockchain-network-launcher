@@ -50,6 +50,24 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
   const [networkNameEdited, setNetworkNameEdited] = useState(false);
   const modeRef = useRef<'public' | 'custom'>(isPublicPreset ? 'public' : 'custom');
 
+  // Authoritative network currency resolved by the backend (works on joined
+  // nodes too, where the UI config has no baseNamespace / nemesisMosaics).
+  const [liveCurrency, setLiveCurrency] = useState<{ name: string; divisibility: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getNodeStats();
+        const name = res?.currency?.name;
+        if (!cancelled && typeof name === 'string' && name.includes('.')) {
+          setLiveCurrency({ name, divisibility: Number(res.currency.divisibility ?? 6) });
+        }
+      } catch { /* ignore — fall back to config-based defaults */ }
+    })();
+    return () => { cancelled = true; };
+  }, [nodeRunning]);
+
   // ── Poll explorer status ─────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
     try {
@@ -91,19 +109,26 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
     const ns =
       isPublicPreset
         ? 'symbol.xym'
-        : config.baseNamespace && config.nemesisMosaics?.[0]?.name
-          ? `${config.baseNamespace}.${config.nemesisMosaics[0].name}`
-          : 'symbol.xym';
-    const div = isPublicPreset ? '6' : String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
+        : liveCurrency?.name
+          ? liveCurrency.name
+          : config.baseNamespace && config.nemesisMosaics?.[0]?.name
+            ? `${config.baseNamespace}.${config.nemesisMosaics[0].name}`
+            : 'symbol.xym';
+    const div = isPublicPreset
+      ? '6'
+      : liveCurrency
+        ? String(liveCurrency.divisibility)
+        : String(config.nemesisMosaics?.[0]?.divisibility ?? 6);
     if (!nsEdited || modeChanged) setNsName(ns);
     if (!divEdited || modeChanged) setDivisibility(div);
 
     if (isPublicPreset) {
       if (!networkNameEdited || modeChanged) setNetworkName(String(config.preset || config.networkType || 'testnet'));
-    } else if (config.baseNamespace && (!networkNameEdited || modeChanged)) {
-      setNetworkName(config.baseNamespace);
+    } else {
+      const base = liveCurrency?.name?.split('.')[0] || config.baseNamespace;
+      if (base && (!networkNameEdited || modeChanged)) setNetworkName(base);
     }
-  }, [config.preset, config.baseNamespace, config.nemesisMosaics, isPublicPreset]);
+  }, [config.preset, config.baseNamespace, config.nemesisMosaics, isPublicPreset, liveCurrency]);
 
   // ── Handlers ─────────────────────────────────────────────────────────
   const handleBuild = async () => {
