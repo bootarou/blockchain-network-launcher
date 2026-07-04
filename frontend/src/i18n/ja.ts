@@ -66,6 +66,7 @@ export const ja: TranslationDict = {
   'dashboard.crashRecoveryHint': '不意なシャットダウンで破損したノードデータを診断し、自動復旧します',
   'dashboard.crashDiagRunning': 'ノードが稼働中です。診断は停止中のノードに対してのみ実行できます。',
   'dashboard.crashDiagClean': '✅ 破損は検出されませんでした。ノードデータは正常です。',
+  'dashboard.crashOfferReset': '✅ ファイルレベルの破損は検出されませんでした。\n\nただし、ノードが起動時にクラッシュを繰り返す場合は、検出できない内部破損（statedb 等）の可能性があります。データを初期化してネットワークから再同期しますか？\n\n・鍵・証明書・投票鍵は保持されます\n・通常は「キャンセル」で問題ありません',
   'dashboard.confirmCrashClean': '残留ロック・書きかけの不要ファイルが見つかりました。削除して起動可能な状態にします。\n\n検出内容:',
   'dashboard.confirmCrashReset': '⚠️ クラッシュによる破損が検出されました（0バイトのブロック/状態ファイル）。\n\nこの破損は修復不能なため、データを初期状態（seed）に戻してネットワークから再同期します。\n・鍵・証明書・投票鍵は保持されます\n・破損データは crash-backups/ に退避されます\n・MongoDB は再同期時に自動再構築されます\n\n検出内容:',
   'dashboard.crashResyncFrom': '再同期元（確認済み）',

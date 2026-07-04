@@ -160,8 +160,25 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
         finish('idle');
         return;
       }
+      // Escalation path: file-level diagnosis can miss internal corruption
+      // (e.g. a poisoned RocksDB statedb that segfaults catapult on boot),
+      // so offer an explicit data reset when nothing is detected.
+      const runExplicitReset = async (withForce: boolean): Promise<boolean> => {
+        const r = await api.sendCommand('crashRecovery', withForce ? { resetData: true, force: true } : { resetData: true });
+        if (r.needsForce) {
+          if (!confirm(t('dashboard.confirmCrashForce'))) return false;
+          return runExplicitReset(true);
+        }
+        if (r.error) throw new Error(r.error);
+        alert(t('dashboard.crashResetDone'));
+        return true;
+      };
+
       if (diag.verdict === 'clean') {
-        alert(t('dashboard.crashDiagClean'));
+        if (confirm(t('dashboard.crashOfferReset'))) {
+          finish((await runExplicitReset(false)) ? 'success' : 'idle');
+          return;
+        }
         finish('success');
         return;
       }

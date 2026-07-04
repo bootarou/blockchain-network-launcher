@@ -66,6 +66,7 @@ export const en: TranslationDict = {
   'dashboard.crashRecoveryHint': 'Diagnoses node data damaged by an unexpected shutdown and recovers automatically',
   'dashboard.crashDiagRunning': 'The node is running. Diagnosis only applies to a stopped node.',
   'dashboard.crashDiagClean': '✅ No damage detected. Node data is healthy.',
+  'dashboard.crashOfferReset': '✅ No file-level damage was detected.\n\nHowever, if the node keeps crashing on startup, there may be internal corruption (e.g. statedb) that cannot be detected. Reset the data and resync from the network?\n\n- Keys, certificates and voting keys are preserved\n- Normally you can just press Cancel',
   'dashboard.confirmCrashClean': 'Stale locks / half-written leftover files were found. They will be removed so the node can start.\n\nFindings:',
   'dashboard.confirmCrashReset': '⚠️ Crash damage detected (0-byte block/state files).\n\nThis damage cannot be repaired in place, so the data will be reset to the nemesis seed and resynced from the network.\n- Keys, certificates and voting keys are preserved\n- Damaged data is moved to crash-backups/\n- MongoDB is rebuilt automatically during resync\n\nFindings:',
   'dashboard.crashResyncFrom': 'Resync source (verified)',

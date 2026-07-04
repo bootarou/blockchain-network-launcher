@@ -5463,6 +5463,46 @@ function buildProofIndexDat(nemesisEntityHash: Buffer | string): Buffer {
     hash,               // 32-byte nemesis block EntityHash
   ]);
 }
+
+/**
+ * proof.index.dat for a joining node, seeded from the source node's CURRENT
+ * finalization statistics instead of the nemesis statistics.
+ *
+ * Writing epoch 1 here is a trap: with unfinalizedBlocksDuration = 0m,
+ * catapult's local-finalized-height supplier loads the proof of
+ * (statistics.epoch - 1) during every chain compare.  At epoch 1 that is
+ * epoch 0, and the server dies with "loadProof called with epoch 0" as soon
+ * as the network has finalized epoch 2 — a boot crash-loop (and a segfault
+ * in the gcc-1.0.3.9 patched build, observed 2026-07-04).  Seeding current
+ * statistics (epoch ≥ 2) makes that lookup resolve to the locally present
+ * nemesis proof instead.
+ */
+async function buildProofIndexFromSource(sourceNodeUrl: string, nemesisEntityHash: Buffer | string): Promise<Buffer> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const r = await fetch(`${sourceNodeUrl.replace(/\/+$/, '')}/chain/info`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (r.ok) {
+      const info = await r.json() as { latestFinalizedBlock?: { finalizationEpoch: number; finalizationPoint: number; height: string; hash: string } };
+      const fin = info?.latestFinalizedBlock;
+      const epoch = Number(fin?.finalizationEpoch ?? 0);
+      if (fin && epoch >= 2 && /^[0-9A-Fa-f]{64}$/.test(String(fin.hash))) {
+        broadcastLog(`[Nemesis] proof.index.dat seeded from source finalization (epoch ${epoch}, height ${fin.height})\n`);
+        return Buffer.concat([
+          writeUint32LE(epoch),
+          writeUint32LE(Number(fin.finalizationPoint)),
+          writeUint64LE(Number(fin.height)),
+          Buffer.from(String(fin.hash), 'hex'),
+        ]);
+      }
+      broadcastLog(`[Nemesis] ⚠️ Source finalization epoch is still ${epoch || 1} — using nemesis statistics. If the node starts crash-looping once the network finalizes epoch 2, re-import / reset data to pick up current statistics.\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Nemesis] ⚠️ Could not fetch source finalization statistics (${e.message}) — using nemesis statistics\n`);
+  }
+  return buildProofIndexDat(nemesisEntityHash);
+}
 /** Convert a hex-encoded uint64 (big-endian display) → little-endian Buffer */
 function hexUint64ToLE(hex: string): Buffer {
   const buf = Buffer.from(hex.padStart(16, '0'), 'hex');
@@ -5706,7 +5746,14 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   // proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
   // hashes.dat layout: [NullHash(32) | EntityHash(32) | ...]
   const nemesisEntityHash = hashesBuf.subarray(32, 64);
-  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), buildProofIndexDat(nemesisEntityHash));
+  let importSourceUrl = '';
+  try {
+    if (fs.existsSync(UI_META_PATH)) importSourceUrl = String(parseJsonFile(UI_META_PATH).sourceNodeUrl || '');
+  } catch { /* ignore */ }
+  const proofIndexBuf = importSourceUrl
+    ? await buildProofIndexFromSource(importSourceUrl, nemesisEntityHash)
+    : buildProofIndexDat(nemesisEntityHash);
+  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
 
   // --- Patch data/00000/ inside each node directory ---
   // Catapult block files are named by block height: 00001.dat = genesis block.
@@ -5748,7 +5795,7 @@ async function installImportedSeed(targetDir: string): Promise<void> {
       // data/index.dat
       fs.writeFileSync(path.join(dataDir, 'index.dat'), writeUint64LE(1));
       // data/proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), buildProofIndexDat(nemesisEntityHash));
+      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), proofIndexBuf);
 
       // Create spool directories
       for (const sDir of ['block_change', 'block_recover', 'finalization',
@@ -5841,7 +5888,8 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   fs.writeFileSync(path.join(seedBase, 'index.dat'), writeUint64LE(1));
 
   // proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), buildProofIndexDat(meta.hash));
+  const proofIndexBuf = await buildProofIndexFromSource(base, meta.hash);
+  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
 
   // proof.heights.dat  (epoch4 + point4 + height8 + hash32 = 48)
   fs.writeFileSync(path.join(seedDir, 'proof.heights.dat'),
@@ -5920,7 +5968,7 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
       // data/index.dat  (uint64 = 1 = current chain height)
       fs.writeFileSync(path.join(dataDir, 'index.dat'), writeUint64LE(1));
       // data/proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), buildProofIndexDat(meta.hash));
+      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), proofIndexBuf);
 
       // Create spool directories (needed by broker)
       for (const sDir of ['block_change', 'block_recover', 'finalization',
@@ -9142,6 +9190,21 @@ function areNodeContainersRunning(): boolean {
   }
 }
 
+/**
+ * Containers that hold node data files open (catapult server/broker).
+ * db / rest-gateway do not touch nodes/&ast;/data, so a crashed api-node with
+ * db still up must not block diagnosis.
+ */
+function areNodeDataContainersRunning(): boolean {
+  try {
+    const out = execSync(`docker ps --format '{{.Names}}'`, { timeout: 15_000, stdio: 'pipe' }).toString();
+    const running = out.split('\n').map((s) => s.trim()).filter(Boolean);
+    return running.some((n) => n === 'node' || n === 'broker' || n.endsWith('-broker') || /api-node|peer-node/.test(n));
+  } catch {
+    return false;
+  }
+}
+
 /** Stop/remove node containers so no process holds data files open (same strategy as clearLocks). */
 function stopNodeContainersForRecovery(log: (msg: string) => void): void {
   const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
@@ -9382,7 +9445,7 @@ async function performCrashRecovery(targetDir: string, log: (msg: string) => voi
 // Read-only diagnosis (used by the UI before asking for confirmation)
 app.post('/api/commands/crashDiagnose', async (_req, res) => {
   try {
-    if (areNodeContainersRunning()) {
+    if (areNodeDataContainersRunning()) {
       return res.json({ running: true, verdict: 'clean' });
     }
     const diagnosis = diagnoseCrashDamage(TARGET_DIR);
@@ -9393,17 +9456,26 @@ app.post('/api/commands/crashDiagnose', async (_req, res) => {
   }
 });
 
-// Perform the recovery.  body: { force?: boolean } — force is required for a
-// seed reset when no verified resync source is available (network-origin node).
+// Perform the recovery.  body:
+//   force     — required for a seed reset when no verified resync source is
+//               available (network-origin node).
+//   resetData — escalate to a seed reset even when the file-level diagnosis
+//               finds nothing.  Needed for corruption that file sizes cannot
+//               reveal (e.g. a poisoned RocksDB statedb that segfaults
+//               catapult on boot — observed 2026-07-04).
 app.post('/api/commands/crashRecovery', async (req, res) => {
   try {
-    const { force } = (req.body ?? {}) as { force?: boolean };
+    const { force, resetData } = (req.body ?? {}) as { force?: boolean; resetData?: boolean };
     broadcastLog('\n[Recovery] ========== Crash Auto-Recovery ==========\n');
 
     stopNodeContainersForRecovery(broadcastLog);
     const diagnosis = diagnoseCrashDamage(TARGET_DIR);
+    const verdict = resetData && diagnosis.verdict !== 'reset-required' ? 'reset-required' : diagnosis.verdict;
+    if (verdict !== diagnosis.verdict) {
+      broadcastLog('[Recovery] Explicit data reset requested — escalating to seed reset.\n');
+    }
 
-    if (diagnosis.verdict === 'clean') {
+    if (verdict === 'clean') {
       broadcastLog('[Recovery] ✅ No crash damage found.\n');
       networkStatus.state = 'stopped';
       broadcastStatus();
@@ -9412,7 +9484,7 @@ app.post('/api/commands/crashRecovery', async (req, res) => {
 
     cleanCrashLeftovers(TARGET_DIR, diagnosis, broadcastLog);
 
-    if (diagnosis.verdict === 'locks-only') {
+    if (verdict === 'locks-only') {
       broadcastLog('[Recovery] ✅ Stale locks / orphan files cleaned. Data is intact — you can Start the node.\n');
       networkStatus.state = 'stopped';
       broadcastStatus();
