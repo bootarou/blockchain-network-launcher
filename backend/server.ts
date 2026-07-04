@@ -7669,6 +7669,43 @@ app.post('/api/commands/start', async (req, res) => {
     const startSequence = async () => {
 
       // =================================================================
+      // Crash-damage failsafe (unexpected shutdown / power loss)
+      //
+      //   A hard power-off can leave 0-byte block/state files that make
+      //   catapult crash-loop on boot ("couldn't read from file" /
+      //   "cache height is inconsistent with storage height").  Detect
+      //   that before starting; when a verified resync source exists,
+      //   automatically reset data to seed (certs / voting keys / voting
+      //   status preserved) so this Start proceeds into a clean resync.
+      // =================================================================
+      {
+        const crashDiag = diagnoseCrashDamage(TARGET_DIR);
+        if (crashDiag.verdict === 'reset-required') {
+          broadcastLog('[Recovery] ⚠️ Crash damage detected in node data:\n');
+          for (const f of [...crashDiag.corruptBlockFiles, ...crashDiag.corruptStateFiles, ...crashDiag.corruptSpoolIndexes].slice(0, 10)) {
+            broadcastLog(`[Recovery]   - ${f}\n`);
+          }
+          const resyncSource = await checkResyncSource(TARGET_DIR);
+          if (!resyncSource.ok) {
+            broadcastLog(`[Recovery] ❌ Auto-reset blocked: ${resyncSource.reason}\n`);
+            throw new Error(
+              'Crash damage detected, but an automatic seed reset is not verifiably safe '
+              + `(${resyncSource.reason}). Run クラッシュ診断・復旧 from the Operations page, or restore a backup.`,
+            );
+          }
+          broadcastLog(`[Recovery] Resync source verified: ${resyncSource.url} (height ${resyncSource.remoteHeight}) — resetting data to seed...\n`);
+          stopNodeContainersForRecovery(broadcastLog);
+          cleanCrashLeftovers(TARGET_DIR, crashDiag, broadcastLog);
+          const recovery = await performCrashRecovery(TARGET_DIR, broadcastLog);
+          broadcastLog(`[Recovery] ✅ Data reset complete (backup: ${path.relative(TARGET_DIR, recovery.backupDir)}). The node will resync from the network.\n`);
+        } else if (crashDiag.orphanBlockFiles.length || crashDiag.orphanSpoolFiles.length) {
+          // Harmless 0-byte leftovers — delete them so they cannot confuse
+          // the index.dat height fix below.
+          cleanCrashLeftovers(TARGET_DIR, { ...crashDiag, staleLocks: [] }, broadcastLog);
+        }
+      }
+
+      // =================================================================
       // RESTART mode: simple stop → run, no config/compose/cleanup
       //
       //   This is the safe path for Stop → Start.  All data files
@@ -7724,7 +7761,12 @@ app.post('/api/commands/start', async (req, res) => {
                   const indexBuf = fs.readFileSync(indexDatPath);
                   const chainHeight = Number(indexBuf.readBigUInt64LE(0));
                   let maxHeight = chainHeight;
-                  while (fs.existsSync(path.join(blockDir, String(maxHeight + 1).padStart(5, '0') + '.dat'))) {
+                  for (;;) {
+                    // A 0-byte file is crash debris, not a stored block —
+                    // advancing index.dat into it would make catapult fail
+                    // with "couldn't read from file" on boot.
+                    const next = path.join(blockDir, String(maxHeight + 1).padStart(5, '0') + '.dat');
+                    if (!fs.existsSync(next) || fs.statSync(next).size === 0) break;
                     maxHeight++;
                   }
                   if (maxHeight > chainHeight) {
@@ -9028,6 +9070,364 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
     res.json({ success: true, locksRemoved: lockCount, locksFailed: lockFailed });
   } catch (err: any) {
     broadcastLog(`[Cleanup] ❌ clearLocks failed: ${err.message}\n`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Crash diagnosis & auto-recovery (unexpected shutdown / power loss)
+// =============================================================================
+//
+// A hard power-off (Windows Update reboot, WSL2 kill, blue screen) leaves a
+// characteristic damage pattern: the filesystem journal replays metadata only,
+// so every file catapult was writing at the moment of the crash survives as a
+// 0-byte file.  Three kinds matter:
+//
+//   1. 0-byte block files (data/00000/NNNNN.dat/.stmt) at/below the height in
+//      index.dat → catapult dies with "couldn't read from file".
+//   2. 0-byte state snapshot files (data/state/*.dat).  With RocksDB cache
+//      mode (enableCacheDatabaseStorage=true) catapult CANNOT rebuild state
+//      from block storage — it aborts with "cache height (1) is inconsistent
+//      with storage height (N)".  catapult.recovery does not rebuild it either.
+//   3. Stale server.lock / recovery.lock files.
+//
+// (1)+(2) are unrepairable in place.  The only reliable fix is to reset data
+// back to the nemesis seed — preserving certs, voting key trees and voting
+// status — and let the node resync from a peer.  That is only SAFE when a
+// peer actually holds the chain (join node); on a network-origin node it
+// would discard the only copy, so it requires an explicit force.
+
+interface CrashDiagnosis {
+  verdict: 'clean' | 'locks-only' | 'reset-required';
+  staleLocks: string[];          // *.lock files (normal while running, stale when stopped)
+  corruptBlockFiles: string[];   // 0-byte block files at/below chain height — fatal
+  orphanBlockFiles: string[];    // 0-byte block files above chain height — safe to delete
+  corruptStateFiles: string[];   // 0-byte state snapshot files — fatal
+  orphanSpoolFiles: string[];    // 0-byte spool message files — safe to delete
+  corruptSpoolIndexes: string[]; // 0-byte spool index files — fatal
+}
+
+const NODE_CONTAINER_NAMES = ['api-node-0', 'api-node-0-broker', 'node', 'broker', 'rest-gateway', 'db'];
+
+function areNodeContainersRunning(): boolean {
+  try {
+    const out = execSync(`docker ps --format '{{.Names}}'`, { timeout: 15_000, stdio: 'pipe' }).toString();
+    const running = new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
+    return NODE_CONTAINER_NAMES.some((n) => running.has(n));
+  } catch {
+    return false;
+  }
+}
+
+/** Stop/remove node containers so no process holds data files open (same strategy as clearLocks). */
+function stopNodeContainersForRecovery(log: (msg: string) => void): void {
+  const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+  if (fs.existsSync(composePath)) {
+    try {
+      execSync(`docker compose -f "${composePath}" down --remove-orphans 2>&1 || true`, { timeout: 90_000, stdio: 'pipe' });
+      log('[Recovery] compose down complete.\n');
+    } catch (e: any) {
+      log(`[Recovery] compose down failed: ${e.message}\n`);
+    }
+  }
+  for (const cname of NODE_CONTAINER_NAMES) {
+    try {
+      execSync(`docker rm -f ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' });
+    } catch { /* ignore */ }
+  }
+}
+
+function diagnoseCrashDamage(targetDir: string): CrashDiagnosis {
+  const d: CrashDiagnosis = {
+    verdict: 'clean',
+    staleLocks: [],
+    corruptBlockFiles: [],
+    orphanBlockFiles: [],
+    corruptStateFiles: [],
+    orphanSpoolFiles: [],
+    corruptSpoolIndexes: [],
+  };
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return d;
+  const rel = (p: string) => path.relative(targetDir, p);
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const dataDir = path.join(nodesDir, nodeName, 'data');
+    if (!fs.existsSync(dataDir)) continue;
+
+    for (const f of fs.readdirSync(dataDir)) {
+      if (f.endsWith('.lock')) d.staleLocks.push(rel(path.join(dataDir, f)));
+    }
+
+    // Chain height from index.dat (8-byte LE)
+    let chainHeight = 0n;
+    try {
+      chainHeight = fs.readFileSync(path.join(dataDir, 'index.dat')).readBigUInt64LE(0);
+    } catch { /* no chain yet */ }
+
+    // Block storage group dirs (00000, 00001, …) — fileHeight = groupIndex * 65536 + fileNum
+    for (const entry of fs.readdirSync(dataDir)) {
+      if (!/^\d{5}$/.test(entry)) continue;
+      const groupDir = path.join(dataDir, entry);
+      if (!fs.statSync(groupDir).isDirectory()) continue;
+      const groupBase = BigInt(parseInt(entry, 10)) * 65536n;
+      for (const f of fs.readdirSync(groupDir)) {
+        const m = f.match(/^(\d{5})\.(dat|stmt)$/);
+        if (!m) continue;
+        const p = path.join(groupDir, f);
+        if (fs.statSync(p).size > 0) continue;
+        const height = groupBase + BigInt(parseInt(m[1], 10));
+        if (height <= chainHeight) d.corruptBlockFiles.push(rel(p));
+        else d.orphanBlockFiles.push(rel(p));
+      }
+    }
+
+    // State snapshot: written on shutdown, so it is the file most likely to be
+    // zeroed by a power loss.  Also flag supplemental.dat missing while a
+    // populated statedb exists (same boot failure).
+    const stateDir = path.join(dataDir, 'state');
+    if (fs.existsSync(stateDir)) {
+      for (const f of fs.readdirSync(stateDir)) {
+        if (!f.endsWith('.dat')) continue;
+        const p = path.join(stateDir, f);
+        if (fs.statSync(p).size === 0) d.corruptStateFiles.push(rel(p));
+      }
+      const statedbDir = path.join(dataDir, 'statedb');
+      const hasStatedb = fs.existsSync(statedbDir) && fs.readdirSync(statedbDir).length > 0;
+      const hasSupplemental = fs.existsSync(path.join(stateDir, 'supplemental.dat'));
+      if (hasStatedb && !hasSupplemental && chainHeight > 1n) {
+        d.corruptStateFiles.push(rel(path.join(stateDir, 'supplemental.dat')) + ' (missing)');
+      }
+    }
+
+    // Spool: 0-byte message files ahead of the write index are harmless
+    // orphans; a 0-byte index file means the queue itself is broken.
+    const spoolDir = path.join(dataDir, 'spool');
+    if (fs.existsSync(spoolDir)) {
+      for (const sub of fs.readdirSync(spoolDir)) {
+        const subDir = path.join(spoolDir, sub);
+        if (!fs.statSync(subDir).isDirectory()) continue;
+        for (const f of fs.readdirSync(subDir)) {
+          const p = path.join(subDir, f);
+          const st = fs.statSync(p);
+          if (!st.isFile() || st.size > 0) continue;
+          if (f.startsWith('index')) d.corruptSpoolIndexes.push(rel(p));
+          else d.orphanSpoolFiles.push(rel(p));
+        }
+      }
+    }
+  }
+
+  if (d.corruptBlockFiles.length || d.corruptStateFiles.length || d.corruptSpoolIndexes.length) {
+    d.verdict = 'reset-required';
+  } else if (d.staleLocks.length || d.orphanBlockFiles.length || d.orphanSpoolFiles.length) {
+    d.verdict = 'locks-only';
+  }
+  return d;
+}
+
+interface ResyncSourceCheck {
+  ok: boolean;
+  url?: string;
+  remoteHeight?: number;
+  localHeight?: number;
+  reason: string;
+}
+
+/**
+ * A seed reset discards the local chain, so it is only safe when a peer
+ * verifiably holds the chain at (at least) our height.  Join nodes record
+ * their origin in .ui-meta.json → sourceNodeUrl.
+ */
+async function checkResyncSource(targetDir: string): Promise<ResyncSourceCheck> {
+  let localHeight = 0;
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (fs.existsSync(nodesDir)) {
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      try {
+        const h = Number(fs.readFileSync(path.join(nodesDir, nodeName, 'data', 'index.dat')).readBigUInt64LE(0));
+        if (h > localHeight) localHeight = h;
+      } catch { /* ignore */ }
+    }
+  }
+
+  let url = '';
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      url = String(parseJsonFile(UI_META_PATH).sourceNodeUrl || '');
+    }
+  } catch { /* ignore */ }
+  if (!url) {
+    return { ok: false, localHeight, reason: 'no sourceNodeUrl — this looks like a network-origin node; resetting would discard the only copy of the chain' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const r = await fetch(`${url.replace(/\/+$/, '')}/chain/info`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!r.ok) return { ok: false, url, localHeight, reason: `source node returned HTTP ${r.status}` };
+    const info = await r.json() as { height?: string };
+    const remoteHeight = Number(info?.height ?? 0);
+    if (remoteHeight >= localHeight) {
+      return { ok: true, url, remoteHeight, localHeight, reason: 'source node holds the chain at/above local height' };
+    }
+    return { ok: false, url, remoteHeight, localHeight, reason: `source node is BEHIND local chain (${remoteHeight} < ${localHeight}) — reset would lose blocks` };
+  } catch (e: any) {
+    return { ok: false, url, localHeight, reason: `source node unreachable: ${e.message}` };
+  }
+}
+
+/** Delete stale locks and orphan 0-byte files reported by a diagnosis. */
+function cleanCrashLeftovers(targetDir: string, diagnosis: CrashDiagnosis, log: (msg: string) => void): void {
+  for (const relPath of [...diagnosis.staleLocks, ...diagnosis.orphanBlockFiles, ...diagnosis.orphanSpoolFiles]) {
+    try {
+      fs.unlinkSync(path.join(targetDir, relPath));
+      log(`[Recovery] Removed leftover: ${relPath}\n`);
+    } catch (e: any) {
+      log(`[Recovery] ⚠️ Could not remove ${relPath}: ${e.message}\n`);
+    }
+  }
+}
+
+/**
+ * Reset every node's data dir back to its nemesis seed, preserving files
+ * that cannot be regenerated: voting key trees in use (data/voting), voting
+ * status (double-vote protection) and the transfer-message reader index.
+ * certs/ and votingkeys/ live outside data/ and are untouched.
+ * MongoDB is wiped together with the block storage (they must never diverge:
+ * an empty Mongo next to old block files makes catapult.recovery SIGABRT,
+ * and a Mongo ahead of the chain makes the broker die on duplicate keys).
+ * The damaged data is moved (not deleted) into crash-backups/<timestamp>/.
+ */
+async function performCrashRecovery(targetDir: string, log: (msg: string) => void): Promise<{ backupDir: string; nodes: string[] }> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupRoot = path.join(targetDir, 'crash-backups', stamp);
+  const recovered: string[] = [];
+  const nodesDir = path.join(targetDir, 'nodes');
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const nodeDir = path.join(nodesDir, nodeName);
+    const dataDir = path.join(nodeDir, 'data');
+    if (!fs.existsSync(dataDir)) continue;
+
+    let seedDir = path.join(nodeDir, 'seed');
+    if (!fs.existsSync(seedDir)) seedDir = path.join(targetDir, 'nemesis', 'seed');
+    if (!fs.existsSync(seedDir)) {
+      throw new Error(`No nemesis seed found for node "${nodeName}" — cannot rebuild block storage. Use Reset Data or re-join the network instead.`);
+    }
+
+    const nodeBackup = path.join(backupRoot, nodeName);
+    fs.mkdirSync(nodeBackup, { recursive: true });
+    fs.renameSync(dataDir, path.join(nodeBackup, 'data'));
+    log(`[Recovery] ${nodeName}: damaged data moved to ${path.relative(targetDir, nodeBackup)}/data\n`);
+
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.cpSync(seedDir, dataDir, { recursive: true });
+    log(`[Recovery] ${nodeName}: block storage reset to nemesis seed\n`);
+
+    for (const keep of ['voting', 'voting_status.dat', 'transfer_message']) {
+      const src = path.join(nodeBackup, 'data', keep);
+      if (!fs.existsSync(src)) continue;
+      fs.cpSync(src, path.join(dataDir, keep), { recursive: true });
+      log(`[Recovery] ${nodeName}: preserved ${keep}\n`);
+    }
+    recovered.push(nodeName);
+  }
+
+  const dbDir = path.join(targetDir, 'databases', 'db');
+  if (fs.existsSync(dbDir)) {
+    fs.renameSync(dbDir, path.join(backupRoot, 'mongo-db'));
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.chmodSync(dbDir, 0o777);
+    log('[Recovery] MongoDB data cleared — the broker rebuilds it during resync\n');
+  }
+
+  // Keep only the 3 most recent crash backups
+  try {
+    const backupsRoot = path.join(targetDir, 'crash-backups');
+    const entries = fs.readdirSync(backupsRoot).sort();
+    for (const old of entries.slice(0, Math.max(0, entries.length - 3))) {
+      fs.rmSync(path.join(backupsRoot, old), { recursive: true, force: true });
+      log(`[Recovery] Pruned old crash backup: ${old}\n`);
+    }
+  } catch { /* ignore */ }
+
+  return { backupDir: backupRoot, nodes: recovered };
+}
+
+// Read-only diagnosis (used by the UI before asking for confirmation)
+app.post('/api/commands/crashDiagnose', async (_req, res) => {
+  try {
+    if (areNodeContainersRunning()) {
+      return res.json({ running: true, verdict: 'clean' });
+    }
+    const diagnosis = diagnoseCrashDamage(TARGET_DIR);
+    const resyncSource = diagnosis.verdict === 'reset-required' ? await checkResyncSource(TARGET_DIR) : null;
+    res.json({ running: false, ...diagnosis, resyncSource });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Perform the recovery.  body: { force?: boolean } — force is required for a
+// seed reset when no verified resync source is available (network-origin node).
+app.post('/api/commands/crashRecovery', async (req, res) => {
+  try {
+    const { force } = (req.body ?? {}) as { force?: boolean };
+    broadcastLog('\n[Recovery] ========== Crash Auto-Recovery ==========\n');
+
+    stopNodeContainersForRecovery(broadcastLog);
+    const diagnosis = diagnoseCrashDamage(TARGET_DIR);
+
+    if (diagnosis.verdict === 'clean') {
+      broadcastLog('[Recovery] ✅ No crash damage found.\n');
+      networkStatus.state = 'stopped';
+      broadcastStatus();
+      return res.json({ success: true, action: 'none', diagnosis });
+    }
+
+    cleanCrashLeftovers(TARGET_DIR, diagnosis, broadcastLog);
+
+    if (diagnosis.verdict === 'locks-only') {
+      broadcastLog('[Recovery] ✅ Stale locks / orphan files cleaned. Data is intact — you can Start the node.\n');
+      networkStatus.state = 'stopped';
+      broadcastStatus();
+      return res.json({ success: true, action: 'cleaned', diagnosis });
+    }
+
+    // reset-required
+    for (const f of [...diagnosis.corruptBlockFiles, ...diagnosis.corruptStateFiles, ...diagnosis.corruptSpoolIndexes].slice(0, 10)) {
+      broadcastLog(`[Recovery] Damaged: ${f}\n`);
+    }
+    const resyncSource = await checkResyncSource(TARGET_DIR);
+    if (!resyncSource.ok && !force) {
+      broadcastLog(`[Recovery] ❌ Seed reset blocked: ${resyncSource.reason}\n`);
+      return res.status(409).json({
+        error: `Auto-recovery requires a seed reset, but it is not verifiably safe: ${resyncSource.reason}`,
+        needsForce: true,
+        diagnosis,
+        resyncSource,
+      });
+    }
+    if (resyncSource.ok) {
+      broadcastLog(`[Recovery] Resync source verified: ${resyncSource.url} (height ${resyncSource.remoteHeight})\n`);
+    } else {
+      broadcastLog(`[Recovery] ⚠️ Proceeding WITHOUT a verified resync source (force): ${resyncSource.reason}\n`);
+    }
+
+    const result = await performCrashRecovery(TARGET_DIR, broadcastLog);
+    broadcastLog(`[Recovery] ✅ Recovery complete (backup: ${path.relative(TARGET_DIR, result.backupDir)}).\n`);
+    broadcastLog('[Recovery] ▶ Start the node — it will resync from the network.\n');
+    networkStatus.state = 'stopped';
+    networkStatus.lastCommand = 'crashRecovery';
+    networkStatus.lastCommandTime = new Date().toISOString();
+    broadcastStatus();
+    res.json({ success: true, action: 'reset', backupDir: result.backupDir, nodes: result.nodes, diagnosis, resyncSource });
+  } catch (err: any) {
+    broadcastLog(`[Recovery] ❌ Crash recovery failed: ${err.message}\n`);
+    networkStatus.state = 'error';
+    broadcastStatus();
     res.status(500).json({ error: err.message });
   }
 });

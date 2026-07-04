@@ -12,6 +12,7 @@ import {
   XCircle,
   Unlock,
   RefreshCw,
+  Wrench,
 } from 'lucide-react';
 import { useTranslation } from '../i18n';
 import { api } from '../lib/api';
@@ -137,6 +138,74 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
   const handleClearLocks = () => {
     if (confirm(t('dashboard.confirmClearLocks'))) {
       runCommand('clearLocks');
+    }
+  };
+
+  // Crash diagnosis + auto-recovery: detects 0-byte block/state files left
+  // behind by an unexpected shutdown (power loss, forced reboot) and, after
+  // confirmation, resets data to seed for a network resync (keys preserved).
+  const handleCrashRecovery = async () => {
+    setCmdStatus((state) => ({ ...state, crashRecovery: 'running' }));
+    const finish = (status: CommandStatus) => {
+      setCmdStatus((state) => ({ ...state, crashRecovery: status }));
+      if (status !== 'running') {
+        setTimeout(() => setCmdStatus((state) => ({ ...state, crashRecovery: 'idle' })), 3000);
+      }
+    };
+    try {
+      const diag = await api.sendCommand('crashDiagnose');
+      if (diag.error) throw new Error(diag.error);
+      if (diag.running) {
+        alert(t('dashboard.crashDiagRunning'));
+        finish('idle');
+        return;
+      }
+      if (diag.verdict === 'clean') {
+        alert(t('dashboard.crashDiagClean'));
+        finish('success');
+        return;
+      }
+
+      const damageList = [
+        ...(diag.corruptBlockFiles ?? []),
+        ...(diag.corruptStateFiles ?? []),
+        ...(diag.corruptSpoolIndexes ?? []),
+        ...(diag.staleLocks ?? []),
+        ...(diag.orphanBlockFiles ?? []),
+        ...(diag.orphanSpoolFiles ?? []),
+      ].slice(0, 8).join('\n');
+
+      let force = false;
+      if (diag.verdict === 'locks-only') {
+        if (!confirm(`${t('dashboard.confirmCrashClean')}\n\n${damageList}`)) {
+          finish('idle');
+          return;
+        }
+      } else {
+        const src = diag.resyncSource;
+        const srcLine = src?.ok
+          ? `${t('dashboard.crashResyncFrom')}: ${src.url} (height ${src.remoteHeight})`
+          : `${t('dashboard.crashNoSource')}\n(${src?.reason ?? ''})`;
+        if (!confirm(`${t('dashboard.confirmCrashReset')}\n\n${damageList}\n\n${srcLine}`)) {
+          finish('idle');
+          return;
+        }
+        if (!src?.ok) {
+          if (!confirm(t('dashboard.confirmCrashForce'))) {
+            finish('idle');
+            return;
+          }
+          force = true;
+        }
+      }
+
+      const result = await api.sendCommand('crashRecovery', force ? { force: true } : undefined);
+      if (result.error) throw new Error(result.error);
+      alert(result.action === 'reset' ? t('dashboard.crashResetDone') : t('dashboard.crashCleanDone'));
+      finish('success');
+    } catch (err) {
+      alert(`${t('dashboard.crashRecoveryFailed')}\n${(err as Error).message}`);
+      finish('error');
     }
   };
 
@@ -330,6 +399,19 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
               <Unlock className="w-4 h-4" />
               {t('dashboard.clearLocks')}
               <StatusIcon cmd="clearLocks" />
+            </button>
+          )}
+
+          {nodeStopped && (
+            <button
+              onClick={handleCrashRecovery}
+              disabled={cmdStatus.crashRecovery === 'running'}
+              title={t('dashboard.crashRecoveryHint')}
+              className="flex items-center gap-2 px-5 py-2.5 bg-orange-900 hover:bg-orange-800 disabled:opacity-50 text-orange-200 rounded-lg font-medium transition-colors border border-orange-700"
+            >
+              <Wrench className="w-4 h-4" />
+              {t('dashboard.crashRecovery')}
+              <StatusIcon cmd="crashRecovery" />
             </button>
           )}
         </div>
