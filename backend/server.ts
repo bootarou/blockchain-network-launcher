@@ -1252,7 +1252,28 @@ app.get('/api/docker-env', (_req, res) => {
 // Network status endpoint
 // =============================================================================
 
+// networkStatus lives in memory, so it drifts from reality when containers
+// are started/stopped outside this API (manual docker compose, node crash,
+// crash recovery followed by an external start).  Reconcile the two steady
+// states against the actual container state on poll; transitional states
+// ('starting' / 'stopping') belong to an in-flight command and are left alone.
+let lastStateReconcileAt = 0;
 app.get('/api/status', (_req, res) => {
+  const now = Date.now();
+  if (
+    !isStartSequenceInFlight
+    && (networkStatus.state === 'stopped' || networkStatus.state === 'running')
+    && now - lastStateReconcileAt > 4_000
+  ) {
+    lastStateReconcileAt = now;
+    const actual = areNodeContainersRunning() ? 'running' : 'stopped';
+    if (networkStatus.state !== actual) {
+      networkStatus.state = actual;
+      networkStatus.lastCommand = '(reconciled with container state)';
+      networkStatus.lastCommandTime = new Date().toISOString();
+      broadcastStatus();
+    }
+  }
   res.json(networkStatus);
 });
 
@@ -9112,8 +9133,10 @@ const NODE_CONTAINER_NAMES = ['api-node-0', 'api-node-0-broker', 'node', 'broker
 function areNodeContainersRunning(): boolean {
   try {
     const out = execSync(`docker ps --format '{{.Names}}'`, { timeout: 15_000, stdio: 'pipe' }).toString();
-    const running = new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
-    return NODE_CONTAINER_NAMES.some((n) => running.has(n));
+    const running = out.split('\n').map((s) => s.trim()).filter(Boolean);
+    return running.some(
+      (n) => NODE_CONTAINER_NAMES.includes(n) || /api-node|peer-node|rest-gateway/.test(n),
+    );
   } catch {
     return false;
   }
