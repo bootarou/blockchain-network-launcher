@@ -280,20 +280,25 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   // Official mainnet/testnet: network-level parameters are fixed by the chain,
   // so only node-local categories/fields are shown.
   const isPublicNet = isPublicNetworkPreset(config.preset);
-  const visibleCategories = isPublicNet
+  // customOnly categories (CUSTOM_CONFIG_PATCHES fields) are shown only when
+  // a custom server image version is selected — hides them when irrelevant
+  // and prevents accidental use with official images.
+  const isCustomVersion = String(config.catapultVersion ?? '').startsWith('custom');
+  const visibleCategories = (isPublicNet
     ? CATEGORIES.filter((c) => c.visibleOnPublicNetwork)
-    : CATEGORIES;
+    : CATEGORIES
+  ).filter((c) => !c.customOnly || isCustomVersion);
   const visibleFields = (fields: FieldMeta[]) =>
     isPublicNet ? fields.filter((f) => f.editableOnPublicNetwork) : fields;
 
-  // If the active tab disappears after switching to an official network,
-  // fall back to General.
+  // If the active tab disappears (switching to an official network, or
+  // deselecting the custom version), fall back to General.
   useEffect(() => {
-    if (isPublicNet && !visibleCategories.some((c) => c.id === activeTab)) {
+    if (!visibleCategories.some((c) => c.id === activeTab)) {
       setActiveTab('general');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPublicNet, activeTab]);
+  }, [isPublicNet, isCustomVersion, activeTab]);
 
   // Scalar field change — with preset auto-switch & version auto-fill
   const handleFieldChange = (key: string, value: unknown) => {

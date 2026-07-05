@@ -866,6 +866,21 @@ app.post('/api/preset', (req, res) => {
     if (Array.isArray(configData.inflation)) {
       uiMeta.inflation = configData.inflation;
     }
+    // Persist user-set values for CUSTOM_CONFIG_PATCHES keys (custom server
+    // image testing). Empty values are dropped → .env default applies.
+    {
+      const customKeys = CUSTOM_EXTRA_PATCH_DEFAULTS.flatMap((p) => Object.keys(p.props));
+      if (customKeys.length > 0) {
+        const vals: Record<string, string> = {};
+        for (const k of customKeys) {
+          const v = configData[k];
+          if (v !== undefined && v !== null && String(v).trim() !== '') {
+            vals[k] = String(v).trim();
+          }
+        }
+        uiMeta.customConfigValues = vals;
+      }
+    }
     fs.writeFileSync(UI_META_PATH, JSON.stringify(uiMeta, null, 2), 'utf8');
 
     const structured = flatConfigToBootstrapPreset(configData);
@@ -900,6 +915,14 @@ app.get('/api/preset', (req, res) => {
         try {
           const meta = parseJsonFile(UI_META_PATH);
           flat = { ...meta, ...flat };
+          // Expose saved CUSTOM_CONFIG_PATCHES values as flat keys so the
+          // Configuration UI's custom fields populate (keys never collide
+          // with preset keys — they are custom-server-only properties).
+          if (meta.customConfigValues && typeof meta.customConfigValues === 'object') {
+            for (const [k, v] of Object.entries(meta.customConfigValues as Record<string, unknown>)) {
+              if (flat[k] === undefined) flat[k] = v;
+            }
+          }
         } catch { /* ignore corrupt meta */ }
       }
 
@@ -2920,6 +2943,11 @@ function parseCustomConfigPatches(raw: string): PropertiesPatch[] {
   return result;
 }
 
+// Frozen copies of the env-parsed CUSTOM_CONFIG_PATCHES defaults. The live
+// postGenPatches get their values overridden per-start from the Configuration
+// UI (ui-meta customConfigValues); these are the fallbacks for unset keys.
+const CUSTOM_EXTRA_PATCH_DEFAULTS: PropertiesPatch[] = [];
+
 if (process.env.CUSTOM_SERVER_IMAGE) {
   const v3 = CATAPULT_VERSIONS.find((v) => v.id === 'v3')!;
   // Extra properties to append (applied only to custom versions, so official
@@ -2927,6 +2955,7 @@ if (process.env.CUSTOM_SERVER_IMAGE) {
   const extraPatches = process.env.CUSTOM_CONFIG_PATCHES
     ? parseCustomConfigPatches(process.env.CUSTOM_CONFIG_PATCHES)
     : [];
+  CUSTOM_EXTRA_PATCH_DEFAULTS.push(...extraPatches.map((p) => ({ ...p, props: { ...p.props } })));
   const customImages = process.env.CUSTOM_SERVER_IMAGE
     .split(',')
     .map((s) => s.trim())
@@ -2966,8 +2995,47 @@ if (process.env.CUSTOM_SERVER_IMAGE) {
   }
 }
 
+/**
+ * Override postGenPatches (CUSTOM_CONFIG_PATCHES) values with user-set values
+ * from the Configuration UI, persisted in ui-meta customConfigValues.
+ * Empty / missing UI values fall back to the .env defaults.
+ */
+function applyCustomConfigValueOverrides(ver: CatapultVersionDef): void {
+  if (!ver.postGenPatches?.length || CUSTOM_EXTRA_PATCH_DEFAULTS.length === 0) return;
+  let uiVals: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      const meta = parseJsonFile(UI_META_PATH);
+      if (meta.customConfigValues && typeof meta.customConfigValues === 'object') {
+        uiVals = meta.customConfigValues as Record<string, unknown>;
+      }
+    }
+  } catch { /* fall back to env defaults */ }
+
+  for (const patch of ver.postGenPatches) {
+    const defaults = CUSTOM_EXTRA_PATCH_DEFAULTS.find(
+      (d) => d.file === patch.file && d.section === patch.section,
+    );
+    if (!defaults) continue;
+    for (const key of Object.keys(defaults.props)) {
+      const uiVal = String(uiVals[key] ?? '').trim();
+      const effective = uiVal || defaults.props[key];
+      if (patch.props[key] !== effective) {
+        patch.props[key] = effective;
+        broadcastLog(`[CustomConfig] ${patch.file} ${patch.section} ${key} = ${effective}${uiVal ? ' (UI)' : ' (env default)'}\n`);
+      }
+    }
+  }
+}
+
 /** Resolve which version def to use from the custom-preset YAML */
 function resolveVersion(): CatapultVersionDef {
+  const ver = resolveVersionInner();
+  applyCustomConfigValueOverrides(ver);
+  return ver;
+}
+
+function resolveVersionInner(): CatapultVersionDef {
   // Primary: use symbolServerImage from the saved custom-preset.yml.
   // This is always accurate — it is set from the actual image tag chosen
   // during Join or Config, and does not depend on nodeInfo.version parsing.

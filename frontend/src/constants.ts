@@ -126,6 +126,8 @@ export interface CategoryMeta {
   requiresFullReset?: boolean;
   /** true = 公式ネットワーク(mainnet/testnet)参加時もサイドバーに表示するカテゴリ */
   visibleOnPublicNetwork?: boolean;
+  /** true = カスタムサーバーイメージ(catapultVersion=custom*)選択時のみ表示 */
+  customOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +604,51 @@ export const CATEGORIES: CategoryMeta[] = [
     ],
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Custom config patches (VITE_CUSTOM_CONFIG_PATCHES) — カスタムサーバーイメージ
+// テスト用の追加プロパティを Configuration UI で編集可能にする。
+// 書式はバックエンドの CUSTOM_CONFIG_PATCHES と同一:
+//   <file>:[<section>]:<key>=<value>   （複数は ; または改行区切り）
+// docker-compose が CUSTOM_CONFIG_PATCHES を VITE_ 名でも転送するため、
+// .env の設定は1箇所で済む。値が空のフィールドは .env の既定値が使われる。
+// カテゴリは catapultVersion=custom* 選択時のみ表示（ConfigForm 側で制御）。
+// ---------------------------------------------------------------------------
+export interface CustomPatchField {
+  file: string;
+  section: string;
+  key: string;
+  defaultValue: string;
+}
+
+export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] =
+  (((import.meta.env.VITE_CUSTOM_CONFIG_PATCHES as string | undefined) ?? '')
+    .split(/[\n;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const m = entry.match(/^([^:]+):(\[[^\]]+\]):([^=]+)=(.*)$/);
+      if (!m) return null;
+      return { file: m[1].trim(), section: m[2].trim(), key: m[3].trim(), defaultValue: m[4].trim() };
+    })
+    .filter(Boolean)) as CustomPatchField[];
+
+if (CUSTOM_CONFIG_PATCH_FIELDS.length > 0) {
+  CATEGORIES.unshift({
+    id: 'customConfig',
+    label: 'カスタム設定',
+    icon: 'settings',
+    description: 'CUSTOM_CONFIG_PATCHES で定義されたカスタムサーバー用プロパティ',
+    customOnly: true,
+    fields: CUSTOM_CONFIG_PATCH_FIELDS.map((f) => ({
+      key: f.key,
+      label: f.key,
+      type: 'text' as FieldType,
+      description: `${f.file} ${f.section} に注入されます。未入力時は .env の既定値（${f.defaultValue || '空'}）を使用。`,
+      placeholder: f.defaultValue,
+    })),
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Node / Gateway field metadata

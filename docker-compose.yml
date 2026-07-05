@@ -40,6 +40,9 @@ services:
       - VITE_CUSTOM_SERVER_IMAGE=${VITE_CUSTOM_SERVER_IMAGE:-}
       - VITE_CUSTOM_REST_IMAGE=${VITE_CUSTOM_REST_IMAGE:-}
       - VITE_CUSTOM_TOOLS_IMAGE=${VITE_CUSTOM_TOOLS_IMAGE:-}
+      # Same value as CUSTOM_CONFIG_PATCHES, exposed to the Vite frontend so
+      # the Configuration UI can render editable fields for the custom keys.
+      - VITE_CUSTOM_CONFIG_PATCHES=${CUSTOM_CONFIG_PATCHES:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/api/status"]
       interval: 30s

@@ -694,6 +694,8 @@ export const en: TranslationDict = {
   // ===========================================================================
   // Categories (constants.ts metadata)
   // ===========================================================================
+  'cat.customConfig.label': 'Custom Settings',
+  'cat.customConfig.desc': 'Custom server properties defined by CUSTOM_CONFIG_PATCHES',
   'cat.general.label': 'General',
   'cat.general.desc': 'Basic network settings & genesis info',
   'cat.nemesisMosaics.label': 'Nemesis Mosaics',

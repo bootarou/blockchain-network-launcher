@@ -694,6 +694,8 @@ export const ja: TranslationDict = {
   // ===========================================================================
   // Categories (constants.ts metadata)
   // ===========================================================================
+  'cat.customConfig.label': 'カスタム設定',
+  'cat.customConfig.desc': 'CUSTOM_CONFIG_PATCHES で定義されたカスタムサーバー用プロパティ',
   'cat.general.label': 'General',
   'cat.general.desc': 'ネットワーク基本設定・ジェネシス情報',
   'cat.nemesisMosaics.label': 'ネメシスモザイク',
