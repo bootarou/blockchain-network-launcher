@@ -25,6 +25,7 @@ import {  AlertTriangle,  BarChart3,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useTranslation } from '../i18n';
+import { CUSTOM_CONFIG_PATCH_FIELDS } from '../constants';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -867,7 +868,24 @@ export function NodeStats() {
   const [loading, setLoading] = useState(false);
   const [peersOpen, setPeersOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  // chainFinalizationHeight (CUSTOM_CONFIG_PATCHES) — shown under Block Height
+  // when a custom server image is selected so the user can see the configured
+  // chain finalization height at a glance.
+  const [finalizationSetting, setFinalizationSetting] = useState<string | null>(null);
   const { t } = useTranslation();
+
+  useEffect(() => {
+    const cfField = CUSTOM_CONFIG_PATCH_FIELDS.find((f) => f.key === 'chainFinalizationHeight');
+    if (!cfField) return;
+    api.loadPreset()
+      .then((cfg: Record<string, unknown> | null) => {
+        if (!cfg || !String(cfg.catapultVersion ?? '').startsWith('custom')) return;
+        // UI-saved value takes precedence; fall back to the .env default
+        const v = String(cfg.chainFinalizationHeight ?? '').trim() || cfField.defaultValue;
+        if (v) setFinalizationSetting(v);
+      })
+      .catch(() => { /* keep hidden */ });
+  }, []);
 
   const fetchStats = useCallback(async () => {
     setLoading(true);
@@ -991,6 +1009,7 @@ export function NodeStats() {
               icon={<Layers className="w-4 h-4" />}
               label={t('stats.blockHeight')}
               value={formatHeight(stats.chain?.height)}
+              sub={finalizationSetting ? `chainFinalizationHeight: ${finalizationSetting}` : undefined}
               color="text-emerald-400"
             />
 
