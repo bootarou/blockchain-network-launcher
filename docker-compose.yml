@@ -29,6 +29,17 @@ services:
       # Set ADMIN_PASSWORD to enable login protection for the Web UI.
       # When empty or unset, authentication is disabled (open access).
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # ── Custom catapult server image testing ──
+      # Forward the custom-image vars from .env into the container so the
+      # backend registers the "custom" Catapult version (and the frontend Vite
+      # dev server exposes the VITE_* ones to the dropdown). When unset they are
+      # empty strings, which the backend treats as "disabled".
+      - CUSTOM_SERVER_IMAGE=${CUSTOM_SERVER_IMAGE:-}
+      - CUSTOM_NEEDS_OPENSSL_PATCH=${CUSTOM_NEEDS_OPENSSL_PATCH:-}
+      - CUSTOM_CONFIG_PATCHES=${CUSTOM_CONFIG_PATCHES:-}
+      - VITE_CUSTOM_SERVER_IMAGE=${VITE_CUSTOM_SERVER_IMAGE:-}
+      - VITE_CUSTOM_REST_IMAGE=${VITE_CUSTOM_REST_IMAGE:-}
+      - VITE_CUSTOM_TOOLS_IMAGE=${VITE_CUSTOM_TOOLS_IMAGE:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/api/status"]
       interval: 30s

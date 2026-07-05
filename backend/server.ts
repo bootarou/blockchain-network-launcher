@@ -1972,6 +1972,10 @@ app.post('/api/certificate-renew', async (req, res) => {
 
     broadcastLog('[Cert] Starting certificate renewal...\n');
 
+    // Ensure the CA template has proper CA extensions before regeneration
+    // (required by OpenSSL ≥3.6 inside newer server images).
+    patchCertCaTemplates();
+
     // Run symbol-bootstrap renewCertificates
     const args = [`--password=${password}`];
     if (force) args.push('--force');
@@ -2511,6 +2515,59 @@ function resolveBootstrapTemplateDirs(): string[] {
   return dirs;
 }
 
+// ---------------------------------------------------------------------------
+// Patch symbol-bootstrap's cert template so the self-signed CA certificate
+// carries proper CA extensions (basicConstraints CA:true, keyCertSign).
+// OpenSSL ≥ 3.6 (e.g. inside newer locally-built server images) rejects a CA
+// cert without basicConstraints during `openssl verify`:
+//   error 79 at 1 depth lookup: invalid CA certificate
+// which makes createNodeCertificates.sh fail. Older OpenSSL accepts certs
+// WITH these extensions too, so patching unconditionally is safe (official
+// V2/V3 images keep working).
+// ---------------------------------------------------------------------------
+function patchCertCaTemplates() {
+  const candidates = new Set<string>();
+  try {
+    const found = execSync(
+      'find / -path /proc -prune -o -path /sys -prune -o -name "ca.cnf.mustache" -print 2>/dev/null',
+      { timeout: 15_000, stdio: 'pipe' }
+    ).toString().trim();
+    for (const line of found.split('\n')) {
+      const f = line.trim();
+      if (f) candidates.add(f);
+    }
+  } catch { /* best effort */ }
+
+  if (candidates.size === 0) {
+    broadcastLog('[Pre-Patch] ⚠️  No ca.cnf.mustache found — CA extension patch skipped\n');
+    return;
+  }
+
+  for (const file of candidates) {
+    try {
+      const content = fs.readFileSync(file, 'utf-8');
+      if (content.includes('basicConstraints')) {
+        broadcastLog(`[Pre-Patch] ✅ ${file} already has CA extensions\n`);
+        continue;
+      }
+      if (!content.includes('[req]') || !content.includes('[dn]')) {
+        broadcastLog(`[Pre-Patch] ⚠️  ${file}: unexpected layout — skipping CA extension patch\n`);
+        continue;
+      }
+      const patched = content
+        .replace('[req]', '[req]\nx509_extensions = v3_ca')
+        .replace(
+          '[dn]',
+          '[v3_ca]\nbasicConstraints = critical,CA:true\nkeyUsage = critical, keyCertSign, cRLSign\nsubjectKeyIdentifier = hash\n\n[dn]',
+        );
+      fs.writeFileSync(file, patched, 'utf-8');
+      broadcastLog(`[Pre-Patch] ✅ Added CA extensions (basicConstraints CA:true) to ${file}\n`);
+    } catch (e: any) {
+      broadcastLog(`[Pre-Patch] ⚠️  Could not patch ${file}: ${e.message}\n`);
+    }
+  }
+}
+
 function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string) {
   // Keep version defaults during config generation. Nemgen requires
   // fork_heights.uniqueAggregateTransactionHash to be parseable (non-empty).
@@ -2801,6 +2858,82 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Optional custom Catapult version(s) — for testing locally-built server images.
+// Enable by setting CUSTOM_SERVER_IMAGE. You can list several, comma-separated,
+// to get more than one choice, e.g.:
+//   CUSTOM_SERVER_IMAGE=catapult-server-bnl:local,catapult-server-bnl:dev
+// Each entry becomes its own version (id custom, custom-2, custom-3, ...).
+// They inherit V3's config patches / removeProps. The OpenSSL symlink patch is
+// OFF by default so custom-preset.yml keeps the image name verbatim across
+// re-runs (the patch path renames the image to symbol-server-patched:*, which
+// is not idempotent for non-symbolplatform images). If your image needs the
+// /usr/catapult/deps/openssl.cnf symlink, bake it into your Dockerfile, or set
+// CUSTOM_NEEDS_OPENSSL_PATCH=true to have the launcher add it (applies to all).
+// ---------------------------------------------------------------------------
+/**
+ * Parse CUSTOM_CONFIG_PATCHES into PropertiesPatch[] — extra properties to
+ * inject into generated config files when a custom server image is selected.
+ * This makes it easy to test a catapult image that requires a brand-new
+ * property without editing the source.
+ *
+ * Format: one patch per line (or ';'-separated), each:
+ *   <file>:[<section>]:<key>=<value>
+ * Example (.env):
+ *   CUSTOM_CONFIG_PATCHES="config-network.properties:[chain]:chainFinalizationHeight=0"
+ * Multiple:
+ *   CUSTOM_CONFIG_PATCHES="config-network.properties:[chain]:chainFinalizationHeight=0; config-node.properties:[node]:enableAutoSyncCleanup=true"
+ * The section must already exist in the target file (it is the insertion
+ * anchor). Entries sharing a file+section are merged. An empty value
+ * (e.g. "...:[fork_heights]:someFlag=") writes a valued-less flag line.
+ */
+function parseCustomConfigPatches(raw: string): PropertiesPatch[] {
+  const byFileSection = new Map<string, PropertiesPatch>();
+  const entries = raw.split(/[\n;]+/).map((s) => s.trim()).filter(Boolean);
+  for (const entry of entries) {
+    const m = entry.match(/^([^:]+):(\[[^\]]+\]):([^=]+)=(.*)$/);
+    if (!m) {
+      console.warn(`[CustomConfig] Ignoring malformed CUSTOM_CONFIG_PATCHES entry: "${entry}" (expected <file>:[<section>]:<key>=<value>)`);
+      continue;
+    }
+    const [, file, section, key, value] = m;
+    const mapKey = `${file.trim()}|${section.trim()}`;
+    let patch = byFileSection.get(mapKey);
+    if (!patch) {
+      patch = { file: file.trim(), section: section.trim(), props: {} };
+      byFileSection.set(mapKey, patch);
+    }
+    patch.props[key.trim()] = value.trim();
+  }
+  const result = [...byFileSection.values()];
+  if (result.length > 0) {
+    console.log(`[CustomConfig] Loaded ${result.length} extra config patch set(s) from CUSTOM_CONFIG_PATCHES`);
+  }
+  return result;
+}
+
+if (process.env.CUSTOM_SERVER_IMAGE) {
+  const v3 = CATAPULT_VERSIONS.find((v) => v.id === 'v3')!;
+  // Extra properties to append (applied only to custom versions, so official
+  // testnet/mainnet runs are never affected).
+  const extraPatches = process.env.CUSTOM_CONFIG_PATCHES
+    ? parseCustomConfigPatches(process.env.CUSTOM_CONFIG_PATCHES)
+    : [];
+  const customImages = process.env.CUSTOM_SERVER_IMAGE
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  customImages.forEach((image, i) => {
+    CATAPULT_VERSIONS.push({
+      id: i === 0 ? 'custom' : `custom-${i + 1}`,
+      serverImage: image,
+      needsOpenSslPatch: process.env.CUSTOM_NEEDS_OPENSSL_PATCH === 'true',
+      configPatches: [...v3.configPatches, ...extraPatches],
+      removeProps: v3.removeProps,
+    });
+  });
+}
+
 /** Resolve which version def to use from the custom-preset YAML */
 function resolveVersion(): CatapultVersionDef {
   // Primary: use symbolServerImage from the saved custom-preset.yml.
@@ -2811,7 +2944,26 @@ function resolveVersion(): CatapultVersionDef {
       const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
       const img = String(doc.symbolServerImage ?? '').toLowerCase();
       broadcastLog(`[resolveVersion] custom-preset symbolServerImage=${img}\n`);
-      
+
+      // Exact full-image match first — required when several custom images
+      // share the same tag (e.g. two locally-built images both tagged :local),
+      // where the tag-substring heuristic below would be ambiguous.
+      // Also match each version's OpenSSL-patched name, so a preset that was
+      // rewritten by ensurePatchedImage still resolves to the right version.
+      const exact = CATAPULT_VERSIONS.find((v) => {
+        const base = v.serverImage.toLowerCase();
+        const tag = base.split(':')[1] ?? 'latest';
+        const isCustom = v.id === 'custom' || v.id.startsWith('custom-');
+        const patched = isCustom
+          ? `${base.split(':')[0].replace(/\//g, '-')}-patched:${tag}`
+          : `symbol-server-patched:${tag}`;
+        return img === base || img === patched;
+      });
+      if (exact) {
+        broadcastLog(`[resolveVersion] Matched from symbolServerImage (exact): ${exact.id}\n`);
+        return exact;
+      }
+
       for (const ver of CATAPULT_VERSIONS) {
         // 'symbolplatform/symbol-server:gcc-1.0.3.9' から 'gcc-1.0.3.9' を抽出
         const expectedTag = ver.serverImage.split(':')[1]?.toLowerCase();
@@ -2859,14 +3011,21 @@ async function ensurePatchedImage(version: CatapultVersionDef): Promise<string> 
     return '';
   }
 
-  // Read actual symbolServerImage from the preset YAML
+  const isCustomVersion = version.id === 'custom' || version.id.startsWith('custom-');
+
+  // Read actual symbolServerImage from the preset YAML.
+  // For custom versions the env var (version.serverImage) is the source of
+  // truth — the preset may hold a stale "*-patched:*" name from a previous
+  // run, and there is no way to recover the original custom name from it.
   let baseImage = version.serverImage;
-  try {
-    if (fs.existsSync(PRESET_PATH)) {
-      const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
-      if (doc.symbolServerImage) baseImage = String(doc.symbolServerImage);
-    }
-  } catch { /* use version default */ }
+  if (!isCustomVersion) {
+    try {
+      if (fs.existsSync(PRESET_PATH)) {
+        const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf-8')) as Record<string, unknown>;
+        if (doc.symbolServerImage) baseImage = String(doc.symbolServerImage);
+      }
+    } catch { /* use version default */ }
+  }
 
   // If the preset already has a patched tag (e.g. from a shared package export),
   // recover the original image name so we can pull it from Docker Hub.
@@ -2882,9 +3041,15 @@ async function ensurePatchedImage(version: CatapultVersionDef): Promise<string> 
     } catch { /* best effort */ }
   }
 
-  // Derive patched tag: "symbolplatform/symbol-server:gcc-1.0.3.9" → "symbol-server-patched:gcc-1.0.3.9"
+  // Derive patched tag:
+  //   "symbolplatform/symbol-server:gcc-1.0.3.9" → "symbol-server-patched:gcc-1.0.3.9"
+  //   custom "catapult-server-bnl:local"         → "catapult-server-bnl-patched:local"
+  // Custom images keep their own repo name so two customs never collide and
+  // the original is always recoverable from version.serverImage (env).
   const tag = baseImage.split(':')[1] ?? 'latest';
-  const patchedTag = `symbol-server-patched:${tag}`;
+  const patchedTag = isCustomVersion
+    ? `${baseImage.split(':')[0].replace(/\//g, '-')}-patched:${tag}`
+    : `symbol-server-patched:${tag}`;
 
   broadcastLog(`[Setup] Ensuring patched image: ${patchedTag} (from ${baseImage})\n`);
 
@@ -2900,7 +3065,8 @@ async function ensurePatchedImage(version: CatapultVersionDef): Promise<string> 
     broadcastLog(`[Setup] Patched image ${patchedTag} already exists\n`);
   } else {
     broadcastLog(`[Setup] Building patched image ${patchedTag} ...\n`);
-    const dockerfile = `FROM ${baseImage}\nRUN ln -sf /etc/ssl/openssl.cnf /usr/catapult/deps/openssl.cnf\n`;
+    // mkdir -p: locally-built custom images may not have /usr/catapult/deps at all
+    const dockerfile = `FROM ${baseImage}\nRUN mkdir -p /usr/catapult/deps && ln -sf /etc/ssl/openssl.cnf /usr/catapult/deps/openssl.cnf\n`;
 
     await new Promise<void>((resolve, reject) => {
       const cp = spawn('docker', ['build', '-t', patchedTag, '-'], {
@@ -2965,7 +3131,7 @@ function rewriteGeneratedPresetImages(
       if (cur !== patchedTag && (
         cur === baseImage ||
         cur.startsWith('symbolplatform/symbol-server:') ||
-        cur.startsWith('symbol-server-patched:')
+        cur.includes('-patched:')   // any previously-patched name (official or custom)
       )) {
         doc[key] = patchedTag;
         changed = true;
@@ -2981,7 +3147,7 @@ function rewriteGeneratedPresetImages(
           if (cur !== patchedTag && (
             cur === baseImage ||
             cur.startsWith('symbolplatform/symbol-server:') ||
-            cur.startsWith('symbol-server-patched:')
+            cur.includes('-patched:')   // any previously-patched name (official or custom)
           )) {
             node[imgKey] = patchedTag;
             changed = true;
@@ -7940,6 +8106,8 @@ app.post('/api/commands/start', async (req, res) => {
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
       broadcastLog('[Pre-Patch] Skipping npx cache priming for startup stability\n');
       patchMustacheTemplates(version, basePreset);
+      // CA cert extensions (OpenSSL ≥3.6 strictness — see patchCertCaTemplates)
+      patchCertCaTemplates();
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
       // (e.g. different bootstrap install layout on join PC), directly patch

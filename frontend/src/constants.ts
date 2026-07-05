@@ -66,6 +66,37 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Optional custom version(s) — for testing locally-built server images.
+// Set VITE_CUSTOM_SERVER_IMAGE (e.g. "catapult-server-bnl:local") to add a
+// "Custom" entry to the Catapult Version dropdown. List several comma-separated
+// to get more than one choice, e.g. "catapult-server-bnl:local,catapult-server-bnl:dev".
+// Selecting an entry fills the Server Image field with that image. REST/tools
+// images fall back to V3's unless VITE_CUSTOM_REST_IMAGE / VITE_CUSTOM_TOOLS_IMAGE
+// are also set (these apply to every custom entry).
+// NOTE: the backend must also have CUSTOM_SERVER_IMAGE set to the same list so
+// it resolves the custom version instead of defaulting to V3.
+// ---------------------------------------------------------------------------
+const _customServerImages = ((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (_customServerImages.length > 0) {
+  const _v3 = CATAPULT_VERSIONS[0];
+  _customServerImages.forEach((image, i) => {
+    CATAPULT_VERSIONS.push({
+      id: i === 0 ? 'custom' : `custom-${i + 1}`,
+      label: `Custom — ${image}`,
+      description: 'ローカルビルドのサーバーイメージをテスト（VITE_CUSTOM_SERVER_IMAGE / backend CUSTOM_SERVER_IMAGE）。',
+      symbolServerImage: image,
+      symbolRestImage: (import.meta.env.VITE_CUSTOM_REST_IMAGE as string | undefined) || _v3.symbolRestImage,
+      symbolServerToolsImage: (import.meta.env.VITE_CUSTOM_TOOLS_IMAGE as string | undefined) || image,
+      needsOpenSslPatch: false,
+      configPatches: _v3.configPatches,
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Field metadata types
 // ---------------------------------------------------------------------------
 
