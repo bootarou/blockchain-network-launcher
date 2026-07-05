@@ -7021,6 +7021,16 @@ app.get('/api/share/export', (req, res) => {
       /symbol-server-patched:(\S+)/g,
       'symbolplatform/symbol-server:$1',
     );
+    // Same for custom-version patched names (e.g. catapult-server-bnl-patched:local
+    // → catapult-server-bnl:local): the receiving machine can have the original
+    // custom image loaded, but never our locally-built "-patched" derivative.
+    for (const ver of CATAPULT_VERSIONS) {
+      if (ver.id !== 'custom' && !ver.id.startsWith('custom-')) continue;
+      const base = ver.serverImage;
+      const tag = base.split(':')[1] ?? 'latest';
+      const patched = `${base.split(':')[0].replace(/\//g, '-')}-patched:${tag}`;
+      presetContent = presetContent.split(patched).join(base);
+    }
 
     // Backfill auto-generated values from TARGET_DIR/preset.yml
     // (symbol-bootstrap generates nemesisGenerationHashSeed, nemesisSignerPublicKey,
