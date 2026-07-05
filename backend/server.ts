@@ -2796,6 +2796,14 @@ interface CatapultVersionDef {
   serverImage: string;
   needsOpenSslPatch: boolean;
   configPatches: PropertiesPatch[];
+  /**
+   * Extra patches applied ONLY to generated config files in the target dir,
+   * NEVER to the shared symbol-bootstrap mustache templates (npm/npx caches).
+   * Used for CUSTOM_CONFIG_PATCHES: writing custom-only properties into the
+   * shared templates would leak them into later official (v2/v3) runs on the
+   * same machine, where catapult's strict config parser rejects unknown keys.
+   */
+  postGenPatches?: PropertiesPatch[];
   /** Properties to REMOVE from config files (e.g. stale props from a previous version run). */
   removeProps?: { file: string; keys: string[] }[];
 }
@@ -2928,10 +2936,34 @@ if (process.env.CUSTOM_SERVER_IMAGE) {
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
       serverImage: image,
       needsOpenSslPatch: process.env.CUSTOM_NEEDS_OPENSSL_PATCH === 'true',
-      configPatches: [...v3.configPatches, ...extraPatches],
+      configPatches: v3.configPatches,
+      // postGen only: keeps CUSTOM_CONFIG_PATCHES out of the shared mustache
+      // templates so official v2/v3 runs on this machine are never affected.
+      postGenPatches: extraPatches,
       removeProps: v3.removeProps,
     });
   });
+
+  // Defensive: make official versions STRIP the custom-only keys from their
+  // generated configs (patchGeneratedConfigs removeProps pass). This heals a
+  // machine whose bootstrap templates were polluted by an older build that
+  // wrote CUSTOM_CONFIG_PATCHES into the shared templates.
+  // NOTE: official versions get fresh copied arrays — the custom versions
+  // above hold references to the ORIGINAL v3.removeProps and must not see
+  // these keys (they would strip the very properties postGenPatches adds).
+  if (extraPatches.length > 0) {
+    for (const ver of CATAPULT_VERSIONS.filter((v) => v.id === 'v2' || v.id === 'v3')) {
+      const merged = (ver.removeProps ?? []).map((r) => ({ file: r.file, keys: [...r.keys] }));
+      for (const p of extraPatches) {
+        let set = merged.find((r) => r.file === p.file);
+        if (!set) { set = { file: p.file, keys: [] }; merged.push(set); }
+        for (const k of Object.keys(p.props)) {
+          if (!set.keys.includes(k)) set.keys.push(k);
+        }
+      }
+      ver.removeProps = merged;
+    }
+  }
 }
 
 /** Resolve which version def to use from the custom-preset YAML */
@@ -4447,7 +4479,9 @@ function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, b
 
   // Keep version defaults here as well. Official fork heights are
   // synchronized later from source node network properties.
-  const patches = version.configPatches;
+  // postGenPatches (CUSTOM_CONFIG_PATCHES) are applied here — to generated
+  // files only — and are deliberately NOT applied to mustache templates.
+  const patches = [...version.configPatches, ...(version.postGenPatches ?? [])];
   const removePropsSet = version.removeProps ?? [];
   const nodesDir = path.join(targetDir, 'nodes');
   if (!fs.existsSync(nodesDir)) return;
@@ -6533,7 +6567,7 @@ function hardenGeneratedConfigs(targetDir: string, version: CatapultVersionDef):
           let content = fs.readFileSync(configNetworkPath, 'utf-8');
           let changed = false;
 
-          for (const patch of version.configPatches) {
+          for (const patch of [...version.configPatches, ...(version.postGenPatches ?? [])]) {
             if (patch.file !== 'config-network.properties') continue;
             for (const [key, value] of Object.entries(patch.props)) {
               if (!String(value).trim()) continue;
@@ -6621,7 +6655,7 @@ function validateGeneratedConfigsOrThrow(targetDir: string, version: CatapultVer
         errors.push(`${nodeName}/${configDir}: config-network.properties missing`);
       } else {
         const networkContent = fs.readFileSync(networkConfigPath, 'utf-8');
-        for (const patch of version.configPatches) {
+        for (const patch of [...version.configPatches, ...(version.postGenPatches ?? [])]) {
           if (patch.file !== 'config-network.properties') continue;
           for (const [key, value] of Object.entries(patch.props)) {
             // Only enforce properties that must have concrete values.
@@ -8114,7 +8148,7 @@ app.post('/api/commands/start', async (req, res) => {
       // any already-generated config-node.properties files that may exist in
       // the target dir from a previous partial run.  This handles the case
       // where config was run previously and left nodes/ behind without maxLogFiles.
-      if (version.configPatches.length > 0) {
+      if (version.configPatches.length > 0 || (version.postGenPatches?.length ?? 0) > 0) {
         const nodesDir = path.join(TARGET_DIR, 'nodes');
         if (fs.existsSync(nodesDir)) {
           broadcastLog('[System] Step 0c2 – Patching any pre-existing config files (pre-nemgen)...\n');
