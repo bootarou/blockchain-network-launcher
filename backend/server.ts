@@ -4502,6 +4502,62 @@ function backfillMosaicIds(targetDir: string, basePreset?: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Inject CUSTOM_CONFIG_PATCHES [chain] properties into the REST gateway's own
+// config-network.properties copy (gateways/<gw>/api-node-config/), which
+// symbol-bootstrap's `compose` step generates SEPARATELY from the node config.
+// symbol-rest's GET /network/properties returns the whole [chain] section
+// verbatim (ini.parse passthrough), so once the key is present here it becomes
+// discoverable from the network. Must run AFTER compose. Only postGenPatches
+// (custom keys) are injected — never the version's internal V3 defaults.
+// ---------------------------------------------------------------------------
+function patchGatewayCustomConfigs(targetDir: string, version: CatapultVersionDef) {
+  const patches = (version.postGenPatches ?? []).filter(
+    (p) => p.file === 'config-network.properties',
+  );
+  if (patches.length === 0) return;
+
+  const gwRoot = path.join(targetDir, 'gateways');
+  if (!fs.existsSync(gwRoot)) return;
+
+  for (const gwName of fs.readdirSync(gwRoot)) {
+    const cfgPath = path.join(gwRoot, gwName, 'api-node-config', 'config-network.properties');
+    if (!fs.existsSync(cfgPath)) continue;
+
+    let content = fs.readFileSync(cfgPath, 'utf-8');
+    const original = content;
+
+    for (const patch of patches) {
+      for (const [key, value] of Object.entries(patch.props)) {
+        const keyRegex = new RegExp(`^\\s*${key}\\s*=`, 'm');
+        if (keyRegex.test(content)) {
+          // Key present — update its value so REST reflects the current setting.
+          content = content.replace(
+            new RegExp(`^(\\s*${key}\\s*=).*$`, 'm'),
+            `$1 ${value}`.trimEnd(),
+          );
+          continue;
+        }
+        const sectionIdx = content.indexOf(patch.section);
+        if (sectionIdx === -1) continue;
+        const afterSection = content.slice(sectionIdx);
+        const nextSection = afterSection.search(/\n\[(?!\s*$)/);
+        const insertPos = nextSection !== -1 ? sectionIdx + nextSection : content.length;
+        content =
+          content.slice(0, insertPos).trimEnd() +
+          `\n${key} = ${value}\n` +
+          (nextSection !== -1 ? '\n' : '') +
+          content.slice(insertPos).trimStart();
+      }
+    }
+
+    if (content !== original) {
+      fs.writeFileSync(cfgPath, content, 'utf-8');
+      broadcastLog(`[CustomConfig] Injected custom [chain] props into gateway ${gwName} (now visible via REST /network/properties)\n`);
+    }
+  }
+}
+
 function patchGeneratedConfigs(targetDir: string, version: CatapultVersionDef, basePreset?: string) {
   const isLikelyIniConfigFile = (filename: string): boolean =>
     filename.endsWith('.properties') || filename.endsWith('.ini');
@@ -8558,6 +8614,9 @@ app.post('/api/commands/start', async (req, res) => {
       patchStopGracePeriod(TARGET_DIR);
       patchRestJsonApiNodeHost(TARGET_DIR);
       patchDockerHostMode(TARGET_DIR);
+      // Expose CUSTOM_CONFIG_PATCHES keys via REST /network/properties by
+      // injecting them into the gateway's config-network.properties copy.
+      patchGatewayCustomConfigs(TARGET_DIR, version);
 
       // Step 4c: Overwrite peer files if joining an existing network
       //   Must happen AFTER compose because compose regenerates peers-*.json.
