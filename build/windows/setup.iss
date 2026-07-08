@@ -52,7 +52,15 @@ english.WelcomeLabel2=This wizard will set up the required environment for Symbo
 ; PowerShell スクリプトを一時ディレクトリに展開
 Source: "scripts\setup-project.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
 ; プロジェクト本体をインストール先へ同梱
-Source: "..\..\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: ".git\*,node_modules\*,frontend\node_modules\*,backend\node_modules\*,build\windows\output\*"
+; 除外理由:
+;   .env / shared\*    — ビルドマシン固有の設定・ネットワーク状態（配布厳禁）
+;   draft\* / build\*  — 開発用資産（インストーラー自身と output を含む）
+;   *.log              — ログ
+Source: "..\..\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: ".git\*,node_modules\*,frontend\node_modules\*,backend\node_modules\*,build\*,draft\*,shared\*,.env,*.log,.claude\*"
+
+[Dirs]
+; shared は中身を除外して同梱するため、空ディレクトリとして作成
+Name: "{app}\shared"
 
 [Run]
 ; Step 1: プロジェクトセットアップ
