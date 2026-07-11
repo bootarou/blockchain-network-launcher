@@ -1651,21 +1651,31 @@ app.post('/api/explorer/build', async (_req, res) => {
   // Pages), so we generate one on the fly that clones the main branch and
   // performs the build inside the container.
   const dockerfile = [
+    // --- Stage 1: shallow clone (cache-busted on branch tip changes) ---
+    // Docker cannot see remote branch updates, so pin the clone layer to the
+    // current branch tip via the GitHub refs API.
+    'FROM node:lts-alpine AS src',
+    'RUN apk add --no-cache git',
+    `ADD ${EXPLORER_REPO.replace(/^https:\/\/github\.com\//, 'https://api.github.com/repos/').replace(/\.git$/, '')}/git/refs/heads/${EXPLORER_BRANCH} /tmp/explorer-ref.json`,
+    `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} /src`,
+    // --- Stage 2: build ---
+    // Copy the manifests first so `npm install` (the slowest step: PQC SDK
+    // fetch + TypeScript build + native modules) is only re-run when the
+    // dependencies actually change; source-only pushes reuse the cached layer.
     'FROM node:lts-alpine AS builder',
     'RUN apk add --no-cache python3 make g++ git',
     'ENV NODE_OPTIONS="--dns-result-order=ipv4first --openssl-legacy-provider"',
     'WORKDIR /app',
-    // Cache-bust: docker cannot see remote branch updates, so pin the clone
-    // layer to the current branch tip via the GitHub refs API.
-    `ADD ${EXPLORER_REPO.replace(/^https:\/\/github\.com\//, 'https://api.github.com/repos/').replace(/\.git$/, '')}/git/refs/heads/${EXPLORER_BRANCH} /tmp/explorer-ref.json`,
-    `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} .`,
+    'COPY --from=src /src/package.json /src/package-lock.json ./',
+    'RUN npm install --no-audit --no-fund',
+    'COPY --from=src /src .',
     // GitHub Pages uses publicPath '/explorer-smd/' but Docker serves from '/'
     "RUN sed -i \"s|'/explorer-smd/'|'/'|\" vue.config.js",
     // Local dev has no TLS: force ws:// instead of wss:// in httpToWssUrl
     "RUN sed -i \"s|'3000' === url.port ? 'ws:' : 'wss:'|'ws:'|\" src/helper.js",
     // pqc-catapult-explorer builds straight into www/ (vue.config outputDir);
     // fall back to renaming dist/ for branches that still use the default.
-    'RUN npm install && npm run build && ([ -d www ] || mv dist www)',
+    'RUN npm run build && ([ -d www ] || mv dist www)',
     // --- Same-origin proxy wrapper ---
     // The original server.js serves static files + /config on port 4000.
     // We rename it, shift to port 4001, and create a thin proxy wrapper on
