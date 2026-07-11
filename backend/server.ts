@@ -1681,7 +1681,12 @@ const RE_PROXY=/^\\\/api\\\/explorer-proxy(\\\/|$|\\?)/;
 require("./_server");
 function normalizePath(url){var n=(url||"").replace(/^\\\/explorer-smd(?=\\\/|$)/,"");return n||"/"}
 function px(h,p,q,r,path,x){var o={hostname:h,port:p,path:path,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
-var srv=http.createServer(function(q,r){var u=normalizePath(q.url);RE_PROXY.test(u)?px(MH,MP,q,r,u,{"x-forwarded-host":q.headers.host}):RE.test(u)?px(RH,RP,q,r,u):px("127.0.0.1",4001,q,r,u)});
+// The SPA router (history mode) uses the same paths as the REST API
+// (/blocks/1 is both a page and an endpoint). Browser NAVIGATIONS send
+// Accept: text/html and get the SPA; API clients (SPA-internal axios,
+// curl, SDKs) do not, and get the REST proxy.
+function isHtmlNav(q){return "GET"===q.method&&/text\\\/html/.test(q.headers.accept||"")}
+var srv=http.createServer(function(q,r){var u=normalizePath(q.url);RE_PROXY.test(u)?px(MH,MP,q,r,u,{"x-forwarded-host":q.headers.host}):(RE.test(u)&&!isHtmlNav(q))?px(RH,RP,q,r,u):px("127.0.0.1",4001,q,r,u)});
 srv.on("upgrade",function(q,s){var u=normalizePath(q.url);var targetHost=RE.test(u)?RH:MH;var targetPort=RE.test(u)?RP:MP;var o={hostname:targetHost,port:targetPort,path:u,method:q.method,headers:q.headers};var p=http.request(o);p.on("upgrade",function(r,ps){var h="HTTP/1.1 101 Switching Protocols\\r\\n";Object.keys(r.headers).forEach(function(k){h+=k+": "+r.headers[k]+"\\r\\n"});h+="\\r\\n";s.write(h);ps.pipe(s);s.pipe(ps)});p.on("error",function(){s.end()});p.end()});
 srv.listen(4000);console.log("Explorer proxy on 4000, original on 4001");
 PROXYEOF`,
