@@ -1655,6 +1655,9 @@ app.post('/api/explorer/build', async (_req, res) => {
     'RUN apk add --no-cache python3 make g++ git',
     'ENV NODE_OPTIONS="--dns-result-order=ipv4first --openssl-legacy-provider"',
     'WORKDIR /app',
+    // Cache-bust: docker cannot see remote branch updates, so pin the clone
+    // layer to the current branch tip via the GitHub refs API.
+    `ADD ${EXPLORER_REPO.replace(/^https:\/\/github\.com\//, 'https://api.github.com/repos/').replace(/\.git$/, '')}/git/refs/heads/${EXPLORER_BRANCH} /tmp/explorer-ref.json`,
     `RUN git clone --branch ${EXPLORER_BRANCH} --depth 1 ${EXPLORER_REPO} .`,
     // GitHub Pages uses publicPath '/explorer-smd/' but Docker serves from '/'
     "RUN sed -i \"s|'/explorer-smd/'|'/'|\" vue.config.js",
