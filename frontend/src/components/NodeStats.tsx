@@ -879,10 +879,12 @@ export function NodeStats() {
     if (!cfField) return;
     api.loadPreset()
       .then((cfg: Record<string, unknown> | null) => {
-        if (!cfg || !String(cfg.catapultVersion ?? '').startsWith('custom')) return;
-        // UI-saved value takes precedence; fall back to the .env default
+        // PQC edition: chainFinalizationHeight is a built-in property of the
+        // bundled pqc server (and of custom PQC image variants).
+        if (!cfg) return;
+        // UI-saved value takes precedence; fall back to the built-in default
         const v = String(cfg.chainFinalizationHeight ?? '').trim() || cfField.defaultValue;
-        if (v) setFinalizationSetting(v);
+        if (v && '0' !== v) setFinalizationSetting(v);   // 0 = disabled → hide
       })
       .catch(() => { /* keep hidden */ });
   }, []);

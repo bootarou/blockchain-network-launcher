@@ -614,7 +614,19 @@ export interface CustomPatchField {
   defaultValue: string;
 }
 
-export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] =
+// PQC edition built-ins: these properties are supported by the bundled PQC
+// server image and are always editable (mirrors the backend pqc version's
+// postGenPatches defaults).
+const BUILTIN_PATCH_FIELDS: CustomPatchField[] = [
+  {
+    file: 'config-network.properties',
+    section: '[chain]',
+    key: 'chainFinalizationHeight',
+    defaultValue: '0',
+  },
+];
+
+const ENV_PATCH_FIELDS: CustomPatchField[] =
   (((import.meta.env.VITE_CUSTOM_CONFIG_PATCHES as string | undefined) ?? '')
     .split(/[\n;]+/)
     .map((s) => s.trim())
@@ -626,18 +638,31 @@ export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] =
     })
     .filter(Boolean)) as CustomPatchField[];
 
+export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] = [
+  ...BUILTIN_PATCH_FIELDS,
+  ...ENV_PATCH_FIELDS.filter((f) => !BUILTIN_PATCH_FIELDS.some((b) => b.key === f.key)),
+];
+
+const PATCH_FIELD_DESCRIPTIONS: Record<string, string> = {
+  chainFinalizationHeight:
+    'チェーン確定高さ。指定高さに到達するとブロック生成を停止し、それ以降のブロックを拒否してチェーンを確定します。0 = 無効（無限に伸びる）。',
+};
+
 if (CUSTOM_CONFIG_PATCH_FIELDS.length > 0) {
   CATEGORIES.unshift({
     id: 'customConfig',
-    label: 'カスタム設定',
+    label: 'BNL 拡張設定',
     icon: 'settings',
-    description: 'CUSTOM_CONFIG_PATCHES で定義されたカスタムサーバー用プロパティ',
-    customOnly: true,
+    description: 'PQC サーバーの拡張プロパティ（chainFinalizationHeight ほか、CUSTOM_CONFIG_PATCHES で追加も可能）',
+    // PQC edition: built-in fields apply to the bundled pqc version, so this
+    // category is always visible (was custom-image-only before).
+    customOnly: false,
     fields: CUSTOM_CONFIG_PATCH_FIELDS.map((f) => ({
       key: f.key,
       label: f.key,
       type: 'text' as FieldType,
-      description: `${f.file} ${f.section} に注入されます。未入力時は .env の既定値（${f.defaultValue || '空'}）を使用。`,
+      description: PATCH_FIELD_DESCRIPTIONS[f.key]
+        ?? `${f.file} ${f.section} に注入されます。未入力時は既定値（${f.defaultValue || '空'}）を使用。`,
       placeholder: f.defaultValue,
     })),
   });
