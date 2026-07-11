@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         SYMBOL_BOOTSTRAP_REPO: ${SYMBOL_BOOTSTRAP_REPO:-https://github.com/bootarou/symbol-bootstrap.git}
+        SYMBOL_BOOTSTRAP_BRANCH: ${SYMBOL_BOOTSTRAP_BRANCH:-pqc-bootstrap}
     container_name: symbol-manager
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:4000:4000"   # Backend API & WebSocket

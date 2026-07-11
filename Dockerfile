@@ -1,6 +1,6 @@
 # =============================================================================
-# Symbol Custom Network Manager — Docker Image
-# Includes: Node.js 20, Docker CLI, docker-compose, symbol-bootstrap
+# BNL Post-Quantum Catapult Network Manager — Docker Image
+# Includes: Node.js 20, Docker CLI, docker-compose, symbol-bootstrap (PQC edition)
 # =============================================================================
 FROM node:20-bookworm
 
@@ -25,29 +25,37 @@ RUN apt-get update && apt-get install -y \
 RUN printf '#!/bin/sh\nexec docker compose "$@"\n' > /usr/local/bin/docker-compose \
     && chmod +x /usr/local/bin/docker-compose
 
-# Install symbol-bootstrap globally
-# Default: install from bootarou fork (the original fbsobreira repo was deleted).
-# Override at build time:  docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=https://github.com/<you>/symbol-bootstrap.git
+# Install symbol-bootstrap — PQC edition.
+# Default: the pqc-bootstrap branch (ML-DSA-44 keys/certs, iVRF VrfKeyLink, PQC nemesis,
+# PQC docker images in presets/shared.yml).
+# NOTE: installed via git clone + npm ci, NOT `npm install -g <git-url>` — npm's
+# git-dependency packing (package.json "files" whitelist, prepack scripts, and a
+# npm 10.8.x symlink-to-tmp-clone bug) produced broken/partial installs.
+# Override at build time:
+#   docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=... --build-arg SYMBOL_BOOTSTRAP_BRANCH=...
 ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
-RUN npm install -g ${SYMBOL_BOOTSTRAP_REPO}
+ARG SYMBOL_BOOTSTRAP_BRANCH=pqc-bootstrap
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
+    && git clone --branch "${SYMBOL_BOOTSTRAP_BRANCH}" --depth 1 "${SYMBOL_BOOTSTRAP_REPO}" /opt/symbol-bootstrap \
+    && cd /opt/symbol-bootstrap \
+    && npm install --omit=dev --no-audit --no-fund \
+    && chmod +x /opt/symbol-bootstrap/bin/run \
+    && ln -s /opt/symbol-bootstrap/bin/run /usr/local/bin/symbol-bootstrap \
+    && symbol-bootstrap --version
 
-# Workaround: `npm install -g <git-url>` respects .npmignore / package.json
-# "files", which can omit config/node/resources/*.mustache templates.
-# These templates are required by nemgen during `symbol-bootstrap config`.
-# We pack the installed package, extract the config/ tree, and restore it.
-RUN SB_ROOT=$(npm root -g)/symbol-bootstrap \
-    && if [ ! -f "$SB_ROOT/config/node/resources/config-node.properties.mustache" ]; then \
-         cd /tmp \
-         && npm pack symbol-bootstrap --pack-destination /tmp 2>/dev/null \
-         && TARBALL=$(ls /tmp/symbol-bootstrap-*.tgz | head -1) \
-         && tar xzf "$TARBALL" \
-         && cp -r /tmp/package/config/* "$SB_ROOT/config/" \
-         && cp -r /tmp/package/presets/* "$SB_ROOT/presets/" 2>/dev/null || true \
-         && rm -rf /tmp/package /tmp/symbol-bootstrap-*.tgz \
-         && echo "✅ Restored missing bootstrap templates to $SB_ROOT/config/" \
-       ; else \
-         echo "✅ Bootstrap templates already present" \
-       ; fi
+# Sanity checks — fail the build early instead of producing a launcher that
+# silently generates classic (ed25519) networks:
+#  1. nemgen mustache templates must be present.
+#  2. CertificateService must be the ML-DSA-44 (PQC) variant.
+#  3. presets/shared.yml must reference the PQC server image.
+RUN SB_ROOT=/opt/symbol-bootstrap \
+    && test -f "$SB_ROOT/config/node/resources/config-node.properties.mustache" \
+       || { echo "❌ bootstrap templates missing ($SB_ROOT/config)"; exit 1; } \
+    && grep -q 'ML-DSA' "$SB_ROOT/lib/service/CertificateService.js" \
+       || { echo "❌ installed symbol-bootstrap is not the PQC (ML-DSA-44) edition"; exit 1; } \
+    && grep -q 'bnl-catapult-server-pqc' "$SB_ROOT/presets/shared.yml" \
+       || { echo "❌ presets/shared.yml does not reference the PQC server image"; exit 1; } \
+    && echo "✅ PQC symbol-bootstrap verified (templates + ML-DSA certs + PQC presets)"
 
 WORKDIR /app
 

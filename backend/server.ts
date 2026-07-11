@@ -2475,6 +2475,17 @@ function resolveBootstrapTemplateDirs(): string[] {
     broadcastLog(`[Pre-Patch] Template dir (${label}): ${real}\n`);
   };
 
+  // Strategy -1: the PQC edition install location (Dockerfile: git clone →
+  // /opt/symbol-bootstrap). This is where runBootstrapCommand() executes from,
+  // so it is the authoritative template location.
+  try {
+    const bin = process.env.SYMBOL_BOOTSTRAP_BIN || '/opt/symbol-bootstrap/bin/run';
+    const realBin = fs.existsSync(bin) ? fs.realpathSync(bin) : bin;   // follow /usr/local/bin symlink
+    const sbRoot = path.dirname(path.dirname(realBin));                // <root>/bin/run → <root>
+    const candidate = path.join(sbRoot, 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'pqc install');
+  } catch { /* fall through */ }
+
   // Strategy 0: require.resolve
   try {
     const pkgJson = require.resolve('symbol-bootstrap/package.json');
@@ -2831,11 +2842,19 @@ interface CatapultVersionDef {
   removeProps?: { file: string; keys: string[] }[];
 }
 
+// PQC edition: exactly ONE built-in version — the BNL Post-Quantum Catapult
+// (ML-DSA-44 signatures / ML-KEM-768 key exchange / iVRF block lottery /
+// ML-DSA finality voting). Classic v2/v3 definitions were removed: the PQC
+// chain is wire-incompatible with them and this launcher only bundles the
+// PQC symbol-bootstrap. Locally-built PQC image variants can still be tested
+// via CUSTOM_SERVER_IMAGE (they inherit this definition's patches).
 const CATAPULT_VERSIONS: CatapultVersionDef[] = [
   {
-    id: 'v3',
-    serverImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
-    needsOpenSslPatch: true,
+    id: 'pqc',
+    serverImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+    needsOpenSslPatch: false,   // PQC image bakes its own OpenSSL 3.6 deps
+    // The PQC server is a 1.0.3.9 derivative, so it needs the same template
+    // gap-fills as classic v3 (bootstrap 1.1.10 omits these properties).
     configPatches: [
       {
         file: 'config-node.properties',
@@ -2853,6 +2872,16 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
         },
       },
     ],
+    // chainFinalizationHeight is built into the PQC server (BNL chain
+    // finalization). Exposed as a postGen patch so the Configuration UI can
+    // override it per-network; Height(0) disables finalization.
+    postGenPatches: [
+      {
+        file: 'config-network.properties',
+        section: '[chain]',
+        props: { chainFinalizationHeight: '0' },
+      },
+    ],
     // nodeEqualityStrategy belongs ONLY in config-network.properties.
     // In some bootstrap versions the broker config template accidentally puts
     // it in config-node.properties too, which makes the broker binary crash
@@ -2861,29 +2890,6 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
       {
         file: 'config-node.properties',
         keys: ['nodeEqualityStrategy'],
-      },
-    ],
-  },
-  {
-    id: 'v2',
-    serverImage: 'symbolplatform/symbol-server:gcc-1.0.3.6',
-    needsOpenSslPatch: false,   // gcc-1.0.3.6 is Ubuntu 22.04 — OpenSSL 3 native
-    configPatches: [],          // gcc-1.0.3.6 doesn't need any extra properties
-    // Remove stale properties that may have been injected by a previous (1.0.3.7+) run.
-    // gcc-1.0.3.6 only knows 3 fork_height props; the extra 3 from 1.0.3.7+ cause segfaults.
-    // Also remove cache_database props added by 1.0.3.7+ templates (maxLogFiles, maxLogFileSize).
-    removeProps: [
-      {
-        file: 'config-network.properties',
-        keys: [
-          'totalVotingBalance', 'treasuryReissuanceEpoch',
-          'uniqueAggregateTransactionHash',
-          'skipSecretLockUniquenessChecks', 'skipSecretLockExpirations', 'forceSecretLockExpirations',
-        ],
-      },
-      {
-        file: 'config-node.properties',
-        keys: ['maxLogFiles', 'maxLogFileSize'],
       },
     ],
   },
@@ -2943,15 +2949,21 @@ function parseCustomConfigPatches(raw: string): PropertiesPatch[] {
   return result;
 }
 
-// Frozen copies of the env-parsed CUSTOM_CONFIG_PATCHES defaults. The live
-// postGenPatches get their values overridden per-start from the Configuration
-// UI (ui-meta customConfigValues); these are the fallbacks for unset keys.
+// Frozen copies of the postGenPatches defaults (built-in PQC ones plus any
+// env-parsed CUSTOM_CONFIG_PATCHES). The live postGenPatches get their values
+// overridden per-start from the Configuration UI (ui-meta customConfigValues);
+// these are the fallbacks for unset keys.
 const CUSTOM_EXTRA_PATCH_DEFAULTS: PropertiesPatch[] = [];
 
+// The built-in pqc version's postGenPatches (chainFinalizationHeight) are
+// UI-overridable through the same machinery as CUSTOM_CONFIG_PATCHES.
+for (const p of CATAPULT_VERSIONS[0].postGenPatches ?? []) {
+  CUSTOM_EXTRA_PATCH_DEFAULTS.push({ ...p, props: { ...p.props } });
+}
+
 if (process.env.CUSTOM_SERVER_IMAGE) {
-  const v3 = CATAPULT_VERSIONS.find((v) => v.id === 'v3')!;
-  // Extra properties to append (applied only to custom versions, so official
-  // testnet/mainnet runs are never affected).
+  const pqcBase = CATAPULT_VERSIONS.find((v) => v.id === 'pqc')!;
+  // Extra properties to append (applied only to custom versions).
   const extraPatches = process.env.CUSTOM_CONFIG_PATCHES
     ? parseCustomConfigPatches(process.env.CUSTOM_CONFIG_PATCHES)
     : [];
@@ -2965,34 +2977,14 @@ if (process.env.CUSTOM_SERVER_IMAGE) {
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
       serverImage: image,
       needsOpenSslPatch: process.env.CUSTOM_NEEDS_OPENSSL_PATCH === 'true',
-      configPatches: v3.configPatches,
+      configPatches: pqcBase.configPatches,
       // postGen only: keeps CUSTOM_CONFIG_PATCHES out of the shared mustache
-      // templates so official v2/v3 runs on this machine are never affected.
-      postGenPatches: extraPatches,
-      removeProps: v3.removeProps,
+      // templates. Custom versions also inherit the built-in PQC postGen
+      // patches (chainFinalizationHeight).
+      postGenPatches: [...(pqcBase.postGenPatches ?? []), ...extraPatches],
+      removeProps: pqcBase.removeProps,
     });
   });
-
-  // Defensive: make official versions STRIP the custom-only keys from their
-  // generated configs (patchGeneratedConfigs removeProps pass). This heals a
-  // machine whose bootstrap templates were polluted by an older build that
-  // wrote CUSTOM_CONFIG_PATCHES into the shared templates.
-  // NOTE: official versions get fresh copied arrays — the custom versions
-  // above hold references to the ORIGINAL v3.removeProps and must not see
-  // these keys (they would strip the very properties postGenPatches adds).
-  if (extraPatches.length > 0) {
-    for (const ver of CATAPULT_VERSIONS.filter((v) => v.id === 'v2' || v.id === 'v3')) {
-      const merged = (ver.removeProps ?? []).map((r) => ({ file: r.file, keys: [...r.keys] }));
-      for (const p of extraPatches) {
-        let set = merged.find((r) => r.file === p.file);
-        if (!set) { set = { file: p.file, keys: [] }; merged.push(set); }
-        for (const k of Object.keys(p.props)) {
-          if (!set.keys.includes(k)) set.keys.push(k);
-        }
-      }
-      ver.removeProps = merged;
-    }
-  }
 }
 
 /**
@@ -3096,8 +3088,8 @@ function resolveVersionInner(): CatapultVersionDef {
     broadcastLog(`[resolveVersion] Error reading ui-meta: ${err}\n`);
   }
 
-  // Default to V3
-  broadcastLog(`[resolveVersion] No match — defaulting to V3\n`);
+  // Default to the built-in PQC version
+  broadcastLog(`[resolveVersion] No match — defaulting to pqc\n`);
   return CATAPULT_VERSIONS[0];
 }
 
@@ -6283,38 +6275,21 @@ function runBootstrapCommand(
       }
     }
 
-    // Prefer a cached symbol-bootstrap binary to avoid npx network stalls.
-    // Fallback to npx only when no cached/global binary exists.
-    let bootstrapCmd = '';
-    let bootstrapArgs: string[] = [];
-    try {
-      const cached = execSync(
-        'find /root/.npm/_npx -type l -path "*/node_modules/.bin/symbol-bootstrap" 2>/dev/null | sort | tail -n 1',
-        { timeout: 5_000, stdio: 'pipe' },
-      ).toString().trim();
-      if (cached && fs.existsSync(cached)) {
-        bootstrapCmd = cached;
-        bootstrapArgs = [command, ...resolvedArgs];
-      }
-    } catch { /* fall through */ }
-
-    if (!bootstrapCmd) {
-      try {
-        const globalBin = execSync('command -v symbol-bootstrap 2>/dev/null || true', {
-          timeout: 3_000,
-          stdio: 'pipe',
-        }).toString().trim();
-        if (globalBin && fs.existsSync(globalBin)) {
-          bootstrapCmd = globalBin;
-          bootstrapArgs = [command, ...resolvedArgs];
-        }
-      } catch { /* fall through */ }
+    // PQC edition: ONLY the baked-in PQC symbol-bootstrap may run. Never fall
+    // back to the npx cache or the npm registry — both would silently execute
+    // the classic (ed25519) symbol-bootstrap and generate an incompatible
+    // network. The binary is installed by the Dockerfile (git clone →
+    // /opt/symbol-bootstrap, symlinked into /usr/local/bin).
+    const bootstrapCmd = process.env.SYMBOL_BOOTSTRAP_BIN || '/usr/local/bin/symbol-bootstrap';
+    if (!fs.existsSync(bootstrapCmd)) {
+      const msg = `❌ PQC symbol-bootstrap not found at ${bootstrapCmd} — rebuild the manager image`;
+      broadcastLog(`[CMD] ${msg}\n`);
+      networkStatus.state = 'error';
+      broadcastStatus();
+      reject(new Error(msg));
+      return;
     }
-
-    if (!bootstrapCmd) {
-      bootstrapCmd = 'npx';
-      bootstrapArgs = ['-y', '--prefer-offline', 'symbol-bootstrap@1.1.10', command, ...resolvedArgs];
-    }
+    const bootstrapArgs = [command, ...resolvedArgs];
 
     // CWD must be '/' because symbol-bootstrap internally does
     //   path.join(process.cwd(), target)  — in ComposeService
@@ -9139,7 +9114,7 @@ app.post('/api/commands/fullReset', async (_req, res) => {
 
     // 2. symbol-bootstrap stop (for V1 / any leftover)
     try {
-      execSync(`npx -y symbol-bootstrap stop -t "${TARGET_DIR}"`, {
+      execSync(`${process.env.SYMBOL_BOOTSTRAP_BIN || '/usr/local/bin/symbol-bootstrap'} stop -t "${TARGET_DIR}"`, {
         cwd: '/',
         timeout: 60_000,
         stdio: 'pipe',

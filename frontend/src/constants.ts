@@ -26,15 +26,18 @@ export interface CatapultVersionPreset {
   }[];
 }
 
+// PQC edition: exactly ONE built-in version — the BNL Post-Quantum Catapult.
+// Classic v2/v3 entries were removed (wire-incompatible; this launcher only
+// bundles the PQC symbol-bootstrap).
 export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
   {
-    id: 'v3',
-    label: 'V3 — Catapult 1.0.3.9 (Aggregate V3)',
-    description: 'Latest version with Aggregate V3 support.',
-    symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
-    symbolRestImage: 'symbolplatform/symbol-rest:2.4.4',
-    symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
-    needsOpenSslPatch: true,
+    id: 'pqc',
+    label: 'PQC — BNL Post-Quantum Catapult 1.0.3.9-bnl',
+    description: 'ML-DSA-44 signatures / ML-KEM-768 key exchange / iVRF block lottery / ML-DSA finality voting.',
+    symbolServerImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+    symbolRestImage: 'nftdrive/bnl-catapult-rest-pqc:2.4.3-bnl',
+    symbolServerToolsImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+    needsOpenSslPatch: false,
     configPatches: [
       {
         file: 'config-node.properties',
@@ -52,16 +55,6 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
         },
       },
     ],
-  },
-  {
-    id: 'v2',
-    label: 'V2 — Catapult 1.0.3.6 (Aggregate V2)',
-    description: 'Legacy version for networks still using Aggregate V2.',
-    symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.6',
-    symbolRestImage: 'symbolplatform/symbol-rest:2.4.2',
-    symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.6',
-    needsOpenSslPatch: false,
-    configPatches: [],
   },
 ];
 
@@ -81,17 +74,17 @@ const _customServerImages = ((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string
   .map((s) => s.trim())
   .filter(Boolean);
 if (_customServerImages.length > 0) {
-  const _v3 = CATAPULT_VERSIONS[0];
+  const _pqc = CATAPULT_VERSIONS[0];
   _customServerImages.forEach((image, i) => {
     CATAPULT_VERSIONS.push({
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
       label: `Custom — ${image}`,
-      description: 'ローカルビルドのサーバーイメージをテスト（VITE_CUSTOM_SERVER_IMAGE / backend CUSTOM_SERVER_IMAGE）。',
+      description: 'ローカルビルドの PQC サーバーイメージをテスト（VITE_CUSTOM_SERVER_IMAGE / backend CUSTOM_SERVER_IMAGE）。',
       symbolServerImage: image,
-      symbolRestImage: (import.meta.env.VITE_CUSTOM_REST_IMAGE as string | undefined) || _v3.symbolRestImage,
+      symbolRestImage: (import.meta.env.VITE_CUSTOM_REST_IMAGE as string | undefined) || _pqc.symbolRestImage,
       symbolServerToolsImage: (import.meta.env.VITE_CUSTOM_TOOLS_IMAGE as string | undefined) || image,
       needsOpenSslPatch: false,
-      configPatches: _v3.configPatches,
+      configPatches: _pqc.configPatches,
     });
   });
 }
@@ -849,7 +842,7 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_PRESET: PresetConfig = {
-  catapultVersion: 'v3', preset: 'bootstrap', assembly: 'dual',
+  catapultVersion: 'pqc', preset: 'bootstrap', assembly: 'dual',
   networkType: 'privateTest', networkIdentifier: 168,
   networkName: 'custom-symbol-network', friendlyName: 'custom-network',
   sourceNodeUrl: '', nemesisGenerationHashSeed: '', nemesisSignerPublicKey: '',
@@ -862,9 +855,9 @@ export const DEFAULT_PRESET: PresetConfig = {
   nodeCertificateExpirationInDays: 375,
   certificateExpirationWarningInDays: 30,
 
-  symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
-  symbolRestImage: 'symbolplatform/symbol-rest:2.4.4',
-  symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.9',
+  symbolServerImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+  symbolRestImage: 'nftdrive/bnl-catapult-rest-pqc:2.4.3-bnl',
+  symbolServerToolsImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
   symbolExplorerImage: 'symbolplatform/symbol-explorer:1.2.1',
   symbolFaucetImage: 'symbolplatform/symbol-faucet:1.0.1',
   symbolAgentImage: 'symbolplatform/symbol-agent:1.1.1',
