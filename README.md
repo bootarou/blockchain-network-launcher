@@ -1,24 +1,38 @@
-# Symbol Network Manager
+# BNL Post-Quantum Network Manager
 
-Symbol ブロックチェーンのカスタムネットワーク（プライベートネットワーク）を Web UI で構築・管理するブロックチェーン-ネットワーク-ランチャー(BNL)です。
+**ポスト量子暗号（PQC）版 catapult** のカスタムネットワーク（プライベートネットワーク）を Web UI で構築・管理するブロックチェーン-ネットワーク-ランチャー(BNL)です。
 
-![Symbol](https://img.shields.io/badge/Symbol-Catapult%20v1.0.3.9-blue)
-![Bootstrap](https://img.shields.io/badge/symbol--bootstrap-1.1.10-green)
+> ⚠️ **免責事項**: 本プロジェクトは Symbol/catapult の**非公式・実験的なポスト量子フォーク**を扱うツールです。公式 Symbol / NEM プロジェクトとは一切関係がなく、**公開 Symbol ネットワーク（mainnet / testnet）への参加はできません**（ワイヤフォーマット非互換）。
+>
+> **Disclaimer**: This tool manages an **unofficial, experimental post-quantum fork** of Symbol/catapult. Unaffiliated with official Symbol/NEM; it **cannot join public Symbol networks** (wire-incompatible).
+
+![PQC](https://img.shields.io/badge/PQC-ML--DSA--44%20%2F%20ML--KEM--768%20%2F%20iVRF-blueviolet)
+![Catapult](https://img.shields.io/badge/BNL%20Catapult-1.0.3.9--bnl-blue)
+![Bootstrap](https://img.shields.io/badge/symbol--bootstrap-pqc--bootstrap-green)
 ![Docker](https://img.shields.io/badge/Docker-required-blue)
 ![License](https://img.shields.io/badge/license-ISC-lightgrey)
 
 ## 概要
 
-Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・起動・停止・監視がすべてブラウザから操作できます。
+Docker コンテナ 1 つを起動するだけで、PQC catapult ノードの設定・起動・停止・監視がすべてブラウザから操作できます。
+
+**暗号構成**（詳細は [PQC-SUMMARY](https://github.com/bootarou/bnl-catapult-pqc/blob/feat-VRF/votiong/PQC-SUMMARY.md)）:
+
+| 用途 | アルゴリズム |
+|---|---|
+| アカウント署名（Tx / ブロック） | ML-DSA-44 (FIPS 204)。公開鍵 1312 B / 署名 2420 B / 秘密鍵は 32 B seed |
+| ブロック抽選 VRF | iVRF（SHA3-256 Merkle 木、ハッシュベース） |
+| ファイナリティ投票 | ML-DSA-44（BM ツリー温存） |
+| 鍵交換・TLS | ML-KEM-768 (FIPS 203) / ML-DSA-44 証明書 |
 
 - 🖥️ **Web UI** — React + Tailwind CSS によるモダンなダッシュボード
 - 🔧 **ノード管理** — 起動 / 停止 / 再起動 / フルリセットをワンクリック
-- 🌐 **ネットワーク参加** — Seed ファイルのインポートでカスタムネットワークへ、または公式ネットワーク（mainnet / testnet）へ参加
+- 🌐 **ネットワーク参加** — Seed ファイルのインポートまたはノード URL 指定で既存の PQC カスタムネットワークへ参加（公式 mainnet / testnet は非対応）
 - 📊 **リアルタイム監視** — ブロック高・ファイナリティ高・ピア数・ハーベスト状態・ネットワーク通貨を表示
 - 📜 **ターミナルログ** — Docker コンテナログを WebSocket でリアルタイム表示
 - 🔑 **アドレス管理** — ノードのアドレス・公開鍵をワンクリックでコピー
 - 💾 **バックアップ / リストア** — 設定のみ / フル（ブロックデータ含む）の 2 種類の zip バックアップに対応
-- 🔍 **Explorer** — Symbol Explorer をビルド・起動して自ネットワークのブロックを閲覧
+- 🔍 **Explorer** — PQC 対応 Explorer（iVRF proof 表示）をビルド・起動して自ネットワークのブロックを閲覧
 - ☁️ **ネットワーク公開** — Cloudflare 連携でノードをインターネットに公開
 - 🔒 **ログイン認証** — `ADMIN_PASSWORD` を設定するとパスワード保護を有効化
 - 🌍 **多言語対応** — 日本語 / English 切り替え
@@ -28,13 +42,13 @@ Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・
 
 最新 UI のイメージです。
 
-![Symbol Network Manager UI](docs/screenshots/001.png)
+![BNL Post-Quantum Network Manager UI](docs/screenshots/001.png)
 
 ## アーキテクチャ
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  symbol-manager コンテナ                            │
+│  symbol-manager コンテナ（PQC edition）             │
 │                                                     │
 │  ┌─────────────┐      ┌──────────────────┐         │
 │  │  Frontend    │      │  Backend         │         │
@@ -45,7 +59,7 @@ Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・
 └──────────────────────────────┼──────────────────────┘
                                ▼
                   ┌────────────────────────┐
-                  │  symbol-bootstrap      │
+                  │  symbol-bootstrap(PQC) │
                   │  (sibling containers)  │
                   │                        │
                   │  api-node-0  :7900     │
@@ -134,12 +148,7 @@ http://localhost:5173
 2. **Import Seed File** でネットワーク管理者から受け取った Seed ファイルをインポート
 3. **Configuration** タブで設定を確認 → 操作ページで **Start**（設定は自動保存されます）
 
-### 公式ネットワーク（mainnet / testnet）に参加
-
-1. **Join Network** タブで既知ノード（mainnet / testnet）を選択、または REST API URL を入力して設定を取り込み
-2. **Configuration** タブで設定を確認 → 操作ページで **Start**（設定は自動保存されます）
-
-公式ネットワークでは Seed ファイルは不要です。ネットワーク設定は自動で取得されます。
+> ℹ️ 公式ネットワーク（mainnet / testnet）への参加機能はありません。PQC チェーンは公開 Symbol とワイヤフォーマット非互換のため、公式ノードの URL を指定した場合は取り込み時に明示的に拒否されます。
 
 ### ネットワーク共有（他ノードの招待）
 
@@ -155,7 +164,7 @@ http://localhost:5173
 
 ### Explorer / ネットワーク公開
 
-- **Explorer** タブで Symbol Explorer をビルド・起動し、自ネットワークのブロックやトランザクションをブラウザで閲覧できます（デフォルトポート: `8090`）
+- **Explorer** タブで PQC 対応 Explorer（[pqc-catapult-explorer](https://github.com/bootarou/pqc-catapult-explorer)、iVRF proof 表示対応）をビルド・起動し、自ネットワークのブロックやトランザクションをブラウザで閲覧できます（デフォルトポート: `8090`）
 - **Publish** タブで Cloudflare（API トークン・Zone ID・Account ID）を設定すると、ノードをインターネットに公開できます
 
 詳しい操作手順は [MANUAL.md](MANUAL.md) を参照してください。
@@ -202,7 +211,7 @@ http://localhost:5173
 - **Node.js 20** + **TypeScript** (tsx)
 - **Express 5** — REST API
 - **WebSocket (ws)** — ターミナルログ配信
-- **symbol-bootstrap** — ノード構成・起動管理
+- **symbol-bootstrap（PQC edition）** — ノード構成・起動管理（ML-DSA-44 鍵/証明書・iVRF・PQC nemesis）
 - **Docker CLI** — サイドカーコンテナ操作 (DinD パターン)
 
 ## 環境変数
@@ -214,7 +223,8 @@ http://localhost:5173
 | `SYMBOL_TARGET_DIR` | `/var/lib/symbol-target` | symbol-bootstrap のターゲットディレクトリ（ブロックデータ保存先） |
 | `ADMIN_PASSWORD` | （空 = 認証なし） | Web UI の管理パスワード。設定するとログイン認証が有効化 |
 | `BIND_ADDRESS` | `127.0.0.1` | Web UI ポート (4000, 5173) のバインドアドレス。`0.0.0.0` で LAN / リモートからアクセス可 |
-| `SYMBOL_BOOTSTRAP_REPO` | `https://github.com/bootarou/symbol-bootstrap.git` | symbol-bootstrap の Git リポジトリ URL（ビルド時） |
+| `SYMBOL_BOOTSTRAP_REPO` | `https://github.com/bootarou/symbol-bootstrap.git` | PQC symbol-bootstrap の Git リポジトリ URL（ビルド時） |
+| `SYMBOL_BOOTSTRAP_BRANCH` | `pqc-bootstrap` | 上記リポジトリのブランチ（ビルド時） |
 | `NODE_ENV` | `development` | 実行環境 |
 | `PORT` | `4000` | バックエンド API ポート |
 
@@ -233,6 +243,17 @@ http://localhost:5173
 - [MANUAL.md](MANUAL.md) — 詳細なユーザーマニュアル（Docker Host Mode、nodeEqualityStrategy、トラブルシューティング等）
 - [docs/backup-restore.md](docs/backup-restore.md) — バックアップ / リストア手順書（バックアップの種類、ケース別の復元動作、注意事項）
 - [docs/wsl-lan-setup.md](docs/wsl-lan-setup.md) — WSL2 ホストの LAN 公開手順書（mirrored モード / portproxy、ファイアウォール設定）
+
+## 関連リポジトリ
+
+| | |
+|---|---|
+| [bnl-catapult-pqc](https://github.com/bootarou/bnl-catapult-pqc) | PQC catapult 本体モノレポ（server / REST / SDK v3。総括資料 [PQC-SUMMARY.md](https://github.com/bootarou/bnl-catapult-pqc/blob/feat-VRF/votiong/PQC-SUMMARY.md)） |
+| [symbol-bootstrap `pqc-bootstrap`](https://github.com/bootarou/symbol-bootstrap/tree/pqc-bootstrap) | 本ランチャーが同梱する PQC ネットワーク生成 CLI |
+| [pqc-catapult-explorer](https://github.com/bootarou/pqc-catapult-explorer) | 本ランチャーがビルド・起動する PQC Explorer |
+| [pqc-catapult-sdk-v3](https://github.com/bootarou/pqc-catapult-sdk-v3) | PQC チェーン向けアプリ開発用 JavaScript SDK |
+| [custom-catapult-chainFinalizationHeight](https://github.com/bootarou/custom-catapult-chainFinalizationHeight) | 非 PQC のカスタム catapult（旧系統。従来版ランチャーは `main` ブランチを使用） |
+| Docker Hub `nftdrive/bnl-catapult-server-pqc` / `bnl-catapult-rest-pqc` | PQC ノード / REST イメージ |
 
 ## ライセンス
 

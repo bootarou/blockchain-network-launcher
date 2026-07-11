@@ -13,7 +13,6 @@
    - [その他のページ（Share / 管理 / Explorer / Publish / Backup / Help）](#その他のページ)
 5. [基本的な使い方](#基本的な使い方)
    - [カスタムネットワークに参加する](#カスタムネットワークに参加する)
-   - [公式ネットワーク（mainnet / testnet）に参加する](#公式ネットワークmainnet--testnetに参加する)
    - [Seedファイルをインポートする](#seedファイルをインポートする)
    - [ノードを起動する](#ノードを起動する)
    - [ノードを停止・再起動する](#ノードを停止再起動する)
@@ -33,7 +32,9 @@
 
 ## 概要
 
-Symbol Network Manager は、Symbol ブロックチェーンのカスタムネットワーク（プライベートネットワーク）の構築・参加、および公式ネットワーク（mainnet / testnet）へのノード参加を Web UI で行うツールです。
+BNL Post-Quantum Network Manager は、**ポスト量子暗号（PQC）版 catapult**（ML-DSA-44 署名 / ML-KEM-768 鍵交換 / iVRF ブロック抽選）のカスタムネットワーク（プライベートネットワーク）の構築・参加を Web UI で行うツールです。
+
+> ⚠️ 非公式・実験的フォークです。公式 Symbol ネットワーク（mainnet / testnet）とはワイヤフォーマット非互換のため**参加できません**。
 
 Docker-in-Docker（DinD）アーキテクチャを採用しており、`symbol-bootstrap` を内部で使用してノードの設定・起動・管理を自動化します。
 
@@ -84,7 +85,6 @@ docker compose up -d --build
 
 - ソースノードの REST API URL（例：`http://192.168.0.10:3000`）
 - ネットワーク管理者から提供された **Seed ファイル**（推奨）
-- 公式ネットワーク（mainnet / testnet）に参加する場合は Seed ファイル不要です
 
 ---
 
@@ -97,7 +97,7 @@ docker compose up -d --build
 | **Dashboard** | ノードの状態監視（ブロック高・ピア数・ハーベスト状態・証明書等） |
 | **操作** (Operations) | 起動 / 停止 / リセット等の操作とターミナルログ |
 | **Configuration** | ノードの詳細設定 |
-| **Join Network** | 既存ネットワーク・公式ネットワークへの参加 |
+| **Join Network** | 既存 PQC ネットワークへの参加 |
 | **Share** | Seed ファイルのダウンロード（他ノードの招待） |
 | **管理** (Manage) | データ保存先の変更・アドレス表示・Docker イメージ管理 |
 | **Explorer** | Symbol Explorer のビルド・起動・停止 |
@@ -124,9 +124,9 @@ docker compose up -d --build
 
 ### Join Network
 
-既存のカスタムネットワークや公式ネットワーク（mainnet / testnet）に参加するための画面です。
+既存の PQC カスタムネットワークに参加するための画面です。
 
-1. **ソースノード URL** — 参加先ネットワークの REST API エンドポイントを入力（公式ネットワークは既知ノードを選択可能）
+1. **ソースノード URL** — 参加先 PQC ネットワークの REST API エンドポイントを入力
 2. **ネットワーク情報取得** — URL を入力して「取得」ボタンを押すと、ネットワークの設定を自動取得
 3. **Seed ファイルインポート** — ネットワーク管理者から受け取った nemesis seed ファイルをドラッグ＆ドロップ（カスタムネットワークのみ）
 4. **設定に反映** — 取得した情報を Configuration に反映
@@ -136,13 +136,12 @@ docker compose up -d --build
 ノードの詳細設定を行う画面です。Join Network から自動反映された値を確認・修正できます。
 
 主な設定項目：
-- **Preset** — ネットワーク種別（`testnet` / `mainnet` / `bootstrap`）
+- **Preset** — `bootstrap`（PQC カスタムネットワーク）固定
 - **Assembly** — ノード構成（`dual` = Peer + API）
 - **Password** — ネットワーク暗号化パスワード
-- **Catapult Version** — サーバーバージョン（`v2` = gcc-1.0.3.6 / `v3` = gcc-1.0.3.9）
+- **Catapult Version** — `pqc`（BNL Post-Quantum Catapult 1.0.3.9-bnl）固定。`CUSTOM_SERVER_IMAGE` でローカルビルドの PQC イメージも追加可
 - **Node Settings** — ノード名、ホスト、各種鍵の設定
 
-> 💡 公式ネットワーク（mainnet / testnet）参加時は、ネットワーク側の設定は自動取得されるため、ノードローカルの設定項目のみが表示されます。
 
 ### その他のページ
 
@@ -163,14 +162,7 @@ docker compose up -d --build
 3. ネットワーク設定が自動取得される
 4. **「設定に反映」** をクリック → Configuration ページに切り替わる
 
-### 公式ネットワーク（mainnet / testnet）に参加する
-
-1. **「Join Network」ページ** を開く
-2. 既知ノード（mainnet / testnet）を選択、またはソースノードの URL を入力して **「取得」** をクリック
-3. **「設定に反映」** をクリック → Configuration ページでノード名・ホスト等を設定
-4. 操作ページで **Start**（設定は自動保存されます）
-
-> 💡 公式ネットワークでは Seed ファイルのインポートは不要です。ブロック同期はネメシスブロックから始まるため、完了まで時間がかかります。
+> ℹ️ **公式ネットワーク（mainnet / testnet）への参加機能は PQC 版にはありません。** 公式ノードの URL を指定した場合、取り込み時に「official Symbol network (ed25519)」エラーで明示的に拒否されます。
 
 ### Seed ファイルをインポートする
 
@@ -775,7 +767,7 @@ no packet io available for operation 'pull finalization proof task'
 │  │  └──────────┘  └─────┬─────┘               │  │
 │  │                      │ docker.sock          │  │
 │  │  ┌───────────────────┴──────────────────┐  │  │
-│  │  │  V2 Containers (Docker-in-Docker)    │  │  │
+│  │  │  PQC Containers (Docker-in-Docker)   │  │  │
 │  │  │  ┌───────────┐  ┌───────────────┐   │  │  │
 │  │  │  │ api-node-0│  │ rest-gateway  │   │  │  │
 │  │  │  │ :7900     │  │ :3000         │   │  │  │
@@ -794,10 +786,9 @@ no packet io available for operation 'pull finalization proof task'
 |----------|------|
 | Frontend | React 19 + Vite + Tailwind CSS v4 + TypeScript |
 | Backend | Node.js + Express 5 + WebSocket |
-| Bootstrap | symbol-bootstrap 1.1.10（[bootarou/symbol-bootstrap](https://github.com/bootarou/symbol-bootstrap)） |
-| Server V2 | symbolplatform/symbol-server:gcc-1.0.3.6 |
-| Server V3 | symbolplatform/symbol-server:gcc-1.0.3.9 |
-| REST | symbolplatform/symbol-rest:2.4.2 |
+| Bootstrap | symbol-bootstrap PQC edition（[bootarou/symbol-bootstrap#pqc-bootstrap](https://github.com/bootarou/symbol-bootstrap/tree/pqc-bootstrap)） |
+| Server | nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl（ML-DSA-44 / ML-KEM-768 / iVRF / ML-DSA 投票） |
+| REST | nftdrive/bnl-catapult-rest-pqc:2.4.3-bnl（iVRF ブロックスキーマ） |
 | Database | MongoDB 5.0.15 |
 | Container | Docker-in-Docker (DinD) |
 
@@ -818,7 +809,7 @@ no packet io available for operation 'pull finalization proof task'
 ```
 /opt/symbol-target/          ← symbol-bootstrap のターゲットディレクトリ
 ├── docker/
-│   ├── docker-compose.yml   ← V2 コンテナ定義
+│   ├── docker-compose.yml   ← PQC コンテナ定義
 │   ├── mongo/               ← MongoDB 初期化スクリプト
 │   └── server/              ← start.sh 等
 ├── nodes/
