@@ -1697,7 +1697,7 @@ const RE=/^\\\/(ws|node|chain|blocks?|transactions?|transactionStatus|accounts?|
 const RE_PROXY=/^\\\/api\\\/explorer-proxy(\\\/|$|\\?)/;
 require("./_server");
 function normalizePath(url){var n=(url||"").replace(/^\\\/explorer-smd(?=\\\/|$)/,"");return n||"/"}
-function px(h,p,q,r,path,x){var o={hostname:h,port:p,path:path,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
+function px(h,p,q,r,path,x){var o={hostname:h,port:p,path:path,method:q.method,headers:Object.assign({},q.headers,x||{})};var c=http.request(o,function(s){if(4001===p&&(/text\\\/html/.test(s.headers["content-type"]||"")||"/config"===path)){s.headers["cache-control"]="no-cache"}r.writeHead(s.statusCode,s.headers);s.pipe(r)});c.on("error",function(){r.writeHead(502);r.end("Bad Gateway")});q.pipe(c)}
 // The SPA router (history mode) uses the same paths as the REST API
 // (/blocks/1 is both a page and an endpoint). Browser NAVIGATIONS send
 // Accept: text/html and get the SPA; API clients (SPA-internal axios,
