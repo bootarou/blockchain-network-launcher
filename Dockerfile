@@ -35,6 +35,11 @@ RUN printf '#!/bin/sh\nexec docker compose "$@"\n' > /usr/local/bin/docker-compo
 #   docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=... --build-arg SYMBOL_BOOTSTRAP_BRANCH=...
 ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
 ARG SYMBOL_BOOTSTRAP_BRANCH=pqc-bootstrap
+# Cache-bust: docker cannot see remote branch updates, so pin the clone layer
+# to the current branch tip. When the branch moves, this ADD's content changes
+# and the layers below rebuild. (Only meaningful for the default GitHub repo;
+# override builds can pass --no-cache instead.)
+ADD https://api.github.com/repos/bootarou/symbol-bootstrap/git/refs/heads/${SYMBOL_BOOTSTRAP_BRANCH} /tmp/symbol-bootstrap-ref.json
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
     && git clone --branch "${SYMBOL_BOOTSTRAP_BRANCH}" --depth 1 "${SYMBOL_BOOTSTRAP_REPO}" /opt/symbol-bootstrap \
     && cd /opt/symbol-bootstrap \
