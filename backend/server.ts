@@ -1660,7 +1660,9 @@ app.post('/api/explorer/build', async (_req, res) => {
     "RUN sed -i \"s|'/explorer-smd/'|'/'|\" vue.config.js",
     // Local dev has no TLS: force ws:// instead of wss:// in httpToWssUrl
     "RUN sed -i \"s|'3000' === url.port ? 'ws:' : 'wss:'|'ws:'|\" src/helper.js",
-    'RUN npm install && npm run build && mv dist www',
+    // pqc-catapult-explorer builds straight into www/ (vue.config outputDir);
+    // fall back to renaming dist/ for branches that still use the default.
+    'RUN npm install && npm run build && ([ -d www ] || mv dist www)',
     // --- Same-origin proxy wrapper ---
     // The original server.js serves static files + /config on port 4000.
     // We rename it, shift to port 4001, and create a thin proxy wrapper on
