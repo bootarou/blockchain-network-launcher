@@ -1588,10 +1588,12 @@ app.get('/api/explorer/namespace-id', (req, res) => {
 // =============================================================================
 // Explorer: Docker image build & container lifecycle
 // =============================================================================
-const EXPLORER_IMAGE = 'symbol-explorer-local';
+const EXPLORER_IMAGE = 'pqc-catapult-explorer-local';
 const EXPLORER_CONTAINER = 'symbol-explorer';
-const EXPLORER_REPO = 'https://github.com/bootarou/explorer-smd.git';
-const EXPLORER_BRANCH = 'main';
+// PQC explorer: displays iVRF block proofs and uses the PQC symbol-sdk
+// (pqc-catapult-sdk-v2, pulled from GitHub during the image build).
+const EXPLORER_REPO = 'https://github.com/bootarou/pqc-catapult-explorer.git';
+const EXPLORER_BRANCH = 'feat-pqc';
 let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
 let explorerBuildErrorMessage = '';
 /** Network name displayed in the Explorer header (persisted across restarts) */
@@ -1642,7 +1644,7 @@ app.post('/api/explorer/build', async (_req, res) => {
   }
   explorerBuildStatus = 'building';
   explorerBuildErrorMessage = '';
-  broadcastLog('[Explorer] Building image from bootarou/explorer-smd (main branch) ...\n');
+  broadcastLog(`[Explorer] Building image from ${EXPLORER_REPO} (${EXPLORER_BRANCH} branch) ...\n`);
   broadcast('EXPLORER_STATUS', { status: 'building' });
 
   // The main branch does not contain a Dockerfile (it's designed for GitHub
