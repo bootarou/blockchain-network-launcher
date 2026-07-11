@@ -41,12 +41,10 @@ interface FetchResult {
   };
 }
 
-// Pre-defined known Symbol endpoints
-const KNOWN_NODES = [
-  { label: 'Mainnet (symbol.services)', url: 'http://wolf.importance.jp:3000' },
-  { label: 'Mainnet (symbol.ninja)', url: 'http://symbol.ninja:3000' },
-  { label: 'Testnet (401-sai-dual)', url: 'http://401-sai-dual.symboltest.net:3000' },
-];
+// PQC edition: no public quick-pick endpoints — official Symbol networks are
+// wire-incompatible with this launcher. Enter the REST URL of a BNL
+// Post-Quantum Catapult node (e.g. http://<pqc-node-host>:3000).
+const KNOWN_NODES: { label: string; url: string }[] = [];
 
 export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
   const { t } = useTranslation();
@@ -216,7 +214,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
       </div>
 
       {/* ── Known Nodes ── */}
-      <div className="flex flex-wrap gap-2">
+      {KNOWN_NODES.length > 0 && <div className="flex flex-wrap gap-2">
         <span className="text-xs text-zinc-500 self-center mr-1">{t('join.knownNodes')}</span>
         {KNOWN_NODES.map((n) => (
           <button
@@ -232,7 +230,7 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
             {n.label}
           </button>
         ))}
-      </div>
+      </div>}
 
       {/* ── URL input ── */}
       <div className="flex gap-3">

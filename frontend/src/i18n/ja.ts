@@ -4,12 +4,12 @@ export const ja: TranslationDict = {
   // ===========================================================================
   // App chrome
   // ===========================================================================
-  'app.title': 'Symbol Network Manager',
+  'app.title': 'BNL Post-Quantum Network Manager',
   'app.subtitle': 'Catapult v1.0.3.1 · Aggregate V3',
   'app.resetConfirm': '全ての設定をデフォルト値にリセットしますか？',
   'app.resetToDefaults': 'デフォルトにリセット',
   'app.reset': 'リセット',
-  'app.footer': 'Symbol Custom Network Manager · Docker-in-Docker · symbol-bootstrap',
+  'app.footer': 'BNL Post-Quantum Network Manager · ML-DSA-44 / ML-KEM-768 / iVRF · 非公式 Symbol フォーク',
   'app.poweredBy': 'Powered by',
 
   // Theme
@@ -472,7 +472,7 @@ export const ja: TranslationDict = {
   // Help Page
   // ===========================================================================
   'help.title': 'ヘルプ・マニュアル',
-  'help.subtitle': 'Symbol Network Manager の使い方',
+  'help.subtitle': 'BNL Post-Quantum Network Manager の使い方',
   'help.toc': '目次',
   'help.tocQuickStart': 'クイックスタート',
   'help.tocCreateNetwork': 'カスタムNW構築',
@@ -684,7 +684,7 @@ export const ja: TranslationDict = {
   'help.techPortTitle': 'ポート一覧',
   'help.techColPort': 'ポート',
   'help.techColUse': '用途',
-  'help.techPort4000': 'Symbol Network Manager Web UI / API',
+  'help.techPort4000': 'BNL Post-Quantum Network Manager Web UI / API',
   'help.techPort7900': 'Symbol P2P ノード通信',
   'help.techPort3000': 'Symbol REST API',
   'help.techPort27017': 'MongoDB（内部のみ）',

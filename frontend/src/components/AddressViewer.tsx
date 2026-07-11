@@ -249,11 +249,19 @@ export function AddressViewer() {
           {renderBalance(account.address)}
         </div>
 
-        {/* Public Key */}
+        {/* Public Key — ML-DSA-44 keys are 1312 B (2624 hex chars), so show a
+            truncated form; the copy button always copies the full value. */}
         <div className="flex items-center gap-2">
           <Key className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="text-xs text-zinc-400">{t('addressViewer.publicKey')}:</span>
-          <code className="text-xs text-emerald-300 font-mono break-all flex-1">{account.publicKey}</code>
+          <code
+            className="text-xs text-emerald-300 font-mono break-all flex-1"
+            title={account.publicKey}
+          >
+            {account.publicKey.length > 68
+              ? `${account.publicKey.slice(0, 32)}…${account.publicKey.slice(-32)} (${account.publicKey.length / 2} B)`
+              : account.publicKey}
+          </code>
           <CopyButton text={account.publicKey} id={`${keyPrefix}-pub`} />
         </div>
 

@@ -4,12 +4,12 @@ export const en: TranslationDict = {
   // ===========================================================================
   // App chrome
   // ===========================================================================
-  'app.title': 'Symbol Network Manager',
+  'app.title': 'BNL Post-Quantum Network Manager',
   'app.subtitle': 'Catapult v1.0.3.1 · Aggregate V3',
   'app.resetConfirm': 'Reset all settings to default values?',
   'app.resetToDefaults': 'Reset to defaults',
   'app.reset': 'Reset',
-  'app.footer': 'Symbol Custom Network Manager · Docker-in-Docker · symbol-bootstrap',
+  'app.footer': 'BNL Post-Quantum Network Manager · ML-DSA-44 / ML-KEM-768 / iVRF · unofficial Symbol fork',
   'app.poweredBy': 'Powered by',
 
   // Theme
@@ -472,7 +472,7 @@ export const en: TranslationDict = {
   // Help Page
   // ===========================================================================
   'help.title': 'Help & Manual',
-  'help.subtitle': 'How to use Symbol Network Manager',
+  'help.subtitle': 'How to use BNL Post-Quantum Network Manager',
   'help.toc': 'Contents',
   'help.tocQuickStart': 'Quick Start',
   'help.tocCreateNetwork': 'Create Network',
@@ -684,7 +684,7 @@ export const en: TranslationDict = {
   'help.techPortTitle': 'Port List',
   'help.techColPort': 'Port',
   'help.techColUse': 'Usage',
-  'help.techPort4000': 'Symbol Network Manager Web UI / API',
+  'help.techPort4000': 'BNL Post-Quantum Network Manager Web UI / API',
   'help.techPort7900': 'Symbol P2P Node Communication',
   'help.techPort3000': 'Symbol REST API',
   'help.techPort27017': 'MongoDB (internal only)',

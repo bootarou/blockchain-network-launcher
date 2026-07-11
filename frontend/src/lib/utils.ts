@@ -595,31 +595,19 @@ export function networkPropertiesToConfig(
   const genHash = String(
     nodeInfo.networkGenerationHashSeed ?? network.generationHashSeed ?? ''
   ).toUpperCase();
-  const presetFromId =
-    genHash === OFFICIAL_MAINNET_GENERATION_HASH
-      ? 'mainnet'
-      : genHash === OFFICIAL_TESTNET_GENERATION_HASH
-        ? 'testnet'
-        : 'bootstrap';
+  // PQC edition: official Symbol networks are wire-incompatible with this
+  // launcher, so refuse them outright instead of importing a config that can
+  // never sync.
+  if (genHash === OFFICIAL_MAINNET_GENERATION_HASH || genHash === OFFICIAL_TESTNET_GENERATION_HASH) {
+    throw new Error(
+      'This node belongs to an official Symbol network (ed25519). ' +
+      'The PQC launcher can only join BNL Post-Quantum Catapult networks.'
+    );
+  }
+  const presetFromId = 'bootstrap';
 
-  // Detect catapult version from node server version
-  // nodeInfo.version is a packed uint32: 0xMMmmPPBB → major.minor.patch.build
-  // e.g. 16777993 = 0x01000309 → 1.0.3.9 (V3), 16777990 = 0x01000306 → 1.0.3.6 (V2)
-  const serverVersion = Number(nodeInfo.version ?? 0);
-  const patchBuild = serverVersion & 0xFFFF; // lower 16 bits = patch.build
-  // For mainnet/testnet, always use V3 as the official networks have upgraded.
-  // For custom networks: V3 if build >= 0x0309 (1.0.3.9+), V2 if build < 0x0309 (1.0.3.6).
-  // IMPORTANT: if nodeInfo.version is 0 (not returned / REST unavailable), serverVersion=0
-  // and patchBuild=0, which would incorrectly detect V2.  We default to V3 in that case
-  // because 1.0.3.9 is the current standard and V2 (1.0.3.6) is only for legacy networks.
-  const isV3 = (ni === 104 || ni === 152)
-    ? true                         // official networks: always V3
-    : serverVersion === 0
-      ? true                       // version unknown → safe default = V3
-      : (patchBuild >= 0x0309);    // custom network: check actual build number
-  const catapultVersion = isV3 ? 'v3' : 'v2';
-
-  // Import CATAPULT_VERSIONS to set correct Docker images
+  // PQC edition has a single built-in catapult version.
+  const catapultVersion = 'pqc';
   const versionPreset = CATAPULT_VERSIONS.find(v => v.id === catapultVersion) ?? CATAPULT_VERSIONS[0];
 
   const partial: Record<string, unknown> = {
