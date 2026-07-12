@@ -6328,12 +6328,29 @@ function runBootstrapCommand(
     activeProcess = cp;
     networkStatus.pid = cp.pid ?? null;
 
+    // Decryption failures are almost always a password mismatch with the one
+    // used when the network was created (e.g. starting a restored backup with
+    // a different password) — surface an actionable hint next to the raw error.
+    const hintOnDecryptError = (text: string) => {
+      if (text.includes('Cannot decrypt file')) {
+        broadcastLog(
+          '[Hint] 💡 パスワードがネットワーク作成時（＝バックアップ取得時）のものと一致していません。' +
+          'addresses.yml の秘密鍵はネットワーク作成時のパスワードで暗号化されており、後から変更できません。' +
+          '作成時のパスワードで再度 Start してください。\n',
+        );
+      }
+    };
+
     cp.stdout?.on('data', (data: Buffer) => {
-      broadcastLog(data.toString());
+      const text = data.toString();
+      broadcastLog(text);
+      hintOnDecryptError(text);
     });
 
     cp.stderr?.on('data', (data: Buffer) => {
-      broadcastLog(data.toString());
+      const text = data.toString();
+      broadcastLog(text);
+      hintOnDecryptError(text);
     });
 
     cp.on('close', (code) => {
