@@ -26,15 +26,16 @@ RUN printf '#!/bin/sh\nexec docker compose "$@"\n' > /usr/local/bin/docker-compo
     && chmod +x /usr/local/bin/docker-compose
 
 # Install symbol-bootstrap — PQC edition.
-# Default: the pqc-bootstrap branch (ML-DSA-44 keys/certs, iVRF VrfKeyLink, PQC nemesis,
-# PQC docker images in presets/shared.yml).
+# Default: the feat-empty-block-policy branch (pqc-bootstrap + emptyBlockPolicy /
+# emptyBlockHeartbeatInterval rendering in config-network.properties and the
+# 1.0.3.9-bnl-ebp server image in presets/shared.yml).
 # NOTE: installed via git clone + npm ci, NOT `npm install -g <git-url>` — npm's
 # git-dependency packing (package.json "files" whitelist, prepack scripts, and a
 # npm 10.8.x symlink-to-tmp-clone bug) produced broken/partial installs.
 # Override at build time:
 #   docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=... --build-arg SYMBOL_BOOTSTRAP_BRANCH=...
 ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
-ARG SYMBOL_BOOTSTRAP_BRANCH=pqc-bootstrap
+ARG SYMBOL_BOOTSTRAP_BRANCH=feat-empty-block-policy
 # Cache-bust: docker cannot see remote branch updates, so pin the clone layer
 # to the current branch tip. When the branch moves, this ADD's content changes
 # and the layers below rebuild. (Only meaningful for the default GitHub repo;
