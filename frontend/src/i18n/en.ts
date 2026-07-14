@@ -695,7 +695,7 @@ export const en: TranslationDict = {
   // Categories (constants.ts metadata)
   // ===========================================================================
   'cat.customConfig.label': 'Custom Settings',
-  'cat.customConfig.desc': 'Custom server properties defined by CUSTOM_CONFIG_PATCHES',
+  'cat.customConfig.desc': 'Extra properties for custom server images (auto-defined for known BNL images; CUSTOM_CONFIG_PATCHES adds/overrides)',
   'cat.general.label': 'General',
   'cat.general.desc': 'Basic network settings & genesis info',
   'cat.nemesisMosaics.label': 'Nemesis Mosaics',

@@ -621,7 +621,30 @@ export interface CustomPatchField {
   defaultValue: string;
 }
 
-export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] =
+// Built-in patch fields for known BNL server images (mirrors the backend's
+// BNL_IMAGE_BUILTIN_PATCHES): listing one of these images in
+// VITE_CUSTOM_SERVER_IMAGE makes its properties editable here without any
+// VITE_CUSTOM_CONFIG_PATCHES. Ordered most-specific first; first match wins.
+const BNL_IMAGE_BUILTIN_PATCH_FIELDS: { pattern: RegExp; fields: CustomPatchField[] }[] = [
+  {
+    // chainFinalization + emptyBlockPolicy edition (e.g. nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp)
+    pattern: /bnl-catapult-server:\S*-ebp$/,
+    fields: [
+      { file: 'config-network.properties', section: '[chain]', key: 'chainFinalizationHeight', defaultValue: '0' },
+      { file: 'config-network.properties', section: '[chain]', key: 'emptyBlockPolicy', defaultValue: 'heartbeat' },
+      { file: 'config-network.properties', section: '[chain]', key: 'emptyBlockHeartbeatInterval', defaultValue: '86400s' },
+    ],
+  },
+  {
+    // chainFinalization edition (e.g. nftdrive/bnl-catapult-server:1.0.3.9-cf1)
+    pattern: /bnl-catapult-server:\S*-cf\d*$/,
+    fields: [
+      { file: 'config-network.properties', section: '[chain]', key: 'chainFinalizationHeight', defaultValue: '0' },
+    ],
+  },
+];
+
+const _envPatchFields: CustomPatchField[] =
   (((import.meta.env.VITE_CUSTOM_CONFIG_PATCHES as string | undefined) ?? '')
     .split(/[\n;]+/)
     .map((s) => s.trim())
@@ -633,20 +656,48 @@ export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] =
     })
     .filter(Boolean)) as CustomPatchField[];
 
+const _builtinPatchFields: CustomPatchField[] = ((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .flatMap((image) => BNL_IMAGE_BUILTIN_PATCH_FIELDS.find((e) => e.pattern.test(image))?.fields ?? []);
+
+// built-in fields first (deduped), then env fields; an env entry for the same
+// file/section/key replaces the built-in default (mirrors the backend merge)
+export const CUSTOM_CONFIG_PATCH_FIELDS: CustomPatchField[] = [
+  ..._builtinPatchFields.filter((b, idx, arr) =>
+    idx === arr.findIndex((x) => x.file === b.file && x.section === b.section && x.key === b.key)
+    && !_envPatchFields.some((e) => e.file === b.file && e.section === b.section && e.key === b.key)),
+  ..._envPatchFields,
+];
+
 if (CUSTOM_CONFIG_PATCH_FIELDS.length > 0) {
   CATEGORIES.unshift({
     id: 'customConfig',
     label: 'カスタム設定',
     icon: 'settings',
-    description: 'CUSTOM_CONFIG_PATCHES で定義されたカスタムサーバー用プロパティ',
+    description: 'カスタムサーバーイメージ用の追加プロパティ（既知の BNL イメージは自動定義、CUSTOM_CONFIG_PATCHES で追加・上書き可）',
     customOnly: true,
-    fields: CUSTOM_CONFIG_PATCH_FIELDS.map((f) => ({
-      key: f.key,
-      label: f.key,
-      type: 'text' as FieldType,
-      description: `${f.file} ${f.section} に注入されます。未入力時は .env の既定値（${f.defaultValue || '空'}）を使用。`,
-      placeholder: f.defaultValue,
-    })),
+    fields: CUSTOM_CONFIG_PATCH_FIELDS.map((f) => (
+      'emptyBlockPolicy' === f.key
+        ? {
+          key: f.key,
+          label: f.key,
+          type: 'select' as FieldType,
+          description: `${f.file} ${f.section} に注入されます。空ブロック抑制ポリシー。未入力時は既定値（${f.defaultValue}）。`,
+          options: [
+            { value: 'normal', label: 'normal — 常に生成(従来)' },
+            { value: 'suppress', label: 'suppress — 空ブロック生成しない' },
+            { value: 'heartbeat', label: 'heartbeat — 一定間隔のみ生成(推奨)' },
+          ],
+        }
+        : {
+          key: f.key,
+          label: f.key,
+          type: 'text' as FieldType,
+          description: `${f.file} ${f.section} に注入されます。未入力時は既定値（${f.defaultValue || '空'}）を使用。`,
+          placeholder: f.defaultValue,
+        })),
   });
 }
 

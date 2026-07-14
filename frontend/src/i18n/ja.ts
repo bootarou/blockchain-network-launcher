@@ -695,7 +695,7 @@ export const ja: TranslationDict = {
   // Categories (constants.ts metadata)
   // ===========================================================================
   'cat.customConfig.label': 'カスタム設定',
-  'cat.customConfig.desc': 'CUSTOM_CONFIG_PATCHES で定義されたカスタムサーバー用プロパティ',
+  'cat.customConfig.desc': 'カスタムサーバーイメージ用の追加プロパティ（既知の BNL イメージは自動定義、CUSTOM_CONFIG_PATCHES で追加・上書き可）',
   'cat.general.label': 'General',
   'cat.general.desc': 'ネットワーク基本設定・ジェネシス情報',
   'cat.nemesisMosaics.label': 'ネメシスモザイク',

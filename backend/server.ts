@@ -2948,9 +2948,56 @@ function parseCustomConfigPatches(raw: string): PropertiesPatch[] {
   return result;
 }
 
-// Frozen copies of the env-parsed CUSTOM_CONFIG_PATCHES defaults. The live
-// postGenPatches get their values overridden per-start from the Configuration
-// UI (ui-meta customConfigValues); these are the fallbacks for unset keys.
+// Built-in config patches for known BNL server images. Selecting one of these
+// images injects its properties automatically — no CUSTOM_CONFIG_PATCHES needed.
+// CUSTOM_CONFIG_PATCHES (.env) and the Configuration UI still override per key.
+// Ordered most-specific first; the first matching pattern wins.
+const BNL_IMAGE_BUILTIN_PATCHES: { pattern: RegExp; patches: PropertiesPatch[] }[] = [
+  {
+    // chainFinalization + emptyBlockPolicy edition
+    // (custom-catapult-chainFinalizationHeight feat-empty-block-policy, e.g. 1.0.3.9-cf1-ebp)
+    pattern: /bnl-catapult-server:\S*-ebp$/,
+    patches: [{
+      file: 'config-network.properties',
+      section: '[chain]',
+      props: {
+        chainFinalizationHeight: '0',
+        emptyBlockPolicy: 'heartbeat',
+        emptyBlockHeartbeatInterval: '86400s',
+      },
+    }],
+  },
+  {
+    // chainFinalization edition (custom-catapult-chainFinalizationHeight main, e.g. 1.0.3.9-cf1)
+    pattern: /bnl-catapult-server:\S*-cf\d*$/,
+    patches: [{
+      file: 'config-network.properties',
+      section: '[chain]',
+      props: { chainFinalizationHeight: '0' },
+    }],
+  },
+];
+
+function builtinPatchesForImage(image: string): PropertiesPatch[] {
+  const entry = BNL_IMAGE_BUILTIN_PATCHES.find((e) => e.pattern.test(image));
+  return entry ? entry.patches.map((p) => ({ ...p, props: { ...p.props } })) : [];
+}
+
+/** Merge \a overrides into a deep copy of \a base (override wins per key). */
+function mergePatches(base: PropertiesPatch[], overrides: PropertiesPatch[]): PropertiesPatch[] {
+  const merged = base.map((p) => ({ ...p, props: { ...p.props } }));
+  for (const o of overrides) {
+    let target = merged.find((p) => p.file === o.file && p.section === o.section);
+    if (!target) { target = { file: o.file, section: o.section, props: {} }; merged.push(target); }
+    Object.assign(target.props, o.props);
+  }
+  return merged;
+}
+
+// Frozen copies of the effective patch defaults (built-in image patches merged
+// with env-parsed CUSTOM_CONFIG_PATCHES). The live postGenPatches get their
+// values overridden per-start from the Configuration UI (ui-meta
+// customConfigValues); these are the fallbacks for unset keys.
 const CUSTOM_EXTRA_PATCH_DEFAULTS: PropertiesPatch[] = [];
 
 if (process.env.CUSTOM_SERVER_IMAGE) {
@@ -2960,20 +3007,32 @@ if (process.env.CUSTOM_SERVER_IMAGE) {
   const extraPatches = process.env.CUSTOM_CONFIG_PATCHES
     ? parseCustomConfigPatches(process.env.CUSTOM_CONFIG_PATCHES)
     : [];
-  CUSTOM_EXTRA_PATCH_DEFAULTS.push(...extraPatches.map((p) => ({ ...p, props: { ...p.props } })));
   const customImages = process.env.CUSTOM_SERVER_IMAGE
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+
+  // per-image patches: built-in defaults for known BNL images, overridden by
+  // CUSTOM_CONFIG_PATCHES; the union of all images feeds the UI defaults below
+  const patchesByImage = new Map<string, PropertiesPatch[]>();
+  for (const image of customImages) {
+    const builtin = builtinPatchesForImage(image);
+    if (builtin.length > 0)
+      console.log(`[CustomConfig] Known BNL image "${image}" — injecting built-in config patches (${builtin.flatMap((p) => Object.keys(p.props)).join(', ')})`);
+    patchesByImage.set(image, mergePatches(builtin, extraPatches));
+  }
+  const allDefaults = [...patchesByImage.values()].reduce((acc, cur) => mergePatches(acc, cur), [] as PropertiesPatch[]);
+  CUSTOM_EXTRA_PATCH_DEFAULTS.push(...allDefaults.map((p) => ({ ...p, props: { ...p.props } })));
+
   customImages.forEach((image, i) => {
     CATAPULT_VERSIONS.push({
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
       serverImage: image,
       needsOpenSslPatch: process.env.CUSTOM_NEEDS_OPENSSL_PATCH === 'true',
       configPatches: v3.configPatches,
-      // postGen only: keeps CUSTOM_CONFIG_PATCHES out of the shared mustache
+      // postGen only: keeps the extra properties out of the shared mustache
       // templates so official v2/v3 runs on this machine are never affected.
-      postGenPatches: extraPatches,
+      postGenPatches: patchesByImage.get(image) ?? [],
       removeProps: v3.removeProps,
     });
   });
@@ -2985,10 +3044,10 @@ if (process.env.CUSTOM_SERVER_IMAGE) {
   // NOTE: official versions get fresh copied arrays — the custom versions
   // above hold references to the ORIGINAL v3.removeProps and must not see
   // these keys (they would strip the very properties postGenPatches adds).
-  if (extraPatches.length > 0) {
+  if (allDefaults.length > 0) {
     for (const ver of CATAPULT_VERSIONS.filter((v) => v.id === 'v2' || v.id === 'v3')) {
       const merged = (ver.removeProps ?? []).map((r) => ({ file: r.file, keys: [...r.keys] }));
-      for (const p of extraPatches) {
+      for (const p of allDefaults) {
         let set = merged.find((r) => r.file === p.file);
         if (!set) { set = { file: p.file, keys: [] }; merged.push(set); }
         for (const k of Object.keys(p.props)) {
