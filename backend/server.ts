@@ -563,6 +563,7 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     'maxRollbackBlocks', 'maxDifficultyBlocks',
     'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
     'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'emptyBlockPolicy', 'emptyBlockHeartbeatInterval',
     'maxMosaicAtomicUnits', 'totalChainImportance',
     'minHarvesterBalance', 'maxHarvesterBalance',
     'minVoterBalance', 'votingSetGrouping', 'maxVotingKeysPerAccount',
@@ -676,6 +677,7 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     'maxRollbackBlocks', 'maxDifficultyBlocks',
     'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
     'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'emptyBlockPolicy', 'emptyBlockHeartbeatInterval',
     'maxMosaicAtomicUnits', 'totalChainImportance',
     'initialCurrencyAtomicUnits',
     'minHarvesterBalance', 'maxHarvesterBalance',
@@ -2873,7 +2875,7 @@ interface CatapultVersionDef {
 const CATAPULT_VERSIONS: CatapultVersionDef[] = [
   {
     id: 'pqc',
-    serverImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+    serverImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp',
     needsOpenSslPatch: false,   // PQC image bakes its own OpenSSL 3.6 deps
     // The PQC server is a 1.0.3.9 derivative, so it needs the same template
     // gap-fills as classic v3 (bootstrap 1.1.10 omits these properties).
@@ -8437,6 +8439,7 @@ app.post('/api/commands/start', async (req, res) => {
             'maxRollbackBlocks', 'maxDifficultyBlocks',
             'maxTransactionLifetime', 'maxBlockFutureTime',
             'maxTransactionsPerBlock', 'maxMosaicAtomicUnits',
+            'emptyBlockPolicy', 'emptyBlockHeartbeatInterval',
             'minHarvesterBalance', 'maxHarvesterBalance',
             'minVoterBalance', 'votingSetGrouping',
             'maxVotingKeysPerAccount', 'minVotingKeyLifetime', 'maxVotingKeyLifetime',

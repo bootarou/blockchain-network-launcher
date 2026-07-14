@@ -34,9 +34,9 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
     id: 'pqc',
     label: 'PQC — BNL Post-Quantum Catapult 1.0.3.9-bnl',
     description: 'ML-DSA-44 signatures / ML-KEM-768 key exchange / iVRF block lottery / ML-DSA finality voting.',
-    symbolServerImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+    symbolServerImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp',
     symbolRestImage: 'nftdrive/bnl-catapult-rest-pqc:2.4.3-bnl',
-    symbolServerToolsImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+    symbolServerToolsImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp',
     needsOpenSslPatch: false,
     configPatches: [
       {
@@ -224,6 +224,8 @@ export interface PresetConfig {
   maxDifficultyBlocks: number;
   maxTransactionsPerBlock: number;
   maxBlockCacheSize: string;
+  emptyBlockPolicy: string;
+  emptyBlockHeartbeatInterval: string;
   totalChainImportance: string;
   initialCurrencyAtomicUnits: string;
   maxMosaicAtomicUnits: string;
@@ -392,6 +394,8 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'maxDifficultyBlocks', label: 'Max Difficulty Blocks', type: 'number', description: '難易度計算ブロック数', min: 1 },
       { key: 'maxTransactionsPerBlock', label: 'Max Txns / Block', type: 'number', description: 'ブロックあたり最大トランザクション数', min: 1 },
       { key: 'maxBlockCacheSize', label: 'Max Block Cache', type: 'text', description: 'キャッシュメモリ上限', placeholder: '10MB' },
+      { key: 'emptyBlockPolicy', label: 'Empty Block Policy', type: 'select', description: '空ブロック抑制ポリシー。normal=常に生成(従来)、suppress=Txなし時は生成しない、heartbeat=Txなし時は Heartbeat Interval 経過時のみ生成。private/data chain では heartbeat 推奨。', options: [{ value: 'normal', label: 'normal — 常に生成(従来)' }, { value: 'suppress', label: 'suppress — 空ブロック生成しない' }, { value: 'heartbeat', label: 'heartbeat — 一定間隔のみ生成(推奨)' }] },
+      { key: 'emptyBlockHeartbeatInterval', label: 'Heartbeat Interval', type: 'text', description: 'heartbeat 時に空ブロックを生成する最小間隔', placeholder: '86400s' },
       { key: 'totalChainImportance', label: 'Total Chain Importance', type: 'text', description: '⚠️ ネットワーク全体インポータンス。nemesis ブロック生成時の harvesting outflows ÷ この値が 10 の冪乗（1, 10, 100…）でなければ起動不可。デフォルト値推奨。変更には Full Reset が必要。' },
       { key: 'initialCurrencyAtomicUnits', label: 'Initial Supply', type: 'text', description: '初期通貨供給量(atomic)' },
       { key: 'maxMosaicAtomicUnits', label: 'Max Mosaic Units', type: 'text', description: 'モザイク供給最大値' },
@@ -812,6 +816,7 @@ export const PRESET_OVERRIDES: Record<string, Partial<PresetConfig>> = {
     harvestBeneficiaryPercentage: 25, harvestNetworkPercentage: 5, harvestNetworkFeeSinkAddress: '',
     maxTransactionsPerAggregate: 100, maxCosignaturesPerAggregate: 25,
     maxTransactionsPerBlock: 6000, blockGenerationTargetTime: '30s',
+    emptyBlockPolicy: 'heartbeat', emptyBlockHeartbeatInterval: '86400s',
     importanceGrouping: 720, maxRollbackBlocks: 0, maxDifficultyBlocks: 60,
     maxVotingKeysPerAccount: 3, minVotingKeyLifetime: 28, maxVotingKeyLifetime: 720,
     maxMosaicsPerAccount: 1000, maxMosaicDuration: '3650d', maxMosaicDivisibility: 6,
@@ -838,9 +843,9 @@ export const DEFAULT_PRESET: PresetConfig = {
   nodeCertificateExpirationInDays: 375,
   certificateExpirationWarningInDays: 30,
 
-  symbolServerImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+  symbolServerImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp',
   symbolRestImage: 'nftdrive/bnl-catapult-rest-pqc:2.4.3-bnl',
-  symbolServerToolsImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl',
+  symbolServerToolsImage: 'nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp',
   symbolExplorerImage: 'symbolplatform/symbol-explorer:1.2.1',
   symbolFaucetImage: 'symbolplatform/symbol-faucet:1.0.1',
   symbolAgentImage: 'symbolplatform/symbol-agent:1.1.1',
@@ -851,6 +856,8 @@ export const DEFAULT_PRESET: PresetConfig = {
   importanceGrouping: 720, importanceActivityPercentage: 5,
   maxRollbackBlocks: 0, maxDifficultyBlocks: 60,
   maxTransactionsPerBlock: 6000, maxBlockCacheSize: '10MB',
+  // private/data chain 推奨: Txなし時は1日1回の heartbeat 空ブロックのみ生成
+  emptyBlockPolicy: 'heartbeat', emptyBlockHeartbeatInterval: '86400s',
   totalChainImportance: "15'000'000",
   initialCurrencyAtomicUnits: "8'998'999'998'000'000",
   maxMosaicAtomicUnits: "9'000'000'000'000'000",

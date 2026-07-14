@@ -134,6 +134,8 @@ export function configToYaml(config: PresetConfig): string {
     maxTransactionLifetime: config.maxTransactionLifetime,
     maxTransactionsPerBlock: config.maxTransactionsPerBlock,
     maxBlockCacheSize: config.maxBlockCacheSize,
+    emptyBlockPolicy: config.emptyBlockPolicy,
+    emptyBlockHeartbeatInterval: config.emptyBlockHeartbeatInterval,
     maxMosaicAtomicUnits: config.maxMosaicAtomicUnits,
     totalChainImportance: config.totalChainImportance,
     minHarvesterBalance: config.minHarvesterBalance,
@@ -250,6 +252,7 @@ export function configToYaml(config: PresetConfig): string {
     'maxRollbackBlocks', 'maxDifficultyBlocks',
     'defaultDynamicFeeMultiplier', 'maxTransactionLifetime',
     'maxTransactionsPerBlock', 'maxBlockCacheSize',
+    'emptyBlockPolicy', 'emptyBlockHeartbeatInterval',
     'maxMosaicAtomicUnits', 'totalChainImportance',
     'initialCurrencyAtomicUnits',
     'minHarvesterBalance', 'maxHarvesterBalance',
@@ -652,6 +655,8 @@ export function networkPropertiesToConfig(
     defaultDynamicFeeMultiplier: restVal(chain.defaultDynamicFeeMultiplier),
     maxTransactionLifetime: chain.maxTransactionLifetime,
     maxTransactionsPerBlock: restVal(chain.maxTransactionsPerBlock),
+    emptyBlockPolicy: chain.emptyBlockPolicy,
+    emptyBlockHeartbeatInterval: chain.emptyBlockHeartbeatInterval,
     maxBlockCacheSize: chain.maxBlockCacheSize
       ? stripApostrophes(String(chain.maxBlockCacheSize))
       : undefined,
