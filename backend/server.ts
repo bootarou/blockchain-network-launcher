@@ -3000,17 +3000,23 @@ function mergePatches(base: PropertiesPatch[], overrides: PropertiesPatch[]): Pr
 // customConfigValues); these are the fallbacks for unset keys.
 const CUSTOM_EXTRA_PATCH_DEFAULTS: PropertiesPatch[] = [];
 
-if (process.env.CUSTOM_SERVER_IMAGE) {
+// The consolidated non-PQC BNL server image (chainFinalization + emptyBlockPolicy)
+// is offered by default alongside the official v2/v3 images. Set
+// CUSTOM_SERVER_IMAGE to test other images instead (comma-separated), or set it
+// to "none" to hide the custom entry entirely. Must match VITE_CUSTOM_SERVER_IMAGE.
+const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
+
+{
   const v3 = CATAPULT_VERSIONS.find((v) => v.id === 'v3')!;
   // Extra properties to append (applied only to custom versions, so official
   // testnet/mainnet runs are never affected).
   const extraPatches = process.env.CUSTOM_CONFIG_PATCHES
     ? parseCustomConfigPatches(process.env.CUSTOM_CONFIG_PATCHES)
     : [];
-  const customImages = process.env.CUSTOM_SERVER_IMAGE
+  const customImages = ((process.env.CUSTOM_SERVER_IMAGE ?? '').trim() || DEFAULT_BNL_SERVER_IMAGE)
     .split(',')
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter((s) => Boolean(s) && 'none' !== s.toLowerCase());
 
   // per-image patches: built-in defaults for known BNL images, overridden by
   // CUSTOM_CONFIG_PATCHES; the union of all images feeds the UI defaults below

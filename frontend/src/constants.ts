@@ -66,27 +66,33 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Optional custom version(s) — for testing locally-built server images.
-// Set VITE_CUSTOM_SERVER_IMAGE (e.g. "catapult-server-bnl:local") to add a
-// "Custom" entry to the Catapult Version dropdown. List several comma-separated
-// to get more than one choice, e.g. "catapult-server-bnl:local,catapult-server-bnl:dev".
+// Custom version(s). By default the consolidated non-PQC BNL server image
+// (chainFinalization + emptyBlockPolicy) is offered alongside the official
+// v2/v3 images. Set VITE_CUSTOM_SERVER_IMAGE to test other images instead
+// (comma-separated, e.g. "catapult-server-bnl:local,catapult-server-bnl:dev"),
+// or set it to "none" to hide the custom entry entirely.
 // Selecting an entry fills the Server Image field with that image. REST/tools
 // images fall back to V3's unless VITE_CUSTOM_REST_IMAGE / VITE_CUSTOM_TOOLS_IMAGE
 // are also set (these apply to every custom entry).
-// NOTE: the backend must also have CUSTOM_SERVER_IMAGE set to the same list so
-// it resolves the custom version instead of defaulting to V3.
+// NOTE: the backend must have CUSTOM_SERVER_IMAGE set to the same list
+// (both sides default to the BNL image when unset).
 // ---------------------------------------------------------------------------
-const _customServerImages = ((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '')
+export const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
+
+const _customServerImages = ((((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '').trim()) || DEFAULT_BNL_SERVER_IMAGE)
   .split(',')
   .map((s) => s.trim())
-  .filter(Boolean);
+  .filter((s) => Boolean(s) && 'none' !== s.toLowerCase());
 if (_customServerImages.length > 0) {
   const _v3 = CATAPULT_VERSIONS[0];
   _customServerImages.forEach((image, i) => {
+    const isBnl = /bnl-catapult-server:\S*-(ebp|cf\d*)$/.test(image);
     CATAPULT_VERSIONS.push({
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
-      label: `Custom — ${image}`,
-      description: 'ローカルビルドのサーバーイメージをテスト（VITE_CUSTOM_SERVER_IMAGE / backend CUSTOM_SERVER_IMAGE）。',
+      label: isBnl ? `BNL — ${image}` : `Custom — ${image}`,
+      description: isBnl
+        ? '公式 Symbol 互換の BNL 版（chainFinalizationHeight + emptyBlockPolicy）。必要な config プロパティは自動注入されます。'
+        : 'ローカルビルドのサーバーイメージをテスト（VITE_CUSTOM_SERVER_IMAGE / backend CUSTOM_SERVER_IMAGE）。',
       symbolServerImage: image,
       symbolRestImage: (import.meta.env.VITE_CUSTOM_REST_IMAGE as string | undefined) || _v3.symbolRestImage,
       symbolServerToolsImage: (import.meta.env.VITE_CUSTOM_TOOLS_IMAGE as string | undefined) || image,
@@ -656,10 +662,7 @@ const _envPatchFields: CustomPatchField[] =
     })
     .filter(Boolean)) as CustomPatchField[];
 
-const _builtinPatchFields: CustomPatchField[] = ((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
+const _builtinPatchFields: CustomPatchField[] = _customServerImages
   .flatMap((image) => BNL_IMAGE_BUILTIN_PATCH_FIELDS.find((e) => e.pattern.test(image))?.fields ?? []);
 
 // built-in fields first (deduped), then env fields; an env entry for the same
