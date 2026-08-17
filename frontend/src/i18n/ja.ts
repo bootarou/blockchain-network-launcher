@@ -636,6 +636,7 @@ export const ja: TranslationDict = {
   'help.catapultColImage': 'イメージ',
   'help.catapultColNote': '備考',
   'help.catapultV2Note': 'Ubuntu 22.04 / OpenSSL 3 ネイティブ',
+  'help.catapultV37Note': 'シークレットロック系 fork height を追加。既存の 1.0.3.7 ネットワーク参加用',
   'help.catapultV3Note': 'パッチイメージ自動ビルド（OpenSSL 互換レイヤー）',
 
   // Buttons

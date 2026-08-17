@@ -636,6 +636,7 @@ export const en: TranslationDict = {
   'help.catapultColImage': 'Image',
   'help.catapultColNote': 'Notes',
   'help.catapultV2Note': 'Ubuntu 22.04 / OpenSSL 3 native',
+  'help.catapultV37Note': 'Adds the secret-lock fork heights. For joining existing 1.0.3.7 networks',
   'help.catapultV3Note': 'Patch image auto-build (OpenSSL compatibility layer)',
 
   // Buttons

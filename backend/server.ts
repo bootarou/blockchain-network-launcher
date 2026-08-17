@@ -2803,6 +2803,42 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
     ],
   },
   {
+    id: 'v37',
+    serverImage: 'symbolplatform/symbol-server:gcc-1.0.3.7',
+    // gcc-1.0.3.7 does not put /usr/catapult/deps on LD_LIBRARY_PATH (only
+    // 1.0.3.9 does), so it uses the system OpenSSL and needs no cnf symlink.
+    needsOpenSslPatch: false,
+    configPatches: [
+      {
+        file: 'config-node.properties',
+        section: '[cache_database]',
+        props: { maxLogFiles: '100', maxLogFileSize: '25MB' },
+      },
+      {
+        file: 'config-network.properties',
+        section: '[fork_heights]',
+        props: {
+          skipSecretLockUniquenessChecks: '',
+          skipSecretLockExpirations: '',
+          forceSecretLockExpirations: '',
+        },
+      },
+    ],
+    // gcc-1.0.3.7 knows exactly 6 fork_height props.  uniqueAggregateTransactionHash
+    // arrived in 1.0.3.9, so a leftover from a previous 1.0.3.9 run aborts the binary
+    // with "configuration bag has unexpected number of properties".
+    removeProps: [
+      {
+        file: 'config-network.properties',
+        keys: ['uniqueAggregateTransactionHash'],
+      },
+      {
+        file: 'config-node.properties',
+        keys: ['nodeEqualityStrategy'],
+      },
+    ],
+  },
+  {
     id: 'v2',
     serverImage: 'symbolplatform/symbol-server:gcc-1.0.3.6',
     needsOpenSslPatch: false,   // gcc-1.0.3.6 is Ubuntu 22.04 — OpenSSL 3 native

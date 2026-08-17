@@ -1,6 +1,6 @@
 // =============================================================================
 // Symbol Custom Network Manager — Complete Preset Configuration
-// Supports Catapult V2 (1.0.3.6) and V3 (1.0.3.9)
+// Supports Catapult V2 (1.0.3.6), 1.0.3.7 and V3 (1.0.3.9)
 // =============================================================================
 
 // Compute today's Unix timestamp (seconds) at module load time.
@@ -49,6 +49,31 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
           skipSecretLockExpirations: '',
           forceSecretLockExpirations: '',
           uniqueAggregateTransactionHash: '0',
+        },
+      },
+    ],
+  },
+  {
+    id: 'v37',
+    label: 'Catapult 1.0.3.7',
+    description: 'For existing networks still running 1.0.3.7. Adds the secret-lock fork heights but not Aggregate V3.',
+    symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.7',
+    symbolRestImage: 'symbolplatform/symbol-rest:2.4.4',
+    symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.7',
+    needsOpenSslPatch: false,
+    configPatches: [
+      {
+        file: 'config-node.properties',
+        section: '[cache_database]',
+        props: { maxLogFiles: '100', maxLogFileSize: '25MB' },
+      },
+      {
+        file: 'config-network.properties',
+        section: '[fork_heights]',
+        props: {
+          skipSecretLockUniquenessChecks: '',
+          skipSecretLockExpirations: '',
+          forceSecretLockExpirations: '',
         },
       },
     ],
