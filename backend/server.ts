@@ -9569,6 +9569,168 @@ app.post('/api/commands/crashRecovery', async (req, res) => {
 });
 
 // =============================================================================
+// Inflation presets
+//
+// The inflation schedule is the one piece of network configuration that REST
+// does NOT expose via /network/properties, so a joining node silently falls
+// back to zero inflation and diverges from the network at the first height
+// that pays a block reward.  The schedules are read from the symbol-bootstrap
+// package that ships in this image rather than hardcoded, so they stay in sync
+// when the bundled bootstrap version changes.
+// =============================================================================
+
+interface InflationEntry { startHeight: number; amount: string }
+
+function resolveBootstrapPresetsDirs(): string[] {
+  const dirs: string[] = [];
+  const add = (dir: string) => {
+    if (fs.existsSync(dir) && !dirs.includes(dir)) dirs.push(dir);
+  };
+  // The npx cache is what runBootstrapCommand() actually executes, so prefer it.
+  try {
+    const npxCacheDir = path.join(process.env.HOME || '/root', '.npm', '_npx');
+    if (fs.existsSync(npxCacheDir)) {
+      for (const sub of fs.readdirSync(npxCacheDir)) {
+        add(path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'presets'));
+      }
+    }
+  } catch { /* fall through to the global install */ }
+  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
+  return dirs;
+}
+
+/** Parse an `inflation:` map (`starting-at-height-N: amount`) into sorted entries. */
+function inflationMapToEntries(map: unknown): InflationEntry[] {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
+  return Object.entries(map as Record<string, unknown>)
+    .map(([key, value]) => {
+      const m = key.match(/starting-at-height-(\d+)/);
+      return m ? { startHeight: Number(m[1]), amount: String(value) } : null;
+    })
+    .filter((e): e is InflationEntry => e !== null)
+    .sort((a, b) => a.startHeight - b.startHeight);
+}
+
+function readInflationFromBootstrapPreset(presetName: string): InflationEntry[] {
+  for (const dir of resolveBootstrapPresetsDirs()) {
+    const file = path.join(dir, presetName, 'network.yml');
+    if (!fs.existsSync(file)) continue;
+    try {
+      const doc = yaml.load(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+      const entries = inflationMapToEntries(doc?.inflation);
+      if (entries.length > 0) return entries;
+    } catch { /* try the next candidate directory */ }
+  }
+  return [];
+}
+
+/** testnet and mainnet ship byte-identical curves, so the pair is exposed once. */
+function getInflationPresets(): { id: string; label: string; entries: InflationEntry[] }[] {
+  const presets: { id: string; label: string; entries: InflationEntry[] }[] = [];
+  const zero = readInflationFromBootstrapPreset('bootstrap');
+  if (zero.length > 0) {
+    presets.push({ id: 'zero', label: 'Zero inflation (bootstrap preset)', entries: zero });
+  }
+  const symbol = readInflationFromBootstrapPreset('testnet');
+  if (symbol.length > 0) {
+    presets.push({ id: 'symbol', label: 'Symbol standard curve (testnet / mainnet)', entries: symbol });
+  }
+  return presets;
+}
+
+app.get('/api/inflation-presets', (_req, res) => {
+  try {
+    res.json({ presets: getInflationPresets() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Effective per-block inflation at `height` for a schedule. */
+function expectedInflationAt(entries: InflationEntry[], height: number): number {
+  let amount = 0;
+  for (const entry of entries) {
+    if (height < entry.startHeight) break;
+    amount = Number(entry.amount);
+  }
+  return amount;
+}
+
+/**
+ * Read the inflation receipt (type 0x5143) amount at a height.
+ * Returns 0 when the block carries no inflation receipt, null when unreachable.
+ */
+async function probeInflationAt(base: string, height: number): Promise<number | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    const r = await fetch(`${base}/statements/transaction?height=${height}&pageSize=50`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!r.ok) return null;
+    const body = await r.json() as { data?: { statement?: { receipts?: { type?: number; amount?: string }[] } }[] };
+    const statements = body?.data ?? [];
+    // Every block carries at least one receipt statement — the harvest-fee
+    // receipt (0x2143), present with amount 0 even when nothing is paid out.
+    // So an empty response means the height is not served (pruned / unindexed),
+    // NOT "no inflation".  Reporting 0 here would let an inflating chain be
+    // misidentified as zero-inflation, which is the exact failure this detection
+    // exists to prevent — so report "unknown" and let the caller give up.
+    if (statements.length === 0) return null;
+    for (const s of statements) {
+      for (const receipt of s?.statement?.receipts ?? []) {
+        if (Number(receipt?.type) === 0x5143) return Number(receipt.amount ?? 0);
+      }
+    }
+    return 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Identify which bundled schedule a running network uses, by sampling the
+ * inflation receipts around each candidate step boundary.
+ *
+ * Matching (rather than reconstructing) matters: receipts only reveal steps
+ * below the current chain height, so a reconstructed schedule would stall the
+ * node again at the next future step.  A matched preset carries the whole curve.
+ */
+async function detectInflationPreset(
+  base: string,
+  chainHeight: number,
+): Promise<{ id: string; label: string; entries: InflationEntry[] } | null> {
+  const presets = getInflationPresets();
+  if (presets.length === 0 || chainHeight < 2) return null;
+
+  // Probe each step boundary that the chain has already passed, plus the block
+  // before it — that pair is what discriminates one schedule from another.
+  const heights = new Set<number>();
+  for (const preset of presets) {
+    for (const entry of preset.entries) {
+      if (entry.startHeight > chainHeight) break;
+      if (entry.startHeight >= 1) heights.add(entry.startHeight);
+      if (entry.startHeight - 1 >= 1) heights.add(entry.startHeight - 1);
+    }
+  }
+  heights.add(Math.max(1, chainHeight - 1));
+  // Early boundaries discriminate the most; cap the probe count.
+  const probeHeights = [...heights].sort((a, b) => a - b).slice(0, 12);
+
+  const samples: { height: number; amount: number }[] = [];
+  for (const height of probeHeights) {
+    const amount = await probeInflationAt(base, height);
+    if (amount === null) return null;   // source unreachable — do not guess
+    samples.push({ height, amount });
+  }
+
+  const matches = presets.filter((preset) =>
+    samples.every((s) => expectedInflationAt(preset.entries, s.height) === s.amount));
+
+  // Ambiguous (or no) match means we cannot safely pick one.
+  return matches.length === 1 ? matches[0] : null;
+}
+
+// =============================================================================
 // Join Network — fetch network properties from a remote node
 // =============================================================================
 
@@ -9597,11 +9759,12 @@ app.post('/api/network/fetch', async (req, res) => {
     broadcastLog(`[JoinNetwork] Fetching from ${base} ...\n`);
 
     // Parallel fetch: network/properties, node/info, node/peers, network/fees/transaction
-    const [networkProps, nodeInfo, peers, txFees] = await Promise.all([
+    const [networkProps, nodeInfo, peers, txFees, chainInfo] = await Promise.all([
       fetchJson('/network/properties'),
       fetchJson('/node/info'),
       fetchJson('/node/peers').catch(() => []),
       fetchJson('/network/fees/transaction').catch(() => ({})),
+      fetchJson('/chain/info').catch(() => ({})),
     ]);
 
     broadcastLog(`[JoinNetwork] network/properties ✓\n`);
@@ -9659,6 +9822,24 @@ app.post('/api/network/fetch', async (req, res) => {
       }
     }
 
+    // Inflation is absent from /network/properties, so identify the schedule
+    // from the chain's own inflation receipts.  Non-fatal: on no/ambiguous
+    // match the user picks a preset (or imports a file) in Configuration.
+    let detectedInflation: { id: string; label: string; entries: InflationEntry[] } | null = null;
+    const sourceHeight = Number((chainInfo as { height?: string })?.height ?? 0);
+    if (sourceHeight > 1) {
+      try {
+        detectedInflation = await detectInflationPreset(base, sourceHeight);
+        if (detectedInflation) {
+          broadcastLog(`[JoinNetwork] inflation ✓  matched "${detectedInflation.label}" (${detectedInflation.entries.length} entries)\n`);
+        } else {
+          broadcastLog('[JoinNetwork] ⚠️  inflation schedule could not be identified — set it manually in Configuration → Inflation before starting\n');
+        }
+      } catch {
+        broadcastLog('[JoinNetwork] ⚠️  inflation detection failed (non-fatal)\n');
+      }
+    }
+
     res.json({
       success: true,
       networkProperties: networkProps,
@@ -9667,6 +9848,7 @@ app.post('/api/network/fetch', async (req, res) => {
       minFeeMultiplier: minFee,
       mosaicInfo,
       mosaicNames,
+      detectedInflation,
     });
   } catch (err: any) {
     broadcastLog(`[JoinNetwork] Error: ${err.message}\n`);

@@ -272,9 +272,13 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   const [activeTab, setActiveTab] = useState('general');
   const [showYaml, setShowYaml] = useState(false);
   const [isDockerDesktop, setIsDockerDesktop] = useState(false);
+  const [inflationPresets, setInflationPresets] = useState<
+    { id: string; label: string; entries: InflationEntry[] }[]
+  >([]);
 
   useEffect(() => {
     api.getDockerEnv().then((env) => setIsDockerDesktop(env.isDockerDesktop));
+    api.getInflationPresets().then(setInflationPresets);
   }, []);
 
   // Official mainnet/testnet: network-level parameters are fixed by the chain,
@@ -415,6 +419,37 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   };
   const removeInflation = (index: number) => {
     onChange({ ...config, inflation: config.inflation.filter((_, i) => i !== index) });
+  };
+  const applyInflationPreset = (entries: InflationEntry[]) => {
+    if (config.inflation.length > 0 && !confirm(t('config.inflationReplaceConfirm'))) return;
+    onChange({ ...config, inflation: entries.map((e) => ({ ...e })) });
+  };
+  /**
+   * Import a catapult config-inflation.properties. The escape hatch for networks
+   * whose schedule matches none of the bundled presets — the file is the only
+   * way to get it, since REST never exposes the schedule.
+   */
+  const importInflationFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const entries: InflationEntry[] = [];
+      for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';') || trimmed.startsWith('[')) continue;
+        const m = trimmed.match(/^starting-at-height-(\d+)\s*=\s*(.*)$/);
+        if (m) entries.push({ startHeight: Number(m[1]), amount: m[2].trim().replace(/'/g, '') || '0' });
+      }
+      if (entries.length === 0) {
+        alert(t('config.inflationImportEmpty'));
+        return;
+      }
+      entries.sort((a, b) => a.startHeight - b.startHeight);
+      if (config.inflation.length > 0 && !confirm(t('config.inflationReplaceConfirm'))) return;
+      onChange({ ...config, inflation: entries });
+      alert(t('config.inflationImportOk').replace('{count}', String(entries.length)));
+    } catch (err) {
+      alert(`${t('config.inflationImportFailed')} ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // Nemesis mosaic helpers
@@ -749,6 +784,37 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
             </div>
           ) : (
             <>
+              {/* Preset fill / file import — REST never exposes the schedule,
+                  so it has to come from a bundled preset or a config file. */}
+              <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4 space-y-3">
+                <p className="text-xs text-zinc-400">{t('config.inflationPresetHelp')}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {inflationPresets.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => applyInflationPreset(preset.entries)}
+                      className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-100 rounded-lg text-xs font-medium transition-colors"
+                    >
+                      {preset.label} ({preset.entries.length})
+                    </button>
+                  ))}
+                  <label className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-100 rounded-lg text-xs font-medium transition-colors cursor-pointer">
+                    {t('config.inflationImport')}
+                    <input
+                      type="file"
+                      accept=".properties,text/plain"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) void importInflationFile(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+
               {/* Column headers */}
               <div className="grid grid-cols-[1fr_1.5fr_auto] gap-3 px-1">
                 <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{t('config.startingHeight')}</span>
@@ -763,7 +829,7 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
                     <input
                       type="number"
                       value={entry.startHeight}
-                      min={2}
+                      min={1}
                       onChange={(e) => handleInflationChange(i, 'startHeight', e.target.value)}
                       className={inputBase}
                       placeholder="2"

@@ -162,6 +162,12 @@ export const en: TranslationDict = {
   'config.inflationExLine2': 'height=1000, amount=0 → Zero inflation from block 1000',
   'config.inflationZero': 'Zero inflation:',
   'config.inflationZeroDesc': 'height=2, amount=0 (default) → No new issuance',
+  'config.inflationPresetHelp': 'REST does not expose the inflation schedule, so a joining node cannot discover it. Pick the same schedule the target network uses, or import its config-inflation.properties. A mismatch fails block validation at the first height that pays a reward and stalls the sync.',
+  'config.inflationImport': 'Import config-inflation.properties',
+  'config.inflationReplaceConfirm': 'This replaces every current inflation entry. Continue?',
+  'config.inflationImportEmpty': 'No starting-at-height-N lines found. Please select a config-inflation.properties file.',
+  'config.inflationImportOk': 'Imported {count} inflation entries. Save, then apply with "Apply all settings and start".',
+  'config.inflationImportFailed': 'Import failed:',
   'config.startingHeight': 'Starting Height',
   'config.amount': 'Amount (per block, atomic)',
 
@@ -396,6 +402,8 @@ export const en: TranslationDict = {
   'join.blockTarget': 'Block Target',
   'join.currencyMosaic': 'Currency Mosaic',
   'join.peersFound': 'Peers Found',
+  'join.inflationDetected': '✅ Inflation schedule detected: "{label}". REST does not expose it, so it was identified from the chain\'s inflation receipts and imported.',
+  'join.inflationUnknown': '⚠️ Could not identify the inflation schedule. REST does not expose it. Set the same schedule the target network uses in Configuration → Inflation, or import its config-inflation.properties. Starting without it fails block validation at the first height that pays a reward and stalls the sync.',
   'join.configHint': 'Review and customize fetched settings in the Configuration tab',
   'join.peersTable': 'Discovered Peer Nodes',
 

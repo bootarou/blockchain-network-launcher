@@ -162,6 +162,12 @@ export const ja: TranslationDict = {
   'config.inflationExLine2': 'height=1000, amount=0 → ブロック1000以降ゼロインフレ',
   'config.inflationZero': 'ゼロインフレ:',
   'config.inflationZeroDesc': 'height=2, amount=0（初期設定）→ 新規発行なし',
+  'config.inflationPresetHelp': 'インフレ設定は REST API に公開されないため、参加ノードが自動取得できません。参加先と同じスケジュールを選ぶか、参加先の config-inflation.properties をインポートしてください。不一致だと報酬が発生する高さでブロック検証に失敗し、同期が止まります。',
+  'config.inflationImport': 'config-inflation.properties を読み込む',
+  'config.inflationReplaceConfirm': '現在のインフレ設定をすべて置き換えます。続行しますか？',
+  'config.inflationImportEmpty': 'starting-at-height-N の行が見つかりませんでした。config-inflation.properties を選択してください。',
+  'config.inflationImportOk': '{count} 件のインフレエントリを読み込みました。保存してから「設定を完全適用して起動」で反映してください。',
+  'config.inflationImportFailed': 'インポートに失敗しました:',
   'config.startingHeight': 'Starting Height',
   'config.amount': 'Amount (per block, atomic)',
 
@@ -396,6 +402,8 @@ export const ja: TranslationDict = {
   'join.blockTarget': 'Block Target',
   'join.currencyMosaic': 'Currency Mosaic',
   'join.peersFound': 'Peers Found',
+  'join.inflationDetected': '✅ インフレ設定を検出しました:「{label}」。REST では取得できない項目のため、チェーンのインフレ receipt から判定して取り込みました。',
+  'join.inflationUnknown': '⚠️ インフレ設定を特定できませんでした。REST では取得できない項目です。参加先と同じスケジュールを Configuration → Inflation で設定するか、参加先の config-inflation.properties をインポートしてください。設定しないまま起動すると、報酬が発生する高さでブロック検証に失敗し同期が止まります。',
   'join.configHint': 'Configuration タブで取得した設定を確認・カスタマイズできます',
   'join.peersTable': '発見されたピアノード',
 

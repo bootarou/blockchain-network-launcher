@@ -629,7 +629,8 @@ export const GATEWAY_FIELDS: FieldMeta[] = [
 ];
 
 export const INFLATION_FIELDS: FieldMeta[] = [
-  { key: 'startHeight', label: 'Starting Height', type: 'number', description: '適用開始ブロック高', min: 2 },
+  // min 1: symbol-bootstrap's own bootstrap preset ships starting-at-height-1.
+  { key: 'startHeight', label: 'Starting Height', type: 'number', description: '適用開始ブロック高', min: 1 },
   { key: 'amount', label: 'Amount (per block)', type: 'text', description: 'ブロックあたりの報酬額 (atomic単位)' },
 ];
 
