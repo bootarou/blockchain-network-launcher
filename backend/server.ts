@@ -8589,11 +8589,11 @@ app.post('/api/commands/start', async (req, res) => {
         broadcastLog(`[Peers] ✅ ピア設定を確認: ${peerCount} 件\n`);
       }
 
-      // Step 4c2b: Write config-inflation.properties from .ui-meta.json.
+      // Step 4c2: Write config-inflation.properties from .ui-meta.json.
       //   Unconditional: the schedule is local configuration, so it must be
       //   applied whether or not the source node happened to be reachable,
       //   and whether or not this is a join node.
-      broadcastLog('[System] Step 4c2b – Applying inflation schedule...\n');
+      broadcastLog('[System] Step 4c2 – Applying inflation schedule...\n');
       patchInflationConfig(TARGET_DIR);
 
       // Step 4c3: Refresh live peer public keys.
@@ -8644,9 +8644,9 @@ app.post('/api/commands/start', async (req, res) => {
         }
       }
 
-      // Step 4c2: Patch config-node.properties so that the Docker subnet is
+      // Step 4c5: Patch config-node.properties so that the Docker subnet is
       //           listed in trustedHosts / localNetworks (REST gateway access).
-      broadcastLog('[System] Step 4c2 – Patching localNetworks & generating REST cert...\n');
+      broadcastLog('[System] Step 4c5 – Patching localNetworks & generating REST cert...\n');
       patchLocalNetworks(TARGET_DIR);
       generateRestGatewayCert(TARGET_DIR);
 
