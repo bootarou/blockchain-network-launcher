@@ -24,11 +24,13 @@ export function ExplorerManager({ config, nodeRunning }: ExplorerManagerProps) {
   const [status, setStatus] = useState<ExplorerStatus>('not-built');
   const [loading, setLoading] = useState(false);
 
+  // Public = official network preset only. networkType is NOT a reliable
+  // signal here: custom networks also use the testnet network identifier
+  // (networkType: 'testnet'), so it is consulted only when preset is unset.
   const isPublicPreset =
     config.preset === 'testnet' ||
     config.preset === 'mainnet' ||
-    config.networkType === 'testnet' ||
-    config.networkType === 'mainnet';
+    (!config.preset && (config.networkType === 'testnet' || config.networkType === 'mainnet'));
 
   // Pre-fill namespace config from user's preset
   const defaultNsName =

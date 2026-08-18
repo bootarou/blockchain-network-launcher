@@ -31,6 +31,8 @@ interface JoinNetworkProps {
 
 interface FetchResult {
   partial: Partial<PresetConfig>;
+  /** Which bundled inflation schedule the source chain matched, if any. */
+  inflationLabel: string | null;
   raw: {
     networkProperties: Record<string, unknown>;
     nodeInfo: Record<string, unknown>;
@@ -166,8 +168,19 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
         data.mosaicNames ?? [],
       );
 
+      // The inflation schedule is absent from /network/properties; the backend
+      // identifies it from the chain's inflation receipts instead.  Adopting the
+      // matched preset (not just the observed steps) also covers future steps
+      // the chain has not reached yet.
+      const detected = data.detectedInflation as
+        { id: string; label: string; entries: { startHeight: number; amount: string }[] } | null | undefined;
+      if (detected?.entries?.length) {
+        partial.inflation = detected.entries.map((e) => ({ ...e }));
+      }
+
       setResult({
         partial,
+        inflationLabel: detected?.label ?? null,
         raw: {
           networkProperties: data.networkProperties,
           nodeInfo: data.nodeInfo,
@@ -414,6 +427,18 @@ export function JoinNetwork({ onConfigImport }: JoinNetworkProps) {
               sub={`Min Fee: ${result.raw.minFeeMultiplier ?? '—'}`}
             />
           </div>
+
+          {/* Inflation — not carried by /network/properties, so it is reported
+              separately and must be resolved before starting the node. */}
+          {result.inflationLabel ? (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-4 py-3 text-xs text-emerald-300">
+              {t('join.inflationDetected').replace('{label}', result.inflationLabel)}
+            </div>
+          ) : (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-4 py-3 text-xs text-amber-300">
+              {t('join.inflationUnknown')}
+            </div>
+          )}
 
           {/* Key properties table */}
           <div className="bg-zinc-900/70 border border-zinc-800 rounded-lg overflow-hidden">

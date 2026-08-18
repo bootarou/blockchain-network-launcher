@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut, Cloud, Wrench, Play } from 'lucide-react';
+import { Server, RotateCcw, Globe, HelpCircle, Share2, ShieldCheck, Languages, Sun, Moon, LogOut, Cloud, Wrench, Play, Menu } from 'lucide-react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { JoinNetwork } from './components/JoinNetwork';
@@ -22,6 +22,7 @@ import { useTheme } from './theme';
 function App() {
   const [config, setConfig] = useState<PresetConfig>(DEFAULT_PRESET);
   const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'operations' | 'manage' | 'explorer' | 'join' | 'share' | 'publish' | 'backup' | 'help'>('config');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { t, lang, setLang } = useTranslation();
   const { theme, toggleTheme } = useTheme();
 
@@ -142,17 +143,34 @@ function App() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50 lg:flex">
-      <SidebarNav activePanel={activePanel} onNavigate={setActivePanel} />
+      <SidebarNav
+        activePanel={activePanel}
+        onNavigate={(panel) => {
+          setActivePanel(panel);
+          setMobileNavOpen(false);
+        }}
+        mobileOpen={mobileNavOpen}
+        onMobileClose={() => setMobileNavOpen(false)}
+      />
 
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
         {/* ── Header ── */}
         <header className="sticky top-0 z-40 border-b border-zinc-800 bg-zinc-950/85 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-4 px-4 py-3 sm:px-6">
-            <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Workspace</p>
-              <h2 className="truncate text-sm font-medium text-zinc-200">
-                {t('app.subtitle')}
-              </h2>
+            <div className="flex min-w-0 items-center gap-3">
+              <button
+                onClick={() => setMobileNavOpen(true)}
+                aria-label="Open menu"
+                className="lg:hidden shrink-0 rounded-lg border border-zinc-800 p-2 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">Workspace</p>
+                <h2 className="truncate text-sm font-medium text-zinc-200">
+                  {t('app.subtitle')}
+                </h2>
+              </div>
             </div>
 
             <div className="flex items-center gap-2 sm:gap-3">

@@ -11,6 +11,7 @@ import {
   Play,
   BookOpen,
   Monitor,
+  X,
 } from 'lucide-react';
 import { NodeHealthIndicator } from './NodeHealthIndicator';
 import { useTranslation } from '../i18n';
@@ -30,6 +31,9 @@ type ActivePanel =
 interface SidebarNavProps {
   activePanel: ActivePanel;
   onNavigate: (panel: ActivePanel) => void;
+  /** Mobile drawer state — controlled by the hamburger button in the App header. */
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 type NavItem = {
@@ -51,7 +55,7 @@ const toneClasses: Record<NavItem['tone'], { active: string; icon: string }> = {
   amber: { active: 'bg-amber-600 text-white', icon: 'text-amber-300' },
 };
 
-export function SidebarNav({ activePanel, onNavigate }: SidebarNavProps) {
+export function SidebarNav({ activePanel, onNavigate, mobileOpen = false, onMobileClose }: SidebarNavProps) {
   const { t } = useTranslation();
 
   const items: NavItem[] = [
@@ -108,36 +112,66 @@ export function SidebarNav({ activePanel, onNavigate }: SidebarNavProps) {
     );
   };
 
-  return (
-    <aside className="w-full lg:w-80 xl:w-84 shrink-0 border-b lg:border-b-0 lg:border-r border-zinc-800 bg-zinc-950/95 backdrop-blur-sm lg:sticky lg:top-0 lg:h-screen overflow-y-auto">
-      <div className="p-4 lg:p-5 space-y-5">
-        <div className="rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900 to-zinc-950 p-4 shadow-xl shadow-black/20">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-indigo-400" />
-                <h1 className="text-lg font-bold leading-tight bg-gradient-to-r from-indigo-300 to-violet-300 bg-clip-text text-transparent">
-                  {t('app.title')}
-                </h1>
-              </div>
-              <p className="mt-2 text-xs text-zinc-500 leading-relaxed">{t('app.subtitle')}</p>
+  const navContent = (
+    <div className="p-4 lg:p-5 space-y-5">
+      <div className="rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900 to-zinc-950 p-4 shadow-xl shadow-black/20">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-indigo-400" />
+              <h1 className="text-lg font-bold leading-tight bg-gradient-to-r from-indigo-300 to-violet-300 bg-clip-text text-transparent">
+                {t('app.title')}
+              </h1>
             </div>
-            <div className="hidden lg:block">
-              <NodeHealthIndicator />
-            </div>
+            <p className="mt-2 text-xs text-zinc-500 leading-relaxed">{t('app.subtitle')}</p>
+          </div>
+          <div className="hidden lg:block">
+            <NodeHealthIndicator />
           </div>
         </div>
-
-        <div className="space-y-4">
-          {renderGroup('core', t('sidebar.groupCore'), t('sidebar.groupCoreDesc'))}
-          {renderGroup('tools', t('sidebar.groupTools'), t('sidebar.groupToolsDesc'))}
-          {renderGroup('support', t('sidebar.groupSupport'), t('sidebar.groupSupportDesc'))}
-        </div>
-
-        <div className="lg:hidden pt-2">
-          <NodeHealthIndicator />
-        </div>
       </div>
-    </aside>
+
+      <div className="space-y-4">
+        {renderGroup('core', t('sidebar.groupCore'), t('sidebar.groupCoreDesc'))}
+        {renderGroup('tools', t('sidebar.groupTools'), t('sidebar.groupToolsDesc'))}
+        {renderGroup('support', t('sidebar.groupSupport'), t('sidebar.groupSupportDesc'))}
+      </div>
+
+      <div className="lg:hidden pt-2">
+        <NodeHealthIndicator />
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      {/* Desktop: fixed sidebar (unchanged behaviour) */}
+      <aside className="hidden lg:block lg:w-80 xl:w-84 shrink-0 border-r border-zinc-800 bg-zinc-950/95 backdrop-blur-sm lg:sticky lg:top-0 lg:h-screen overflow-y-auto">
+        {navContent}
+      </aside>
+
+      {/* Mobile: slide-over drawer opened from the header hamburger */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={onMobileClose}
+            aria-hidden="true"
+          />
+          <aside className="absolute inset-y-0 left-0 w-80 max-w-[85vw] overflow-y-auto border-r border-zinc-800 bg-zinc-950 shadow-2xl">
+            <div className="flex justify-end px-4 pt-3 -mb-2">
+              <button
+                onClick={onMobileClose}
+                aria-label="Close menu"
+                className="rounded-lg border border-zinc-800 p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {navContent}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
