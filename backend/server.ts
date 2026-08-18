@@ -624,6 +624,25 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     doc.faucet = { port: flat.faucetPort ?? 4000, amount: flat.faucetAmount ?? 500000000 };
   }
 
+  // ── Finalization (consensus-relevant subset) ──
+  // These are top-level preset keys that feed config-finalization.properties.
+  // REST never exposes them, so a joining node otherwise silently keeps the
+  // base preset's defaults and can disagree with the network on whether a
+  // block is finalized.  Written as scalars, so a custom preset value cleanly
+  // overrides the base preset (unlike the inflation map, where absent keys
+  // survive the merge).
+  for (const key of [
+    'finalizationSize', 'finalizationThreshold',
+    'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+  ] as const) {
+    if (flat[key] !== undefined && flat[key] !== '') doc[key] = Number(flat[key]);
+  }
+  if (Array.isArray(flat.treasuryReissuanceEpochIneligibleVoterAddresses)
+      && flat.treasuryReissuanceEpochIneligibleVoterAddresses.length > 0) {
+    doc.treasuryReissuanceEpochIneligibleVoterAddresses =
+      [...flat.treasuryReissuanceEpochIneligibleVoterAddresses as string[]];
+  }
+
   // ── Inflation schedule (custom/private networks) ──
   if (Array.isArray(flat.inflation) && flat.inflation.length > 0) {
     const inflObj: Record<string, unknown> = {};
@@ -813,6 +832,18 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
     flat.faucetEnabled = true;
     if (fau.port) flat.faucetPort = fau.port;
     if (fau.amount) flat.faucetAmount = fau.amount;
+  }
+
+  // Flatten finalization
+  for (const key of [
+    'finalizationSize', 'finalizationThreshold',
+    'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+  ] as const) {
+    if (doc[key] !== undefined) flat[key] = Number(doc[key]);
+  }
+  if (Array.isArray(doc.treasuryReissuanceEpochIneligibleVoterAddresses)) {
+    flat.treasuryReissuanceEpochIneligibleVoterAddresses =
+      (doc.treasuryReissuanceEpochIneligibleVoterAddresses as unknown[]).map(String);
   }
 
   // Flatten inflation
@@ -1275,7 +1306,28 @@ app.get('/api/docker-env', (_req, res) => {
 // Network status endpoint
 // =============================================================================
 
+// networkStatus lives in memory, so it drifts from reality when containers
+// are started/stopped outside this API (manual docker compose, node crash,
+// crash recovery followed by an external start).  Reconcile the two steady
+// states against the actual container state on poll; transitional states
+// ('starting' / 'stopping') belong to an in-flight command and are left alone.
+let lastStateReconcileAt = 0;
 app.get('/api/status', (_req, res) => {
+  const now = Date.now();
+  if (
+    !isStartSequenceInFlight
+    && (networkStatus.state === 'stopped' || networkStatus.state === 'running')
+    && now - lastStateReconcileAt > 4_000
+  ) {
+    lastStateReconcileAt = now;
+    const actual = areNodeContainersRunning() ? 'running' : 'stopped';
+    if (networkStatus.state !== actual) {
+      networkStatus.state = actual;
+      networkStatus.lastCommand = '(reconciled with container state)';
+      networkStatus.lastCommandTime = new Date().toISOString();
+      broadcastStatus();
+    }
+  }
   res.json(networkStatus);
 });
 
@@ -2863,6 +2915,42 @@ const CATAPULT_VERSIONS: CatapultVersionDef[] = [
     // it in config-node.properties too, which makes the broker binary crash
     // with "configuration bag has unexpected number of properties".
     removeProps: [
+      {
+        file: 'config-node.properties',
+        keys: ['nodeEqualityStrategy'],
+      },
+    ],
+  },
+  {
+    id: 'v37',
+    serverImage: 'symbolplatform/symbol-server:gcc-1.0.3.7',
+    // gcc-1.0.3.7 does not put /usr/catapult/deps on LD_LIBRARY_PATH (only
+    // 1.0.3.9 does), so it uses the system OpenSSL and needs no cnf symlink.
+    needsOpenSslPatch: false,
+    configPatches: [
+      {
+        file: 'config-node.properties',
+        section: '[cache_database]',
+        props: { maxLogFiles: '100', maxLogFileSize: '25MB' },
+      },
+      {
+        file: 'config-network.properties',
+        section: '[fork_heights]',
+        props: {
+          skipSecretLockUniquenessChecks: '',
+          skipSecretLockExpirations: '',
+          forceSecretLockExpirations: '',
+        },
+      },
+    ],
+    // gcc-1.0.3.7 knows exactly 6 fork_height props.  uniqueAggregateTransactionHash
+    // arrived in 1.0.3.9, so a leftover from a previous 1.0.3.9 run aborts the binary
+    // with "configuration bag has unexpected number of properties".
+    removeProps: [
+      {
+        file: 'config-network.properties',
+        keys: ['uniqueAggregateTransactionHash'],
+      },
       {
         file: 'config-node.properties',
         keys: ['nodeEqualityStrategy'],
@@ -4843,6 +4931,29 @@ function dedupePeerEntries(entries: PeerEntry[]): PeerEntry[] {
   return out;
 }
 
+/**
+ * Count knownPeers in the generated peers-p2p.json of any node.
+ *
+ * catapult only pulls chain data over OUTBOUND connections to knownPeers, so a
+ * node whose peer list is empty can never sync no matter how many peers reach
+ * it.  Used to turn that dead-end into a Start failure instead of a node that
+ * comes up "successfully" and then sits at the same height forever.
+ */
+function countConfiguredP2pPeers(targetDir: string): number {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return 0;
+  let total = 0;
+  try {
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      const file = path.join(nodesDir, nodeName, 'server-config', 'resources', 'peers-p2p.json');
+      if (!fs.existsSync(file)) continue;
+      const doc = parseJsonFile(file) as { knownPeers?: unknown[] };
+      if (Array.isArray(doc?.knownPeers)) total += doc.knownPeers.length;
+    }
+  } catch { /* treat unreadable peer files as "no peers" */ }
+  return total;
+}
+
 function writePeerFiles(targetDir: string, p2pPeers: PeerEntry[], apiPeers: PeerEntry[], infoMessage: string): void {
   const p2pJson = JSON.stringify({
     _info: infoMessage,
@@ -5260,7 +5371,7 @@ async function refreshLivePeerKeys(targetDir: string): Promise<void> {
  * Fetch /node/info and /node/peers from the source node URL, then build and
  * overwrite peers-p2p.json and peers-api.json for every node in the target.
  */
-async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string): Promise<void> {
+async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string): Promise<boolean> {
   const base = sourceNodeUrl.replace(/\/+$/, '');
   broadcastLog(`[Peers] Fetching peer info from ${base} ...\n`);
 
@@ -5289,7 +5400,7 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
     if (!Array.isArray(remotePeers)) remotePeers = [];
   } catch (err: any) {
     broadcastLog(`[Peers] ⚠️  Could not fetch from source node: ${err.message}\n`);
-    return;
+    return false;
   }
 
   // Derive the host of the source node from the URL
@@ -5299,7 +5410,7 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
     sourceHost = parsed.hostname;
   } catch {
     broadcastLog(`[Peers] ⚠️  Could not parse source URL hostname\n`);
-    return;
+    return false;
   }
 
   // Build the source node as a peer entry
@@ -5444,6 +5555,21 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
       broadcastLog(`[Network] ⚠️  No config-network.properties files were patched\n`);
     }
   }
+
+  return true;
+}
+
+/**
+ * Write config-inflation.properties from the schedule stored in .ui-meta.json.
+ *
+ * Split out of fetchAndWritePeerFiles(): the schedule is read from a local file,
+ * so gating it on the source node being reachable meant a correctly configured
+ * schedule was silently dropped whenever the source happened to be down — the
+ * exact failure this setting exists to prevent.
+ */
+function patchInflationConfig(targetDir: string): void {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return;
 
   // -----------------------------------------------------------------------
   // Patch config-inflation.properties:
@@ -5836,6 +5962,46 @@ function buildProofIndexDat(nemesisEntityHash: Buffer | string): Buffer {
     hash,               // 32-byte nemesis block EntityHash
   ]);
 }
+
+/**
+ * proof.index.dat for a joining node, seeded from the source node's CURRENT
+ * finalization statistics instead of the nemesis statistics.
+ *
+ * Writing epoch 1 here is a trap: with unfinalizedBlocksDuration = 0m,
+ * catapult's local-finalized-height supplier loads the proof of
+ * (statistics.epoch - 1) during every chain compare.  At epoch 1 that is
+ * epoch 0, and the server dies with "loadProof called with epoch 0" as soon
+ * as the network has finalized epoch 2 — a boot crash-loop (and a segfault
+ * in the gcc-1.0.3.9 patched build, observed 2026-07-04).  Seeding current
+ * statistics (epoch ≥ 2) makes that lookup resolve to the locally present
+ * nemesis proof instead.
+ */
+async function buildProofIndexFromSource(sourceNodeUrl: string, nemesisEntityHash: Buffer | string): Promise<Buffer> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const r = await fetch(`${sourceNodeUrl.replace(/\/+$/, '')}/chain/info`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (r.ok) {
+      const info = await r.json() as { latestFinalizedBlock?: { finalizationEpoch: number; finalizationPoint: number; height: string; hash: string } };
+      const fin = info?.latestFinalizedBlock;
+      const epoch = Number(fin?.finalizationEpoch ?? 0);
+      if (fin && epoch >= 2 && /^[0-9A-Fa-f]{64}$/.test(String(fin.hash))) {
+        broadcastLog(`[Nemesis] proof.index.dat seeded from source finalization (epoch ${epoch}, height ${fin.height})\n`);
+        return Buffer.concat([
+          writeUint32LE(epoch),
+          writeUint32LE(Number(fin.finalizationPoint)),
+          writeUint64LE(Number(fin.height)),
+          Buffer.from(String(fin.hash), 'hex'),
+        ]);
+      }
+      broadcastLog(`[Nemesis] ⚠️ Source finalization epoch is still ${epoch || 1} — using nemesis statistics. If the node starts crash-looping once the network finalizes epoch 2, re-import / reset data to pick up current statistics.\n`);
+    }
+  } catch (e: any) {
+    broadcastLog(`[Nemesis] ⚠️ Could not fetch source finalization statistics (${e.message}) — using nemesis statistics\n`);
+  }
+  return buildProofIndexDat(nemesisEntityHash);
+}
 /** Convert a hex-encoded uint64 (big-endian display) → little-endian Buffer */
 function hexUint64ToLE(hex: string): Buffer {
   const buf = Buffer.from(hex.padStart(16, '0'), 'hex');
@@ -6079,7 +6245,14 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   // proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
   // hashes.dat layout: [NullHash(32) | EntityHash(32) | ...]
   const nemesisEntityHash = hashesBuf.subarray(32, 64);
-  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), buildProofIndexDat(nemesisEntityHash));
+  let importSourceUrl = '';
+  try {
+    if (fs.existsSync(UI_META_PATH)) importSourceUrl = String(parseJsonFile(UI_META_PATH).sourceNodeUrl || '');
+  } catch { /* ignore */ }
+  const proofIndexBuf = importSourceUrl
+    ? await buildProofIndexFromSource(importSourceUrl, nemesisEntityHash)
+    : buildProofIndexDat(nemesisEntityHash);
+  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
 
   // --- Patch data/00000/ inside each node directory ---
   // Catapult block files are named by block height: 00001.dat = genesis block.
@@ -6121,7 +6294,7 @@ async function installImportedSeed(targetDir: string): Promise<void> {
       // data/index.dat
       fs.writeFileSync(path.join(dataDir, 'index.dat'), writeUint64LE(1));
       // data/proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), buildProofIndexDat(nemesisEntityHash));
+      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), proofIndexBuf);
 
       // Create spool directories
       for (const sDir of ['block_change', 'block_recover', 'finalization',
@@ -6214,7 +6387,8 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   fs.writeFileSync(path.join(seedBase, 'index.dat'), writeUint64LE(1));
 
   // proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), buildProofIndexDat(meta.hash));
+  const proofIndexBuf = await buildProofIndexFromSource(base, meta.hash);
+  fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
 
   // proof.heights.dat  (epoch4 + point4 + height8 + hash32 = 48)
   fs.writeFileSync(path.join(seedDir, 'proof.heights.dat'),
@@ -6293,7 +6467,7 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
       // data/index.dat  (uint64 = 1 = current chain height)
       fs.writeFileSync(path.join(dataDir, 'index.dat'), writeUint64LE(1));
       // data/proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), buildProofIndexDat(meta.hash));
+      fs.writeFileSync(path.join(dataDir, 'proof.index.dat'), proofIndexBuf);
 
       // Create spool directories (needed by broker)
       for (const sDir of ['block_change', 'block_recover', 'finalization',
@@ -8073,6 +8247,43 @@ app.post('/api/commands/start', async (req, res) => {
     const startSequence = async () => {
 
       // =================================================================
+      // Crash-damage failsafe (unexpected shutdown / power loss)
+      //
+      //   A hard power-off can leave 0-byte block/state files that make
+      //   catapult crash-loop on boot ("couldn't read from file" /
+      //   "cache height is inconsistent with storage height").  Detect
+      //   that before starting; when a verified resync source exists,
+      //   automatically reset data to seed (certs / voting keys / voting
+      //   status preserved) so this Start proceeds into a clean resync.
+      // =================================================================
+      {
+        const crashDiag = diagnoseCrashDamage(TARGET_DIR);
+        if (crashDiag.verdict === 'reset-required') {
+          broadcastLog('[Recovery] ⚠️ Crash damage detected in node data:\n');
+          for (const f of [...crashDiag.corruptBlockFiles, ...crashDiag.corruptStateFiles, ...crashDiag.corruptSpoolIndexes].slice(0, 10)) {
+            broadcastLog(`[Recovery]   - ${f}\n`);
+          }
+          const resyncSource = await checkResyncSource(TARGET_DIR);
+          if (!resyncSource.ok) {
+            broadcastLog(`[Recovery] ❌ Auto-reset blocked: ${resyncSource.reason}\n`);
+            throw new Error(
+              'Crash damage detected, but an automatic seed reset is not verifiably safe '
+              + `(${resyncSource.reason}). Run クラッシュ診断・復旧 from the Operations page, or restore a backup.`,
+            );
+          }
+          broadcastLog(`[Recovery] Resync source verified: ${resyncSource.url} (height ${resyncSource.remoteHeight}) — resetting data to seed...\n`);
+          stopNodeContainersForRecovery(broadcastLog);
+          cleanCrashLeftovers(TARGET_DIR, crashDiag, broadcastLog);
+          const recovery = await performCrashRecovery(TARGET_DIR, broadcastLog);
+          broadcastLog(`[Recovery] ✅ Data reset complete (backup: ${path.relative(TARGET_DIR, recovery.backupDir)}). The node will resync from the network.\n`);
+        } else if (crashDiag.orphanBlockFiles.length || crashDiag.orphanSpoolFiles.length) {
+          // Harmless 0-byte leftovers — delete them so they cannot confuse
+          // the index.dat height fix below.
+          cleanCrashLeftovers(TARGET_DIR, { ...crashDiag, staleLocks: [] }, broadcastLog);
+        }
+      }
+
+      // =================================================================
       // RESTART mode: simple stop → run, no config/compose/cleanup
       //
       //   This is the safe path for Stop → Start.  All data files
@@ -8128,7 +8339,12 @@ app.post('/api/commands/start', async (req, res) => {
                   const indexBuf = fs.readFileSync(indexDatPath);
                   const chainHeight = Number(indexBuf.readBigUInt64LE(0));
                   let maxHeight = chainHeight;
-                  while (fs.existsSync(path.join(blockDir, String(maxHeight + 1).padStart(5, '0') + '.dat'))) {
+                  for (;;) {
+                    // A 0-byte file is crash debris, not a stored block —
+                    // advancing index.dat into it would make catapult fail
+                    // with "couldn't read from file" on boot.
+                    const next = path.join(blockDir, String(maxHeight + 1).padStart(5, '0') + '.dat');
+                    if (!fs.existsSync(next) || fs.statSync(next).size === 0) break;
                     maxHeight++;
                   }
                   if (maxHeight > chainHeight) {
@@ -8516,6 +8732,12 @@ app.post('/api/commands/start', async (req, res) => {
             'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
             'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
             'maxMessageSize',
+            // Finalization: mainnet ships treasuryReissuanceEpoch 481 plus an
+            // ineligible-voter list; letting a custom preset override those
+            // would break an official node.
+            'finalizationSize', 'finalizationThreshold',
+            'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+            'treasuryReissuanceEpochIneligibleVoterAddresses',
           ] as const;
           for (const k of DANGEROUS_TOP_KEYS) {
             if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
@@ -8692,6 +8914,7 @@ app.post('/api/commands/start', async (req, res) => {
       //   Must happen AFTER compose because compose regenerates peers-*.json.
       let sourceUrl: string | undefined;
       let manualPeerUrls: string[] = [];
+      let sourceFetchOk = true;
       try {
         const meta = fs.existsSync(UI_META_PATH)
           ? JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'))
@@ -8730,7 +8953,15 @@ app.post('/api/commands/start', async (req, res) => {
 
         if (sourceUrl) {
           broadcastLog('[System] Step 4c – Fetching peers from source node...\n');
-          await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
+          sourceFetchOk = await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
+          if (!sourceFetchOk) {
+            // Loud, because everything this step configures is now missing:
+            // the peer list, and the source network's [fork_heights] (which
+            // nothing else supplies — networkPropertiesToConfig ignores them).
+            broadcastLog(`[Peers] ❌ ソースノード ${sourceUrl} に到達できませんでした。\n`);
+            broadcastLog('[Peers] ❌ ピア一覧と fork_heights が参加元の値に更新されていません。\n');
+            broadcastLog('[Peers] ❌ ソースノードを起動してから「設定を完全適用して起動」をやり直してください。\n');
+          }
         }
         if (manualPeerUrls.length > 0) {
           broadcastLog('[System] Step 4c – Merging peers from node-level Peer Node URLs...\n');
@@ -8739,6 +8970,35 @@ app.post('/api/commands/start', async (req, res) => {
       } catch (e: any) {
         broadcastLog(`[Peers] ⚠️  Peer fetch failed (non-fatal): ${e.message}\n`);
       }
+
+      // Deliberately OUTSIDE the try above: a node with an empty peer list can
+      // never sync (catapult only pulls chain data over outbound connections to
+      // knownPeers), so this must fail the Start instead of being swallowed as
+      // "non-fatal" and coming up into a height that never advances.
+      // Only enforced when this node is meant to have peers.  A node that
+      // created its own network legitimately runs with an empty peer list until
+      // somebody joins, so an empty list is only a failure when the user asked
+      // to join something (sourceNodeUrl) or pinned peers (peerNodeUrls).
+      if (!isOfficialPreset && (sourceUrl || manualPeerUrls.length > 0)) {
+        const peerCount = countConfiguredP2pPeers(TARGET_DIR);
+        if (peerCount === 0) {
+          throw new Error(
+            'ピアが 1 件も設定されていないため起動を中止しました。'
+            + (sourceUrl && !sourceFetchOk
+              ? ` ソースノード ${sourceUrl} に到達できませんでした。ソースノードを起動してからやり直してください。`
+              : ' 設定したピアを 1 件も解決できませんでした。Peer Node URLs を確認してください。')
+            + ' この状態で起動してもブロック同期は進みません。'
+          );
+        }
+        broadcastLog(`[Peers] ✅ ピア設定を確認: ${peerCount} 件\n`);
+      }
+
+      // Step 4c2: Write config-inflation.properties from .ui-meta.json.
+      //   Unconditional: the schedule is local configuration, so it must be
+      //   applied whether or not the source node happened to be reachable,
+      //   and whether or not this is a join node.
+      broadcastLog('[System] Step 4c2 – Applying inflation schedule...\n');
+      patchInflationConfig(TARGET_DIR);
 
       // Step 4c3: Refresh live peer public keys.
       //   symbol-bootstrap config regenerates peers-p2p.json with keys stored
@@ -8788,9 +9048,9 @@ app.post('/api/commands/start', async (req, res) => {
         }
       }
 
-      // Step 4c2: Patch config-node.properties so that the Docker subnet is
+      // Step 4c5: Patch config-node.properties so that the Docker subnet is
       //           listed in trustedHosts / localNetworks (REST gateway access).
-      broadcastLog('[System] Step 4c2 – Patching localNetworks & generating REST cert...\n');
+      broadcastLog('[System] Step 4c5 – Patching localNetworks & generating REST cert...\n');
       patchLocalNetworks(TARGET_DIR);
       generateRestGatewayCert(TARGET_DIR);
 
@@ -9442,6 +9702,626 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
 });
 
 // =============================================================================
+// Crash diagnosis & auto-recovery (unexpected shutdown / power loss)
+// =============================================================================
+//
+// A hard power-off (Windows Update reboot, WSL2 kill, blue screen) leaves a
+// characteristic damage pattern: the filesystem journal replays metadata only,
+// so every file catapult was writing at the moment of the crash survives as a
+// 0-byte file.  Three kinds matter:
+//
+//   1. 0-byte block files (data/00000/NNNNN.dat/.stmt) at/below the height in
+//      index.dat → catapult dies with "couldn't read from file".
+//   2. 0-byte state snapshot files (data/state/*.dat).  With RocksDB cache
+//      mode (enableCacheDatabaseStorage=true) catapult CANNOT rebuild state
+//      from block storage — it aborts with "cache height (1) is inconsistent
+//      with storage height (N)".  catapult.recovery does not rebuild it either.
+//   3. Stale server.lock / recovery.lock files.
+//
+// (1)+(2) are unrepairable in place.  The only reliable fix is to reset data
+// back to the nemesis seed — preserving certs, voting key trees and voting
+// status — and let the node resync from a peer.  That is only SAFE when a
+// peer actually holds the chain (join node); on a network-origin node it
+// would discard the only copy, so it requires an explicit force.
+
+interface CrashDiagnosis {
+  verdict: 'clean' | 'locks-only' | 'reset-required';
+  staleLocks: string[];          // *.lock files (normal while running, stale when stopped)
+  corruptBlockFiles: string[];   // 0-byte block files at/below chain height — fatal
+  orphanBlockFiles: string[];    // 0-byte block files above chain height — safe to delete
+  corruptStateFiles: string[];   // 0-byte state snapshot files — fatal
+  orphanSpoolFiles: string[];    // 0-byte spool message files — safe to delete
+  corruptSpoolIndexes: string[]; // 0-byte spool index files — fatal
+}
+
+const NODE_CONTAINER_NAMES = ['api-node-0', 'api-node-0-broker', 'node', 'broker', 'rest-gateway', 'db'];
+
+function areNodeContainersRunning(): boolean {
+  try {
+    const out = execSync(`docker ps --format '{{.Names}}'`, { timeout: 15_000, stdio: 'pipe' }).toString();
+    const running = out.split('\n').map((s) => s.trim()).filter(Boolean);
+    return running.some(
+      (n) => NODE_CONTAINER_NAMES.includes(n) || /api-node|peer-node|rest-gateway/.test(n),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Containers that hold node data files open (catapult server/broker).
+ * db / rest-gateway do not touch nodes/&ast;/data, so a crashed api-node with
+ * db still up must not block diagnosis.
+ */
+function areNodeDataContainersRunning(): boolean {
+  try {
+    const out = execSync(`docker ps --format '{{.Names}}'`, { timeout: 15_000, stdio: 'pipe' }).toString();
+    const running = out.split('\n').map((s) => s.trim()).filter(Boolean);
+    return running.some((n) => n === 'node' || n === 'broker' || n.endsWith('-broker') || /api-node|peer-node/.test(n));
+  } catch {
+    return false;
+  }
+}
+
+/** Stop/remove node containers so no process holds data files open (same strategy as clearLocks). */
+function stopNodeContainersForRecovery(log: (msg: string) => void): void {
+  const composePath = path.join(TARGET_DIR, 'docker', 'docker-compose.yml');
+  if (fs.existsSync(composePath)) {
+    try {
+      execSync(`docker compose -f "${composePath}" down --remove-orphans 2>&1 || true`, { timeout: 90_000, stdio: 'pipe' });
+      log('[Recovery] compose down complete.\n');
+    } catch (e: any) {
+      log(`[Recovery] compose down failed: ${e.message}\n`);
+    }
+  }
+  for (const cname of NODE_CONTAINER_NAMES) {
+    try {
+      execSync(`docker rm -f ${cname} 2>&1 || true`, { timeout: 30_000, stdio: 'pipe' });
+    } catch { /* ignore */ }
+  }
+}
+
+function diagnoseCrashDamage(targetDir: string): CrashDiagnosis {
+  const d: CrashDiagnosis = {
+    verdict: 'clean',
+    staleLocks: [],
+    corruptBlockFiles: [],
+    orphanBlockFiles: [],
+    corruptStateFiles: [],
+    orphanSpoolFiles: [],
+    corruptSpoolIndexes: [],
+  };
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return d;
+  const rel = (p: string) => path.relative(targetDir, p);
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const dataDir = path.join(nodesDir, nodeName, 'data');
+    if (!fs.existsSync(dataDir)) continue;
+
+    for (const f of fs.readdirSync(dataDir)) {
+      if (f.endsWith('.lock')) d.staleLocks.push(rel(path.join(dataDir, f)));
+    }
+
+    // Chain height from index.dat (8-byte LE)
+    let chainHeight = 0n;
+    try {
+      chainHeight = fs.readFileSync(path.join(dataDir, 'index.dat')).readBigUInt64LE(0);
+    } catch { /* no chain yet */ }
+
+    // Block storage group dirs (00000, 00001, …) — fileHeight = groupIndex * 65536 + fileNum
+    for (const entry of fs.readdirSync(dataDir)) {
+      if (!/^\d{5}$/.test(entry)) continue;
+      const groupDir = path.join(dataDir, entry);
+      if (!fs.statSync(groupDir).isDirectory()) continue;
+      const groupBase = BigInt(parseInt(entry, 10)) * 65536n;
+      for (const f of fs.readdirSync(groupDir)) {
+        const m = f.match(/^(\d{5})\.(dat|stmt)$/);
+        if (!m) continue;
+        const p = path.join(groupDir, f);
+        if (fs.statSync(p).size > 0) continue;
+        const height = groupBase + BigInt(parseInt(m[1], 10));
+        if (height <= chainHeight) d.corruptBlockFiles.push(rel(p));
+        else d.orphanBlockFiles.push(rel(p));
+      }
+    }
+
+    // State snapshot: written on shutdown, so it is the file most likely to be
+    // zeroed by a power loss.  Also flag supplemental.dat missing while a
+    // populated statedb exists (same boot failure).
+    const stateDir = path.join(dataDir, 'state');
+    if (fs.existsSync(stateDir)) {
+      for (const f of fs.readdirSync(stateDir)) {
+        if (!f.endsWith('.dat')) continue;
+        const p = path.join(stateDir, f);
+        if (fs.statSync(p).size === 0) d.corruptStateFiles.push(rel(p));
+      }
+      const statedbDir = path.join(dataDir, 'statedb');
+      const hasStatedb = fs.existsSync(statedbDir) && fs.readdirSync(statedbDir).length > 0;
+      const hasSupplemental = fs.existsSync(path.join(stateDir, 'supplemental.dat'));
+      if (hasStatedb && !hasSupplemental && chainHeight > 1n) {
+        d.corruptStateFiles.push(rel(path.join(stateDir, 'supplemental.dat')) + ' (missing)');
+      }
+    }
+
+    // Spool: 0-byte message files ahead of the write index are harmless
+    // orphans; a 0-byte index file means the queue itself is broken.
+    const spoolDir = path.join(dataDir, 'spool');
+    if (fs.existsSync(spoolDir)) {
+      for (const sub of fs.readdirSync(spoolDir)) {
+        const subDir = path.join(spoolDir, sub);
+        if (!fs.statSync(subDir).isDirectory()) continue;
+        for (const f of fs.readdirSync(subDir)) {
+          const p = path.join(subDir, f);
+          const st = fs.statSync(p);
+          if (!st.isFile() || st.size > 0) continue;
+          if (f.startsWith('index')) d.corruptSpoolIndexes.push(rel(p));
+          else d.orphanSpoolFiles.push(rel(p));
+        }
+      }
+    }
+  }
+
+  if (d.corruptBlockFiles.length || d.corruptStateFiles.length || d.corruptSpoolIndexes.length) {
+    d.verdict = 'reset-required';
+  } else if (d.staleLocks.length || d.orphanBlockFiles.length || d.orphanSpoolFiles.length) {
+    d.verdict = 'locks-only';
+  }
+  return d;
+}
+
+interface ResyncSourceCheck {
+  ok: boolean;
+  url?: string;
+  remoteHeight?: number;
+  localHeight?: number;
+  reason: string;
+}
+
+/**
+ * A seed reset discards the local chain, so it is only safe when a peer
+ * verifiably holds the chain at (at least) our height.  Join nodes record
+ * their origin in .ui-meta.json → sourceNodeUrl.
+ */
+async function checkResyncSource(targetDir: string): Promise<ResyncSourceCheck> {
+  let localHeight = 0;
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (fs.existsSync(nodesDir)) {
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      try {
+        const h = Number(fs.readFileSync(path.join(nodesDir, nodeName, 'data', 'index.dat')).readBigUInt64LE(0));
+        if (h > localHeight) localHeight = h;
+      } catch { /* ignore */ }
+    }
+  }
+
+  let url = '';
+  try {
+    if (fs.existsSync(UI_META_PATH)) {
+      url = String(parseJsonFile(UI_META_PATH).sourceNodeUrl || '');
+    }
+  } catch { /* ignore */ }
+  if (!url) {
+    return { ok: false, localHeight, reason: 'no sourceNodeUrl — this looks like a network-origin node; resetting would discard the only copy of the chain' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const r = await fetch(`${url.replace(/\/+$/, '')}/chain/info`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!r.ok) return { ok: false, url, localHeight, reason: `source node returned HTTP ${r.status}` };
+    const info = await r.json() as { height?: string };
+    const remoteHeight = Number(info?.height ?? 0);
+    if (remoteHeight >= localHeight) {
+      return { ok: true, url, remoteHeight, localHeight, reason: 'source node holds the chain at/above local height' };
+    }
+    return { ok: false, url, remoteHeight, localHeight, reason: `source node is BEHIND local chain (${remoteHeight} < ${localHeight}) — reset would lose blocks` };
+  } catch (e: any) {
+    return { ok: false, url, localHeight, reason: `source node unreachable: ${e.message}` };
+  }
+}
+
+/** Delete stale locks and orphan 0-byte files reported by a diagnosis. */
+function cleanCrashLeftovers(targetDir: string, diagnosis: CrashDiagnosis, log: (msg: string) => void): void {
+  for (const relPath of [...diagnosis.staleLocks, ...diagnosis.orphanBlockFiles, ...diagnosis.orphanSpoolFiles]) {
+    try {
+      fs.unlinkSync(path.join(targetDir, relPath));
+      log(`[Recovery] Removed leftover: ${relPath}\n`);
+    } catch (e: any) {
+      log(`[Recovery] ⚠️ Could not remove ${relPath}: ${e.message}\n`);
+    }
+  }
+}
+
+/**
+ * Reset every node's data dir back to its nemesis seed, preserving files
+ * that cannot be regenerated: voting key trees in use (data/voting), voting
+ * status (double-vote protection) and the transfer-message reader index.
+ * certs/ and votingkeys/ live outside data/ and are untouched.
+ * MongoDB is wiped together with the block storage (they must never diverge:
+ * an empty Mongo next to old block files makes catapult.recovery SIGABRT,
+ * and a Mongo ahead of the chain makes the broker die on duplicate keys).
+ * The damaged data is moved (not deleted) into crash-backups/<timestamp>/.
+ */
+async function performCrashRecovery(targetDir: string, log: (msg: string) => void): Promise<{ backupDir: string; nodes: string[] }> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupRoot = path.join(targetDir, 'crash-backups', stamp);
+  const recovered: string[] = [];
+  const nodesDir = path.join(targetDir, 'nodes');
+
+  for (const nodeName of fs.readdirSync(nodesDir)) {
+    const nodeDir = path.join(nodesDir, nodeName);
+    const dataDir = path.join(nodeDir, 'data');
+    if (!fs.existsSync(dataDir)) continue;
+
+    let seedDir = path.join(nodeDir, 'seed');
+    if (!fs.existsSync(seedDir)) seedDir = path.join(targetDir, 'nemesis', 'seed');
+    if (!fs.existsSync(seedDir)) {
+      throw new Error(`No nemesis seed found for node "${nodeName}" — cannot rebuild block storage. Use Reset Data or re-join the network instead.`);
+    }
+
+    const nodeBackup = path.join(backupRoot, nodeName);
+    fs.mkdirSync(nodeBackup, { recursive: true });
+    fs.renameSync(dataDir, path.join(nodeBackup, 'data'));
+    log(`[Recovery] ${nodeName}: damaged data moved to ${path.relative(targetDir, nodeBackup)}/data\n`);
+
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.cpSync(seedDir, dataDir, { recursive: true });
+    log(`[Recovery] ${nodeName}: block storage reset to nemesis seed\n`);
+
+    for (const keep of ['voting', 'voting_status.dat', 'transfer_message']) {
+      const src = path.join(nodeBackup, 'data', keep);
+      if (!fs.existsSync(src)) continue;
+      fs.cpSync(src, path.join(dataDir, keep), { recursive: true });
+      log(`[Recovery] ${nodeName}: preserved ${keep}\n`);
+    }
+    recovered.push(nodeName);
+  }
+
+  const dbDir = path.join(targetDir, 'databases', 'db');
+  if (fs.existsSync(dbDir)) {
+    fs.renameSync(dbDir, path.join(backupRoot, 'mongo-db'));
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.chmodSync(dbDir, 0o777);
+    log('[Recovery] MongoDB data cleared — the broker rebuilds it during resync\n');
+  }
+
+  // Keep only the 3 most recent crash backups
+  try {
+    const backupsRoot = path.join(targetDir, 'crash-backups');
+    const entries = fs.readdirSync(backupsRoot).sort();
+    for (const old of entries.slice(0, Math.max(0, entries.length - 3))) {
+      fs.rmSync(path.join(backupsRoot, old), { recursive: true, force: true });
+      log(`[Recovery] Pruned old crash backup: ${old}\n`);
+    }
+  } catch { /* ignore */ }
+
+  return { backupDir: backupRoot, nodes: recovered };
+}
+
+// Read-only diagnosis (used by the UI before asking for confirmation)
+app.post('/api/commands/crashDiagnose', async (_req, res) => {
+  try {
+    if (areNodeDataContainersRunning()) {
+      return res.json({ running: true, verdict: 'clean' });
+    }
+    const diagnosis = diagnoseCrashDamage(TARGET_DIR);
+    const resyncSource = diagnosis.verdict === 'reset-required' ? await checkResyncSource(TARGET_DIR) : null;
+    res.json({ running: false, ...diagnosis, resyncSource });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Perform the recovery.  body:
+//   force     — required for a seed reset when no verified resync source is
+//               available (network-origin node).
+//   resetData — escalate to a seed reset even when the file-level diagnosis
+//               finds nothing.  Needed for corruption that file sizes cannot
+//               reveal (e.g. a poisoned RocksDB statedb that segfaults
+//               catapult on boot — observed 2026-07-04).
+app.post('/api/commands/crashRecovery', async (req, res) => {
+  try {
+    const { force, resetData } = (req.body ?? {}) as { force?: boolean; resetData?: boolean };
+    broadcastLog('\n[Recovery] ========== Crash Auto-Recovery ==========\n');
+
+    stopNodeContainersForRecovery(broadcastLog);
+    const diagnosis = diagnoseCrashDamage(TARGET_DIR);
+    const verdict = resetData && diagnosis.verdict !== 'reset-required' ? 'reset-required' : diagnosis.verdict;
+    if (verdict !== diagnosis.verdict) {
+      broadcastLog('[Recovery] Explicit data reset requested — escalating to seed reset.\n');
+    }
+
+    if (verdict === 'clean') {
+      broadcastLog('[Recovery] ✅ No crash damage found.\n');
+      networkStatus.state = 'stopped';
+      broadcastStatus();
+      return res.json({ success: true, action: 'none', diagnosis });
+    }
+
+    cleanCrashLeftovers(TARGET_DIR, diagnosis, broadcastLog);
+
+    if (verdict === 'locks-only') {
+      broadcastLog('[Recovery] ✅ Stale locks / orphan files cleaned. Data is intact — you can Start the node.\n');
+      networkStatus.state = 'stopped';
+      broadcastStatus();
+      return res.json({ success: true, action: 'cleaned', diagnosis });
+    }
+
+    // reset-required
+    for (const f of [...diagnosis.corruptBlockFiles, ...diagnosis.corruptStateFiles, ...diagnosis.corruptSpoolIndexes].slice(0, 10)) {
+      broadcastLog(`[Recovery] Damaged: ${f}\n`);
+    }
+    const resyncSource = await checkResyncSource(TARGET_DIR);
+    if (!resyncSource.ok && !force) {
+      broadcastLog(`[Recovery] ❌ Seed reset blocked: ${resyncSource.reason}\n`);
+      return res.status(409).json({
+        error: `Auto-recovery requires a seed reset, but it is not verifiably safe: ${resyncSource.reason}`,
+        needsForce: true,
+        diagnosis,
+        resyncSource,
+      });
+    }
+    if (resyncSource.ok) {
+      broadcastLog(`[Recovery] Resync source verified: ${resyncSource.url} (height ${resyncSource.remoteHeight})\n`);
+    } else {
+      broadcastLog(`[Recovery] ⚠️ Proceeding WITHOUT a verified resync source (force): ${resyncSource.reason}\n`);
+    }
+
+    const result = await performCrashRecovery(TARGET_DIR, broadcastLog);
+    broadcastLog(`[Recovery] ✅ Recovery complete (backup: ${path.relative(TARGET_DIR, result.backupDir)}).\n`);
+    broadcastLog('[Recovery] ▶ Start the node — it will resync from the network.\n');
+    networkStatus.state = 'stopped';
+    networkStatus.lastCommand = 'crashRecovery';
+    networkStatus.lastCommandTime = new Date().toISOString();
+    broadcastStatus();
+    res.json({ success: true, action: 'reset', backupDir: result.backupDir, nodes: result.nodes, diagnosis, resyncSource });
+  } catch (err: any) {
+    broadcastLog(`[Recovery] ❌ Crash recovery failed: ${err.message}\n`);
+    networkStatus.state = 'error';
+    broadcastStatus();
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Inflation presets
+//
+// The inflation schedule is the one piece of network configuration that REST
+// does NOT expose via /network/properties, so a joining node silently falls
+// back to zero inflation and diverges from the network at the first height
+// that pays a block reward.  The schedules are read from the symbol-bootstrap
+// package that ships in this image rather than hardcoded, so they stay in sync
+// when the bundled bootstrap version changes.
+// =============================================================================
+
+interface InflationEntry { startHeight: number; amount: string }
+
+function resolveBootstrapPresetsDirs(): string[] {
+  const dirs: string[] = [];
+  const add = (dir: string) => {
+    if (fs.existsSync(dir) && !dirs.includes(dir)) dirs.push(dir);
+  };
+  // The npx cache is what runBootstrapCommand() actually executes, so prefer it.
+  try {
+    const npxCacheDir = path.join(process.env.HOME || '/root', '.npm', '_npx');
+    if (fs.existsSync(npxCacheDir)) {
+      for (const sub of fs.readdirSync(npxCacheDir)) {
+        add(path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'presets'));
+      }
+    }
+  } catch { /* fall through to the global install */ }
+  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
+  return dirs;
+}
+
+/** Parse an `inflation:` map (`starting-at-height-N: amount`) into sorted entries. */
+function inflationMapToEntries(map: unknown): InflationEntry[] {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
+  return Object.entries(map as Record<string, unknown>)
+    .map(([key, value]) => {
+      const m = key.match(/starting-at-height-(\d+)/);
+      return m ? { startHeight: Number(m[1]), amount: String(value) } : null;
+    })
+    .filter((e): e is InflationEntry => e !== null)
+    .sort((a, b) => a.startHeight - b.startHeight);
+}
+
+function readInflationFromBootstrapPreset(presetName: string): InflationEntry[] {
+  for (const dir of resolveBootstrapPresetsDirs()) {
+    const file = path.join(dir, presetName, 'network.yml');
+    if (!fs.existsSync(file)) continue;
+    try {
+      const doc = yaml.load(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+      const entries = inflationMapToEntries(doc?.inflation);
+      if (entries.length > 0) return entries;
+    } catch { /* try the next candidate directory */ }
+  }
+  return [];
+}
+
+/** testnet and mainnet ship byte-identical curves, so the pair is exposed once. */
+function getInflationPresets(): { id: string; label: string; entries: InflationEntry[] }[] {
+  const presets: { id: string; label: string; entries: InflationEntry[] }[] = [];
+  const zero = readInflationFromBootstrapPreset('bootstrap');
+  if (zero.length > 0) {
+    presets.push({ id: 'zero', label: 'Zero inflation (bootstrap preset)', entries: zero });
+  }
+  const symbol = readInflationFromBootstrapPreset('testnet');
+  if (symbol.length > 0) {
+    presets.push({ id: 'symbol', label: 'Symbol standard curve (testnet / mainnet)', entries: symbol });
+  }
+  return presets;
+}
+
+app.get('/api/inflation-presets', (_req, res) => {
+  try {
+    res.json({ presets: getInflationPresets() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Finalization presets
+//
+// config-finalization.properties is the other file whose consensus-relevant
+// values never appear in /network/properties.  Unlike inflation there is no
+// on-chain artefact to detect them from, so the schedules are offered for
+// selection (or import) instead.  Values are read from the bundled
+// symbol-bootstrap presets: shared.yml holds the defaults, and each network
+// preset overlays its own (mainnet, notably, uses treasuryReissuanceEpoch 481).
+// =============================================================================
+
+interface FinalizationSettings {
+  finalizationSize: number;
+  finalizationThreshold: number;
+  maxHashesPerPoint: number;
+  prevoteBlocksMultiple: number;
+  treasuryReissuanceEpoch: number;
+  treasuryReissuanceEpochIneligibleVoterAddresses: string[];
+}
+
+const FINALIZATION_NUMERIC_KEYS = [
+  'finalizationSize', 'finalizationThreshold',
+  'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+] as const;
+
+function readFinalizationFromBootstrapPreset(presetName: string): FinalizationSettings | null {
+  for (const dir of resolveBootstrapPresetsDirs()) {
+    const sharedFile = path.join(dir, 'shared.yml');
+    const networkFile = path.join(dir, presetName, 'network.yml');
+    if (!fs.existsSync(sharedFile) || !fs.existsSync(networkFile)) continue;
+    try {
+      // shared.yml carries the defaults; the network preset overrides them.
+      const shared = yaml.load(fs.readFileSync(sharedFile, 'utf-8')) as Record<string, unknown>;
+      const network = yaml.load(fs.readFileSync(networkFile, 'utf-8')) as Record<string, unknown>;
+      const pick = (key: string): unknown =>
+        network?.[key] !== undefined ? network[key] : shared?.[key];
+
+      const settings = {
+        treasuryReissuanceEpochIneligibleVoterAddresses:
+          (pick('treasuryReissuanceEpochIneligibleVoterAddresses') as unknown[] | undefined ?? []).map(String),
+      } as FinalizationSettings;
+      let complete = true;
+      for (const key of FINALIZATION_NUMERIC_KEYS) {
+        const value = pick(key);
+        if (value === undefined) { complete = false; break; }
+        settings[key] = Number(value);
+      }
+      if (complete) return settings;
+    } catch { /* try the next candidate directory */ }
+  }
+  return null;
+}
+
+function getFinalizationPresets(): { id: string; label: string; settings: FinalizationSettings }[] {
+  const wanted: { id: string; label: string }[] = [
+    { id: 'bootstrap', label: 'bootstrap / testnet defaults' },
+    { id: 'mainnet', label: 'mainnet (treasury reissuance epoch 481)' },
+  ];
+  const presets: { id: string; label: string; settings: FinalizationSettings }[] = [];
+  for (const { id, label } of wanted) {
+    const settings = readFinalizationFromBootstrapPreset(id);
+    if (settings) presets.push({ id, label, settings });
+  }
+  return presets;
+}
+
+app.get('/api/finalization-presets', (_req, res) => {
+  try {
+    res.json({ presets: getFinalizationPresets() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Effective per-block inflation at `height` for a schedule. */
+function expectedInflationAt(entries: InflationEntry[], height: number): number {
+  let amount = 0;
+  for (const entry of entries) {
+    if (height < entry.startHeight) break;
+    amount = Number(entry.amount);
+  }
+  return amount;
+}
+
+/**
+ * Read the inflation receipt (type 0x5143) amount at a height.
+ * Returns 0 when the block carries no inflation receipt, null when unreachable.
+ */
+async function probeInflationAt(base: string, height: number): Promise<number | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    const r = await fetch(`${base}/statements/transaction?height=${height}&pageSize=50`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!r.ok) return null;
+    const body = await r.json() as { data?: { statement?: { receipts?: { type?: number; amount?: string }[] } }[] };
+    const statements = body?.data ?? [];
+    // Every block carries at least one receipt statement — the harvest-fee
+    // receipt (0x2143), present with amount 0 even when nothing is paid out.
+    // So an empty response means the height is not served (pruned / unindexed),
+    // NOT "no inflation".  Reporting 0 here would let an inflating chain be
+    // misidentified as zero-inflation, which is the exact failure this detection
+    // exists to prevent — so report "unknown" and let the caller give up.
+    if (statements.length === 0) return null;
+    for (const s of statements) {
+      for (const receipt of s?.statement?.receipts ?? []) {
+        if (Number(receipt?.type) === 0x5143) return Number(receipt.amount ?? 0);
+      }
+    }
+    return 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Identify which bundled schedule a running network uses, by sampling the
+ * inflation receipts around each candidate step boundary.
+ *
+ * Matching (rather than reconstructing) matters: receipts only reveal steps
+ * below the current chain height, so a reconstructed schedule would stall the
+ * node again at the next future step.  A matched preset carries the whole curve.
+ */
+async function detectInflationPreset(
+  base: string,
+  chainHeight: number,
+): Promise<{ id: string; label: string; entries: InflationEntry[] } | null> {
+  const presets = getInflationPresets();
+  if (presets.length === 0 || chainHeight < 2) return null;
+
+  // Probe each step boundary that the chain has already passed, plus the block
+  // before it — that pair is what discriminates one schedule from another.
+  const heights = new Set<number>();
+  for (const preset of presets) {
+    for (const entry of preset.entries) {
+      if (entry.startHeight > chainHeight) break;
+      if (entry.startHeight >= 1) heights.add(entry.startHeight);
+      if (entry.startHeight - 1 >= 1) heights.add(entry.startHeight - 1);
+    }
+  }
+  heights.add(Math.max(1, chainHeight - 1));
+  // Early boundaries discriminate the most; cap the probe count.
+  const probeHeights = [...heights].sort((a, b) => a - b).slice(0, 12);
+
+  const samples: { height: number; amount: number }[] = [];
+  for (const height of probeHeights) {
+    const amount = await probeInflationAt(base, height);
+    if (amount === null) return null;   // source unreachable — do not guess
+    samples.push({ height, amount });
+  }
+
+  const matches = presets.filter((preset) =>
+    samples.every((s) => expectedInflationAt(preset.entries, s.height) === s.amount));
+
+  // Ambiguous (or no) match means we cannot safely pick one.
+  return matches.length === 1 ? matches[0] : null;
+}
+
+// =============================================================================
 // Join Network — fetch network properties from a remote node
 // =============================================================================
 
@@ -9470,11 +10350,12 @@ app.post('/api/network/fetch', async (req, res) => {
     broadcastLog(`[JoinNetwork] Fetching from ${base} ...\n`);
 
     // Parallel fetch: network/properties, node/info, node/peers, network/fees/transaction
-    const [networkProps, nodeInfo, peers, txFees] = await Promise.all([
+    const [networkProps, nodeInfo, peers, txFees, chainInfo] = await Promise.all([
       fetchJson('/network/properties'),
       fetchJson('/node/info'),
       fetchJson('/node/peers').catch(() => []),
       fetchJson('/network/fees/transaction').catch(() => ({})),
+      fetchJson('/chain/info').catch(() => ({})),
     ]);
 
     broadcastLog(`[JoinNetwork] network/properties ✓\n`);
@@ -9532,6 +10413,24 @@ app.post('/api/network/fetch', async (req, res) => {
       }
     }
 
+    // Inflation is absent from /network/properties, so identify the schedule
+    // from the chain's own inflation receipts.  Non-fatal: on no/ambiguous
+    // match the user picks a preset (or imports a file) in Configuration.
+    let detectedInflation: { id: string; label: string; entries: InflationEntry[] } | null = null;
+    const sourceHeight = Number((chainInfo as { height?: string })?.height ?? 0);
+    if (sourceHeight > 1) {
+      try {
+        detectedInflation = await detectInflationPreset(base, sourceHeight);
+        if (detectedInflation) {
+          broadcastLog(`[JoinNetwork] inflation ✓  matched "${detectedInflation.label}" (${detectedInflation.entries.length} entries)\n`);
+        } else {
+          broadcastLog('[JoinNetwork] ⚠️  inflation schedule could not be identified — set it manually in Configuration → Inflation before starting\n');
+        }
+      } catch {
+        broadcastLog('[JoinNetwork] ⚠️  inflation detection failed (non-fatal)\n');
+      }
+    }
+
     res.json({
       success: true,
       networkProperties: networkProps,
@@ -9540,6 +10439,7 @@ app.post('/api/network/fetch', async (req, res) => {
       minFeeMultiplier: minFee,
       mosaicInfo,
       mosaicNames,
+      detectedInflation,
     });
   } catch (err: any) {
     broadcastLog(`[JoinNetwork] Error: ${err.message}\n`);

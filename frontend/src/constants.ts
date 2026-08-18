@@ -1,6 +1,6 @@
 // =============================================================================
 // Symbol Custom Network Manager — Complete Preset Configuration
-// Supports Catapult V2 (1.0.3.6) and V3 (1.0.3.9)
+// Supports Catapult V2 (1.0.3.6), 1.0.3.7 and V3 (1.0.3.9)
 // =============================================================================
 
 // Compute today's Unix timestamp (seconds) at module load time.
@@ -49,6 +49,31 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
           skipSecretLockExpirations: '',
           forceSecretLockExpirations: '',
           uniqueAggregateTransactionHash: '0',
+        },
+      },
+    ],
+  },
+  {
+    id: 'v37',
+    label: 'Catapult 1.0.3.7',
+    description: 'For existing networks still running 1.0.3.7. Adds the secret-lock fork heights but not Aggregate V3.',
+    symbolServerImage: 'symbolplatform/symbol-server:gcc-1.0.3.7',
+    symbolRestImage: 'symbolplatform/symbol-rest:2.4.4',
+    symbolServerToolsImage: 'symbolplatform/symbol-server:gcc-1.0.3.7',
+    needsOpenSslPatch: false,
+    configPatches: [
+      {
+        file: 'config-node.properties',
+        section: '[cache_database]',
+        props: { maxLogFiles: '100', maxLogFileSize: '25MB' },
+      },
+      {
+        file: 'config-network.properties',
+        section: '[fork_heights]',
+        props: {
+          skipSecretLockUniquenessChecks: '',
+          skipSecretLockExpirations: '',
+          forceSecretLockExpirations: '',
         },
       },
     ],
@@ -260,6 +285,15 @@ export interface PresetConfig {
   minVotingKeyLifetime: number;
   maxVotingKeyLifetime: number;
 
+  // Finalization — feeds config-finalization.properties, which /network/properties
+  // never exposes, so a joining node cannot discover these from the source node.
+  finalizationSize: number;
+  finalizationThreshold: number;
+  maxHashesPerPoint: number;
+  prevoteBlocksMultiple: number;
+  treasuryReissuanceEpoch: number;
+  treasuryReissuanceEpochIneligibleVoterAddresses: string[];
+
   // Aggregate
   maxTransactionsPerAggregate: number;
   maxCosignaturesPerAggregate: number;
@@ -450,6 +484,11 @@ export const CATEGORIES: CategoryMeta[] = [
       { key: 'maxVotingKeysPerAccount', label: 'Max Voting Keys', type: 'number', description: 'アカウントあたり同時投票キー数', min: 1 },
       { key: 'minVotingKeyLifetime', label: 'Min Key Lifetime', type: 'number', description: '投票キー最小寿命(エポック数)', min: 1 },
       { key: 'maxVotingKeyLifetime', label: 'Max Key Lifetime', type: 'number', description: '投票キー最大寿命(エポック数)', min: 1 },
+      { key: 'finalizationSize', label: 'Finalization Size', type: 'number', description: '投票セットの最大人数。参加先と一致必須', min: 1 },
+      { key: 'finalizationThreshold', label: 'Finalization Threshold', type: 'number', description: 'ファイナライズ成立に必要な重み。参加先と一致必須（既定 6700 = 67%）', min: 1 },
+      { key: 'maxHashesPerPoint', label: 'Max Hashes Per Point', type: 'number', description: '1ポイントあたり最大ハッシュ数。参加先と一致必須', min: 1 },
+      { key: 'prevoteBlocksMultiple', label: 'Prevote Blocks Multiple', type: 'number', description: 'プリボート対象高さの刻み。参加先と一致必須', min: 1 },
+      { key: 'treasuryReissuanceEpoch', label: 'Treasury Reissuance Epoch', type: 'number', description: 'トレジャリー再発行エポック（mainnet 由来は 481）。参加先と一致必須', min: 0 },
     ],
   },
   {
@@ -736,7 +775,8 @@ export const GATEWAY_FIELDS: FieldMeta[] = [
 ];
 
 export const INFLATION_FIELDS: FieldMeta[] = [
-  { key: 'startHeight', label: 'Starting Height', type: 'number', description: '適用開始ブロック高', min: 2 },
+  // min 1: symbol-bootstrap's own bootstrap preset ships starting-at-height-1.
+  { key: 'startHeight', label: 'Starting Height', type: 'number', description: '適用開始ブロック高', min: 1 },
   { key: 'amount', label: 'Amount (per block)', type: 'text', description: 'ブロックあたりの報酬額 (atomic単位)' },
 ];
 
@@ -987,6 +1027,12 @@ export const DEFAULT_PRESET: PresetConfig = {
     throttlingBurst: 80, throttlingRate: 60,
   }],
 
+  finalizationSize: 10000,
+  finalizationThreshold: 6700,
+  maxHashesPerPoint: 256,
+  prevoteBlocksMultiple: 4,
+  treasuryReissuanceEpoch: 0,
+  treasuryReissuanceEpochIneligibleVoterAddresses: [],
   inflation: [{ startHeight: 2, amount: '0' }],
 
   explorerEnabled: false, explorerPort: 8090,
