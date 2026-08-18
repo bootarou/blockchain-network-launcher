@@ -168,6 +168,13 @@ export const en: TranslationDict = {
   'config.inflationImportEmpty': 'No starting-at-height-N lines found. Please select a config-inflation.properties file.',
   'config.inflationImportOk': 'Imported {count} inflation entries. Save, then apply with "Apply all settings and start".',
   'config.inflationImportFailed': 'Import failed:',
+  'config.finalizationPresetHelp': 'REST does not expose the finalization settings either, so a joining node cannot discover them. Unlike inflation there is no on-chain trace to detect them from, so pick the same preset the target network uses or import its config-finalization.properties. Leaving the defaults is only safe if the target network also uses the defaults.',
+  'config.finalizationImport': 'Import config-finalization.properties',
+  'config.finalizationReplaceConfirm': 'This replaces the current finalization settings. Continue?',
+  'config.finalizationImportEmpty': 'No [finalization] entries found. Please select a config-finalization.properties file.',
+  'config.finalizationImportOk': 'Imported {count} settings and {addr} ineligible voter addresses. Save, then apply with "Apply all settings and start".',
+  'config.finalizationImportFailed': 'Import failed:',
+  'config.finalizationIneligible': 'Holding {count} treasury-reissuance ineligible voter addresses.',
   'config.startingHeight': 'Starting Height',
   'config.amount': 'Amount (per block, atomic)',
 

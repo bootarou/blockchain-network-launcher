@@ -132,6 +132,24 @@ export const api = {
     }
   },
 
+  /**
+   * Finalization settings bundled with symbol-bootstrap. Unlike inflation these
+   * cannot be detected from the chain, so the presets are the primary way to
+   * match a network the node is joining.
+   */
+  getFinalizationPresets: async (): Promise<
+    { id: string; label: string; settings: Record<string, unknown> }[]
+  > => {
+    try {
+      const res = await authFetch(`${API_BASE}/finalization-presets`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data?.presets) ? data.presets : [];
+    } catch {
+      return [];
+    }
+  },
+
   // ── Addresses ──────────────────────────────────────────────────────────
 
   getAddresses: async () => {

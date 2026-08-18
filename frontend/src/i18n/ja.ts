@@ -168,6 +168,13 @@ export const ja: TranslationDict = {
   'config.inflationImportEmpty': 'starting-at-height-N の行が見つかりませんでした。config-inflation.properties を選択してください。',
   'config.inflationImportOk': '{count} 件のインフレエントリを読み込みました。保存してから「設定を完全適用して起動」で反映してください。',
   'config.inflationImportFailed': 'インポートに失敗しました:',
+  'config.finalizationPresetHelp': 'ファイナライズ設定も REST API に公開されないため、参加ノードが自動取得できません。インフレと違いチェーン上に手がかりが無く自動判定もできないので、参加先と同じプリセットを選ぶか、参加先の config-finalization.properties をインポートしてください。既定値のままで問題ないのは、参加先も既定値の場合だけです。',
+  'config.finalizationImport': 'config-finalization.properties を読み込む',
+  'config.finalizationReplaceConfirm': '現在のファイナライズ設定を置き換えます。続行しますか？',
+  'config.finalizationImportEmpty': '[finalization] セクションの項目が見つかりませんでした。config-finalization.properties を選択してください。',
+  'config.finalizationImportOk': '{count} 項目と除外投票者 {addr} 件を読み込みました。保存してから「設定を完全適用して起動」で反映してください。',
+  'config.finalizationImportFailed': 'インポートに失敗しました:',
+  'config.finalizationIneligible': 'トレジャリー再発行の除外投票者アドレス: {count} 件を保持しています。',
   'config.startingHeight': 'Starting Height',
   'config.amount': 'Amount (per block, atomic)',
 

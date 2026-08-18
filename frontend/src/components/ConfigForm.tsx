@@ -275,10 +275,14 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   const [inflationPresets, setInflationPresets] = useState<
     { id: string; label: string; entries: InflationEntry[] }[]
   >([]);
+  const [finalizationPresets, setFinalizationPresets] = useState<
+    { id: string; label: string; settings: Record<string, unknown> }[]
+  >([]);
 
   useEffect(() => {
     api.getDockerEnv().then((env) => setIsDockerDesktop(env.isDockerDesktop));
     api.getInflationPresets().then(setInflationPresets);
+    api.getFinalizationPresets().then(setFinalizationPresets);
   }, []);
 
   // Official mainnet/testnet: network-level parameters are fixed by the chain,
@@ -419,6 +423,72 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
   };
   const removeInflation = (index: number) => {
     onChange({ ...config, inflation: config.inflation.filter((_, i) => i !== index) });
+  };
+  const FINALIZATION_KEYS = [
+    'finalizationSize', 'finalizationThreshold',
+    'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+  ] as const;
+  const applyFinalizationPreset = (settings: Record<string, unknown>) => {
+    if (!confirm(t('config.finalizationReplaceConfirm'))) return;
+    const next: Record<string, unknown> = { ...config };
+    for (const key of FINALIZATION_KEYS) {
+      if (settings[key] !== undefined) next[key] = Number(settings[key]);
+    }
+    const addresses = settings.treasuryReissuanceEpochIneligibleVoterAddresses;
+    next.treasuryReissuanceEpochIneligibleVoterAddresses = Array.isArray(addresses)
+      ? addresses.map(String)
+      : [];
+    onChange(next as PresetConfig);
+  };
+  /**
+   * Import a catapult config-finalization.properties. Unlike inflation there is
+   * no on-chain artefact to detect these from, so the source node's own file is
+   * the only exact way to match a network that overrode the defaults.
+   */
+  const importFinalizationFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      // The file names two of the keys differently from the preset keys.
+      const fileKeyToPresetKey: Record<string, string> = {
+        size: 'finalizationSize',
+        threshold: 'finalizationThreshold',
+        maxHashesPerPoint: 'maxHashesPerPoint',
+        prevoteBlocksMultiple: 'prevoteBlocksMultiple',
+        treasuryReissuanceEpoch: 'treasuryReissuanceEpoch',
+      };
+      const found: Record<string, number> = {};
+      const addresses: string[] = [];
+      let section = '';
+      for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith(';')) continue;
+        if (trimmed.startsWith('[')) { section = trimmed; continue; }
+        const eq = trimmed.indexOf('=');
+        if (eq < 0) continue;
+        const key = trimmed.slice(0, eq).trim();
+        const raw = trimmed.slice(eq + 1).trim().replace(/'/g, '');
+        if (section === '[treasury_reissuance_epoch_ineligible_voter_addresses]') {
+          if (key) addresses.push(key);
+        } else if (fileKeyToPresetKey[key] && /^\d+$/.test(raw)) {
+          found[fileKeyToPresetKey[key]] = Number(raw);
+        }
+      }
+      if (Object.keys(found).length === 0) {
+        alert(t('config.finalizationImportEmpty'));
+        return;
+      }
+      if (!confirm(t('config.finalizationReplaceConfirm'))) return;
+      onChange({
+        ...config,
+        ...found,
+        treasuryReissuanceEpochIneligibleVoterAddresses: addresses,
+      } as PresetConfig);
+      alert(t('config.finalizationImportOk')
+        .replace('{count}', String(Object.keys(found).length))
+        .replace('{addr}', String(addresses.length)));
+    } catch (err) {
+      alert(`${t('config.finalizationImportFailed')} ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
   const applyInflationPreset = (entries: InflationEntry[]) => {
     if (config.inflation.length > 0 && !confirm(t('config.inflationReplaceConfirm'))) return;
@@ -894,6 +964,42 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
           <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-5 text-sm text-blue-300 space-y-2">
             <p className="font-medium">{t('config.officialNetworkNotice')}</p>
             <p className="text-blue-400/80">{t('config.officialNetworkDesc')}</p>
+          </div>
+        )}
+        {category.id === 'voting' && !isPublicNet && (
+          <div className="bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4 space-y-3">
+            <p className="text-xs text-zinc-400">{t('config.finalizationPresetHelp')}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {finalizationPresets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => applyFinalizationPreset(preset.settings)}
+                  className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-100 rounded-lg text-xs font-medium transition-colors"
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <label className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-100 rounded-lg text-xs font-medium transition-colors cursor-pointer">
+                {t('config.finalizationImport')}
+                <input
+                  type="file"
+                  accept=".properties,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void importFinalizationFile(file);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+            {(config.treasuryReissuanceEpochIneligibleVoterAddresses?.length ?? 0) > 0 && (
+              <p className="text-xs text-zinc-500">
+                {t('config.finalizationIneligible')
+                  .replace('{count}', String(config.treasuryReissuanceEpochIneligibleVoterAddresses.length))}
+              </p>
+            )}
           </div>
         )}
         {category.requiresFullReset && (

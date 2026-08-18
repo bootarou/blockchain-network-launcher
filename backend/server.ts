@@ -624,6 +624,25 @@ function flatConfigToBootstrapPreset(flat: Record<string, unknown>): Record<stri
     doc.faucet = { port: flat.faucetPort ?? 4000, amount: flat.faucetAmount ?? 500000000 };
   }
 
+  // ── Finalization (consensus-relevant subset) ──
+  // These are top-level preset keys that feed config-finalization.properties.
+  // REST never exposes them, so a joining node otherwise silently keeps the
+  // base preset's defaults and can disagree with the network on whether a
+  // block is finalized.  Written as scalars, so a custom preset value cleanly
+  // overrides the base preset (unlike the inflation map, where absent keys
+  // survive the merge).
+  for (const key of [
+    'finalizationSize', 'finalizationThreshold',
+    'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+  ] as const) {
+    if (flat[key] !== undefined && flat[key] !== '') doc[key] = Number(flat[key]);
+  }
+  if (Array.isArray(flat.treasuryReissuanceEpochIneligibleVoterAddresses)
+      && flat.treasuryReissuanceEpochIneligibleVoterAddresses.length > 0) {
+    doc.treasuryReissuanceEpochIneligibleVoterAddresses =
+      [...flat.treasuryReissuanceEpochIneligibleVoterAddresses as string[]];
+  }
+
   // ── Inflation schedule (custom/private networks) ──
   if (Array.isArray(flat.inflation) && flat.inflation.length > 0) {
     const inflObj: Record<string, unknown> = {};
@@ -813,6 +832,18 @@ function bootstrapPresetToFlat(doc: Record<string, unknown>): Record<string, unk
     flat.faucetEnabled = true;
     if (fau.port) flat.faucetPort = fau.port;
     if (fau.amount) flat.faucetAmount = fau.amount;
+  }
+
+  // Flatten finalization
+  for (const key of [
+    'finalizationSize', 'finalizationThreshold',
+    'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+  ] as const) {
+    if (doc[key] !== undefined) flat[key] = Number(doc[key]);
+  }
+  if (Array.isArray(doc.treasuryReissuanceEpochIneligibleVoterAddresses)) {
+    flat.treasuryReissuanceEpochIneligibleVoterAddresses =
+      (doc.treasuryReissuanceEpochIneligibleVoterAddresses as unknown[]).map(String);
   }
 
   // Flatten inflation
@@ -8262,6 +8293,12 @@ app.post('/api/commands/start', async (req, res) => {
             'maxMultisigDepth', 'maxCosignatoriesPerAccount', 'maxCosignedAccountsPerAccount',
             'maxAccountRestrictionValues', 'maxMosaicRestrictionValues',
             'maxMessageSize',
+            // Finalization: mainnet ships treasuryReissuanceEpoch 481 plus an
+            // ineligible-voter list; letting a custom preset override those
+            // would break an official node.
+            'finalizationSize', 'finalizationThreshold',
+            'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+            'treasuryReissuanceEpochIneligibleVoterAddresses',
           ] as const;
           for (const k of DANGEROUS_TOP_KEYS) {
             if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
@@ -9641,6 +9678,80 @@ function getInflationPresets(): { id: string; label: string; entries: InflationE
 app.get('/api/inflation-presets', (_req, res) => {
   try {
     res.json({ presets: getInflationPresets() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// Finalization presets
+//
+// config-finalization.properties is the other file whose consensus-relevant
+// values never appear in /network/properties.  Unlike inflation there is no
+// on-chain artefact to detect them from, so the schedules are offered for
+// selection (or import) instead.  Values are read from the bundled
+// symbol-bootstrap presets: shared.yml holds the defaults, and each network
+// preset overlays its own (mainnet, notably, uses treasuryReissuanceEpoch 481).
+// =============================================================================
+
+interface FinalizationSettings {
+  finalizationSize: number;
+  finalizationThreshold: number;
+  maxHashesPerPoint: number;
+  prevoteBlocksMultiple: number;
+  treasuryReissuanceEpoch: number;
+  treasuryReissuanceEpochIneligibleVoterAddresses: string[];
+}
+
+const FINALIZATION_NUMERIC_KEYS = [
+  'finalizationSize', 'finalizationThreshold',
+  'maxHashesPerPoint', 'prevoteBlocksMultiple', 'treasuryReissuanceEpoch',
+] as const;
+
+function readFinalizationFromBootstrapPreset(presetName: string): FinalizationSettings | null {
+  for (const dir of resolveBootstrapPresetsDirs()) {
+    const sharedFile = path.join(dir, 'shared.yml');
+    const networkFile = path.join(dir, presetName, 'network.yml');
+    if (!fs.existsSync(sharedFile) || !fs.existsSync(networkFile)) continue;
+    try {
+      // shared.yml carries the defaults; the network preset overrides them.
+      const shared = yaml.load(fs.readFileSync(sharedFile, 'utf-8')) as Record<string, unknown>;
+      const network = yaml.load(fs.readFileSync(networkFile, 'utf-8')) as Record<string, unknown>;
+      const pick = (key: string): unknown =>
+        network?.[key] !== undefined ? network[key] : shared?.[key];
+
+      const settings = {
+        treasuryReissuanceEpochIneligibleVoterAddresses:
+          (pick('treasuryReissuanceEpochIneligibleVoterAddresses') as unknown[] | undefined ?? []).map(String),
+      } as FinalizationSettings;
+      let complete = true;
+      for (const key of FINALIZATION_NUMERIC_KEYS) {
+        const value = pick(key);
+        if (value === undefined) { complete = false; break; }
+        settings[key] = Number(value);
+      }
+      if (complete) return settings;
+    } catch { /* try the next candidate directory */ }
+  }
+  return null;
+}
+
+function getFinalizationPresets(): { id: string; label: string; settings: FinalizationSettings }[] {
+  const wanted: { id: string; label: string }[] = [
+    { id: 'bootstrap', label: 'bootstrap / testnet defaults' },
+    { id: 'mainnet', label: 'mainnet (treasury reissuance epoch 481)' },
+  ];
+  const presets: { id: string; label: string; settings: FinalizationSettings }[] = [];
+  for (const { id, label } of wanted) {
+    const settings = readFinalizationFromBootstrapPreset(id);
+    if (settings) presets.push({ id, label, settings });
+  }
+  return presets;
+}
+
+app.get('/api/finalization-presets', (_req, res) => {
+  try {
+    res.json({ presets: getFinalizationPresets() });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
