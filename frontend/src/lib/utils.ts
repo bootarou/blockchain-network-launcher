@@ -608,16 +608,22 @@ export function networkPropertiesToConfig(
   const serverVersion = Number(nodeInfo.version ?? 0);
   const patchBuild = serverVersion & 0xFFFF; // lower 16 bits = patch.build
   // For mainnet/testnet, always use V3 as the official networks have upgraded.
-  // For custom networks: V3 if build >= 0x0309 (1.0.3.9+), V2 if build < 0x0309 (1.0.3.6).
+  // Official-ness comes from presetFromId (generation hash), NOT from ni: a custom
+  // bootstrap network can reuse identifier 152 without being Symbol's testnet, and
+  // such a network is free to run any catapult build.
+  // For custom networks the joining node must match the build the network runs,
+  // otherwise state/importance computations diverge and block sync stalls.
   // IMPORTANT: if nodeInfo.version is 0 (not returned / REST unavailable), serverVersion=0
   // and patchBuild=0, which would incorrectly detect V2.  We default to V3 in that case
-  // because 1.0.3.9 is the current standard and V2 (1.0.3.6) is only for legacy networks.
-  const isV3 = (ni === 104 || ni === 152)
-    ? true                         // official networks: always V3
-    : serverVersion === 0
-      ? true                       // version unknown → safe default = V3
-      : (patchBuild >= 0x0309);    // custom network: check actual build number
-  const catapultVersion = isV3 ? 'v3' : 'v2';
+  // because 1.0.3.9 is the current standard and the older builds are legacy-only.
+  const isOfficialNetwork = presetFromId === 'mainnet' || presetFromId === 'testnet';
+  const catapultVersion = (isOfficialNetwork || serverVersion === 0)
+    ? 'v3'
+    : patchBuild >= 0x0309
+      ? 'v3'                       // 1.0.3.9+
+      : patchBuild >= 0x0307
+        ? 'v37'                    // 1.0.3.7; 1.0.3.8 has no entry and falls back here
+        : 'v2';                    // 1.0.3.6 and older
 
   // Import CATAPULT_VERSIONS to set correct Docker images
   const versionPreset = CATAPULT_VERSIONS.find(v => v.id === catapultVersion) ?? CATAPULT_VERSIONS[0];

@@ -440,6 +440,7 @@ export function HelpPage() {
           headers={[t('help.catapultColVersion'), t('help.catapultColImage'), t('help.catapultColNote')]}
           rows={[
             ['v2', 'gcc-1.0.3.6', t('help.catapultV2Note')],
+            ['v37', 'gcc-1.0.3.7', t('help.catapultV37Note')],
             ['v3', 'gcc-1.0.3.9', t('help.catapultV3Note')],
           ]}
         />
