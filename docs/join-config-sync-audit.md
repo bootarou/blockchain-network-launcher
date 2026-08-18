@@ -62,7 +62,13 @@ symbol-bootstrap はプリセット（`bootstrap` / `testnet` / `mainnet` + カ�
 
 ツール側は `fetchAndWritePeerFiles()` が `network` / `chain` / `plugins` / `forkHeights` の全項目を参加元の値で書き込みます（`backend/server.ts` の `srcForkHeights` 周辺）。書き込み先はノードの `server-config` / `broker-config` と `gateways/*/api-node-config` です。
 
-> **注意**: この関数には 2 つの前提があります。full モード起動でしか呼ばれないこと、そして参加元への HTTP 取得に失敗すると early return して**以降の処理を丸ごとスキップする**ことです。参加元が落ちている状態で起動すると、設定が既定値のまま Start だけ成功します。
+> **注意**: この関数は full モード起動でしか呼ばれず、かつ `sourceNodeUrl` が設定されている場合のみ実行されます。参加元の `/node/info` 取得に失敗すると early return し、ピアファイルと fork_heights が更新されません（`/node/peers` と `/network/properties` には `.catch()` があるため、早期リターンの引き金は `/node/info` だけです）。
+>
+> **2026-08-18 に以下を修正しました。**
+> - 到達失敗時に何が反映されていないかを ❌ 付きで明示するようにした（従来は警告 1 行のみ）
+> - **ピアが 1 件も設定されていない場合は Start を失敗させる**ようにした。catapult は knownPeers への発信接続でしかブロックを引かないため、ピア 0 のノードは起動しても永久に同期しない。この検証は try/catch の**外**に置いてある（内側だと「non-fatal」として握り潰される）
+> - ただし自分でネットワークを作ったノードはピア 0 が正常なので、`sourceNodeUrl` か `peerNodeUrls` が設定されている場合に限って適用する
+> - インフレーション適用をこの関数から切り出し、`patchInflationConfig()` として**無条件に実行**するようにした（下記参照）
 
 ### 4-2. `config-inflation.properties` — 対応済み（今回の不具合）
 
@@ -79,6 +85,8 @@ symbol-bootstrap はプリセット（`bootstrap` / `testnet` / `mainnet` + カ�
 自動検出を「復元」ではなく「照合」にしているのは意図的です。receipt から観測できるのは現在の高さまでの段差だけなので、観測した段差だけを入れると**未到達の次の段差で同じ症状が再発**します。照合して一致したらカーブ全体を採用することで、将来分も含めて正しくなります。
 
 判定不能・到達不能・複数一致の場合は投入せず、Join 画面に警告を出します。また `statements` が 0 件の応答は「インフレ無し」ではなく「データ欠落」として扱います（全ブロックが必ずハーベスト手数料 receipt `0x2143` を持つことをネメシス含め実測確認済み）。プルーニングされたノードを参照した際の誤判定防止です。
+
+**追加修正（2026-08-18）**: 当初、生成処理が `fetchAndWritePeerFiles()` の内部に置かれていました。設定の出どころは `.ui-meta.json`（ローカルファイル）なのに、適用が**参加元への到達性に依存**する状態で、参加元が落ちていると正しく設定したスケジュールが黙って無視されていました。`patchInflationConfig()` として切り出し、Step 4c2b で無条件に実行するよう修正しています。
 
 ### 4-3. `config-finalization.properties` — 対応済み
 
@@ -115,7 +123,19 @@ symbol-bootstrap はプリセット（`bootstrap` / `testnet` / `mainnet` + カ�
 - Configuration → 投票・ファイナリティ にプリセット投入ボタンと `config-finalization.properties` のインポートを追加。ファイル側の `size` / `threshold` はプリセットキー `finalizationSize` / `finalizationThreshold` へ読み替える
 - 5 つのスカラ値を同カテゴリの通常フィールドとしても編集可能に
 
-インフレーションと違い**ポストパッチではなく `custom-preset.yml` 経由**にしています。これらはスカラ値なので、カスタムプリセットの値がベースプリセットをそのまま上書きし、symbol-bootstrap が `config-finalization.properties` を正しく生成します（インフレーションはマップのため、キーが欠けているとベース側の値が生き残るのでポストパッチが必要でした）。
+インフレーションと違い**ポストパッチではなく `custom-preset.yml` 経由**にしています。スカラ値なのでカスタムプリセットの値がベースプリセットをそのまま上書きし、symbol-bootstrap が `config-finalization.properties` を正しく生成します。
+
+> **訂正（2026-08-18）**: 当初この箇所に「インフレーションはマップのため、キーが欠けているとベース側の値が生き残る」と書いていましたが、**誤りでした**。`ConfigLoader.mergePresets` は `inflation` / `knownPeers` / `knownRestGateways` の 3 つを特別扱いし、深いマージではなく**最後に非空の値を持つプリセットで丸ごと置換**します。
+>
+> ```js
+> const presetData = _.merge({}, ...presets);
+> const inflation = reversed.find((p) => !_.isEmpty(p?.inflation))?.inflation;
+> if (inflation) presetData.inflation = inflation;   // 丸ごと置換
+> ```
+>
+> 実証: 手元のジェネシスノードは custom-preset.yml に `starting-at-height-2` の 1 件だけを持ち、生成された `config-inflation.properties` も 1 行だけです。bootstrap プリセットの 2 エントリ（`starting-at-height-1` / `starting-at-height-10000`）は残っていません。
+>
+> したがって**インフレーションも custom-preset.yml 経由で正しく反映されます**。コミット `552a9c5` のメッセージにも同じ誤記があります。
 
 既定値は `shared.yml` と同じ（10000 / 6700 / 256 / 4 / 0）にしてあるため、**既存ネットワークの生成結果は変わりません**。また公式 mainnet / testnet プリセット使用時は、これらのキーを `DANGEROUS_TOP_KEYS` で custom-preset.yml から除去し、公式側の値（mainnet の 481 や除外投票者リスト）を壊さないようにしています。
 
@@ -140,7 +160,6 @@ symbol-bootstrap はプリセット（`bootstrap` / `testnet` / `mainnet` + カ�
 
 | 項目 | 優先度 | 内容 |
 |---|---|---|
-| `fetchAndWritePeerFiles()` の無言スキップ | 中 | 参加元に到達できないと設定を書かずに Start が成功してしまう。警告を Start 失敗として扱うか、UI に明示すべき |
 | restart モードでの設定未反映 | 低 | 設定変更後は「設定を完全適用して起動」が必要。UI 上の導線は既にあるが、通常 Start との違いが分かりにくい |
 
 ---

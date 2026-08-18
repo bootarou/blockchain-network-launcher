@@ -4542,6 +4542,29 @@ function dedupePeerEntries(entries: PeerEntry[]): PeerEntry[] {
   return out;
 }
 
+/**
+ * Count knownPeers in the generated peers-p2p.json of any node.
+ *
+ * catapult only pulls chain data over OUTBOUND connections to knownPeers, so a
+ * node whose peer list is empty can never sync no matter how many peers reach
+ * it.  Used to turn that dead-end into a Start failure instead of a node that
+ * comes up "successfully" and then sits at the same height forever.
+ */
+function countConfiguredP2pPeers(targetDir: string): number {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return 0;
+  let total = 0;
+  try {
+    for (const nodeName of fs.readdirSync(nodesDir)) {
+      const file = path.join(nodesDir, nodeName, 'server-config', 'resources', 'peers-p2p.json');
+      if (!fs.existsSync(file)) continue;
+      const doc = parseJsonFile(file) as { knownPeers?: unknown[] };
+      if (Array.isArray(doc?.knownPeers)) total += doc.knownPeers.length;
+    }
+  } catch { /* treat unreadable peer files as "no peers" */ }
+  return total;
+}
+
 function writePeerFiles(targetDir: string, p2pPeers: PeerEntry[], apiPeers: PeerEntry[], infoMessage: string): void {
   const p2pJson = JSON.stringify({
     _info: infoMessage,
@@ -4959,7 +4982,7 @@ async function refreshLivePeerKeys(targetDir: string): Promise<void> {
  * Fetch /node/info and /node/peers from the source node URL, then build and
  * overwrite peers-p2p.json and peers-api.json for every node in the target.
  */
-async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string): Promise<void> {
+async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string): Promise<boolean> {
   const base = sourceNodeUrl.replace(/\/+$/, '');
   broadcastLog(`[Peers] Fetching peer info from ${base} ...\n`);
 
@@ -4988,7 +5011,7 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
     if (!Array.isArray(remotePeers)) remotePeers = [];
   } catch (err: any) {
     broadcastLog(`[Peers] ⚠️  Could not fetch from source node: ${err.message}\n`);
-    return;
+    return false;
   }
 
   // Derive the host of the source node from the URL
@@ -4998,7 +5021,7 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
     sourceHost = parsed.hostname;
   } catch {
     broadcastLog(`[Peers] ⚠️  Could not parse source URL hostname\n`);
-    return;
+    return false;
   }
 
   // Build the source node as a peer entry
@@ -5143,6 +5166,21 @@ async function fetchAndWritePeerFiles(targetDir: string, sourceNodeUrl: string):
       broadcastLog(`[Network] ⚠️  No config-network.properties files were patched\n`);
     }
   }
+
+  return true;
+}
+
+/**
+ * Write config-inflation.properties from the schedule stored in .ui-meta.json.
+ *
+ * Split out of fetchAndWritePeerFiles(): the schedule is read from a local file,
+ * so gating it on the source node being reachable meant a correctly configured
+ * schedule was silently dropped whenever the source happened to be down — the
+ * exact failure this setting exists to prevent.
+ */
+function patchInflationConfig(targetDir: string): void {
+  const nodesDir = path.join(targetDir, 'nodes');
+  if (!fs.existsSync(nodesDir)) return;
 
   // -----------------------------------------------------------------------
   // Patch config-inflation.properties:
@@ -8472,6 +8510,7 @@ app.post('/api/commands/start', async (req, res) => {
       //   Must happen AFTER compose because compose regenerates peers-*.json.
       let sourceUrl: string | undefined;
       let manualPeerUrls: string[] = [];
+      let sourceFetchOk = true;
       try {
         const meta = fs.existsSync(UI_META_PATH)
           ? JSON.parse(fs.readFileSync(UI_META_PATH, 'utf-8'))
@@ -8510,7 +8549,15 @@ app.post('/api/commands/start', async (req, res) => {
 
         if (sourceUrl) {
           broadcastLog('[System] Step 4c – Fetching peers from source node...\n');
-          await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
+          sourceFetchOk = await fetchAndWritePeerFiles(TARGET_DIR, sourceUrl);
+          if (!sourceFetchOk) {
+            // Loud, because everything this step configures is now missing:
+            // the peer list, and the source network's [fork_heights] (which
+            // nothing else supplies — networkPropertiesToConfig ignores them).
+            broadcastLog(`[Peers] ❌ ソースノード ${sourceUrl} に到達できませんでした。\n`);
+            broadcastLog('[Peers] ❌ ピア一覧と fork_heights が参加元の値に更新されていません。\n');
+            broadcastLog('[Peers] ❌ ソースノードを起動してから「設定を完全適用して起動」をやり直してください。\n');
+          }
         }
         if (manualPeerUrls.length > 0) {
           broadcastLog('[System] Step 4c – Merging peers from node-level Peer Node URLs...\n');
@@ -8519,6 +8566,35 @@ app.post('/api/commands/start', async (req, res) => {
       } catch (e: any) {
         broadcastLog(`[Peers] ⚠️  Peer fetch failed (non-fatal): ${e.message}\n`);
       }
+
+      // Deliberately OUTSIDE the try above: a node with an empty peer list can
+      // never sync (catapult only pulls chain data over outbound connections to
+      // knownPeers), so this must fail the Start instead of being swallowed as
+      // "non-fatal" and coming up into a height that never advances.
+      // Only enforced when this node is meant to have peers.  A node that
+      // created its own network legitimately runs with an empty peer list until
+      // somebody joins, so an empty list is only a failure when the user asked
+      // to join something (sourceNodeUrl) or pinned peers (peerNodeUrls).
+      if (!isOfficialPreset && (sourceUrl || manualPeerUrls.length > 0)) {
+        const peerCount = countConfiguredP2pPeers(TARGET_DIR);
+        if (peerCount === 0) {
+          throw new Error(
+            'ピアが 1 件も設定されていないため起動を中止しました。'
+            + (sourceUrl && !sourceFetchOk
+              ? ` ソースノード ${sourceUrl} に到達できませんでした。ソースノードを起動してからやり直してください。`
+              : ' 設定したピアを 1 件も解決できませんでした。Peer Node URLs を確認してください。')
+            + ' この状態で起動してもブロック同期は進みません。'
+          );
+        }
+        broadcastLog(`[Peers] ✅ ピア設定を確認: ${peerCount} 件\n`);
+      }
+
+      // Step 4c2b: Write config-inflation.properties from .ui-meta.json.
+      //   Unconditional: the schedule is local configuration, so it must be
+      //   applied whether or not the source node happened to be reachable,
+      //   and whether or not this is a join node.
+      broadcastLog('[System] Step 4c2b – Applying inflation schedule...\n');
+      patchInflationConfig(TARGET_DIR);
 
       // Step 4c3: Refresh live peer public keys.
       //   symbol-bootstrap config regenerates peers-p2p.json with keys stored
