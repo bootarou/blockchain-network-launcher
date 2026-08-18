@@ -243,6 +243,52 @@ http://localhost:5173
 - [MANUAL.md](MANUAL.md) — 詳細なユーザーマニュアル（Docker Host Mode、nodeEqualityStrategy、トラブルシューティング等）
 - [docs/backup-restore.md](docs/backup-restore.md) — バックアップ / リストア手順書（バックアップの種類、ケース別の復元動作、注意事項）
 - [docs/wsl-lan-setup.md](docs/wsl-lan-setup.md) — WSL2 ホストの LAN 公開手順書（mirrored モード / portproxy、ファイアウォール設定）
+- [docs/join-config-sync-audit.md](docs/join-config-sync-audit.md) — 参加ノードに同期されない設定の棚卸し（REST から取得できない設定と、同期が途中で止まる原因）
+- [docs/incident-2026-07-04-join-node-crash.md](docs/incident-2026-07-04-join-node-crash.md) — 障害レポート：JOIN ノードがエポック2到達後にクラッシュループする問題
+
+## ブランチ構成
+
+`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）を使う標準版です。派生ブランチは用途別に分かれており、**いずれも main の内容を取り込み済み**です。
+
+| ブランチ | 既定の catapult イメージ | 用途 |
+|---|---|---|
+| `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 標準版。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
+| `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
+| `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp` | 非 PQC の BNL 統合イメージ版 |
+| `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
+| `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+
+派生の系統は 2 本に分かれます。ブランチ名からは読み取れませんが、**`-cf` が付く方が非 PQC** です。
+
+```
+main
+ ├─ feat-custom-catapult            … カスタムイメージ対応（非 PQC）
+ │   └─ feat-empty-block-policy-cf  … BNL 統合イメージを既定に
+ └─ feat-PQC-custom-catapult        … PQC 専用
+     └─ feat-empty-block-policy     … PQC + 空ブロック抑制
+```
+
+### feat-custom-catapult
+
+`.env` の `CUSTOM_SERVER_IMAGE` / `CUSTOM_CONFIG_PATCHES` で、ローカルビルドの catapult イメージと追加 config プロパティを Configuration の選択肢に加えられます。未設定なら main と同じ動作で、既定イメージは公式のままです。追加したキーは Configuration UI で編集でき、REST の `/network/properties` にも公開されます。設定例は [.env.example](.env.example) に記載しています。
+
+### feat-empty-block-policy-cf
+
+`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `1.0.3.9-cf1-ebp`（chainFinalizationHeight + 空ブロックポリシー）を既定で提供し、既知の BNL イメージには必要な config パッチを自動注入します。
+
+### feat-PQC-custom-catapult
+
+耐量子計算機暗号版です。symbol-bootstrap も `pqc-bootstrap` ブランチ（ML-DSA-44 の鍵・証明書、iVRF による VrfKeyLink）を使い、UI も PQC 専用に絞られています。
+
+> ⚠️ **公式ネットワーク（mainnet / testnet）には参加できません。** 公式ノードの URL を指定すると、取り込み時に `official Symbol network (ed25519)` エラーで明示的に拒否されます。
+
+### feat-empty-block-policy
+
+`feat-PQC-custom-catapult` の子孫です。空ブロック抑制ポリシー（`emptyBlockPolicy`）を追加し、private / data chain では `heartbeat`（既定 86400 秒間隔）を既定値にします。トランザクションが無い間もブロックを生成し続ける従来動作（`normal`）に対して、ディスク消費を抑えられます。
+
+### 派生ブランチを運用する場合
+
+**main の修正は定期的に取り込んでください。** 取り込みが遅れると、JOIN ノードの `proof.index.dat` 問題やクラッシュ自動復旧、インフレーション設定の不一致対策といった既知の障害対策が入らないまま運用することになります。これらは catapult のバージョンや PQC の有無に依存しないため、どの派生ブランチでも同じ問題が発生します。
 
 ## 関連リポジトリ
 
