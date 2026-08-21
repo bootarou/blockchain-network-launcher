@@ -12,6 +12,7 @@ import {
   BookOpen,
   Monitor,
   X,
+  Radio,
 } from 'lucide-react';
 import { NodeHealthIndicator } from './NodeHealthIndicator';
 import { useTranslation } from '../i18n';
@@ -25,6 +26,7 @@ type ActivePanel =
   | 'join'
   | 'share'
   | 'publish'
+  | 'beacon'
   | 'backup'
   | 'help';
 
@@ -67,6 +69,7 @@ export function SidebarNav({ activePanel, onNavigate, mobileOpen = false, onMobi
     { id: 'manage', labelKey: 'tabs.manage', icon: Wrench, tone: 'cyan', group: 'tools' },
     { id: 'explorer', labelKey: 'tabs.explorer', icon: Monitor, tone: 'indigo', group: 'tools' },
     { id: 'publish', labelKey: 'tabs.publish', icon: Cloud, tone: 'violet', group: 'tools' },
+    { id: 'beacon', labelKey: 'tabs.beacon', icon: Radio, tone: 'indigo', group: 'tools' },
     { id: 'backup', labelKey: 'tabs.backup', icon: ShieldCheck, tone: 'teal', group: 'tools' },
     { id: 'help', labelKey: 'tabs.help', icon: HelpCircle, tone: 'amber', group: 'support' },
   ];
