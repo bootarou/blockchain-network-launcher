@@ -20,6 +20,7 @@ Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・
 - 💾 **バックアップ / リストア** — 設定のみ / フル（ブロックデータ含む）の 2 種類の zip バックアップに対応
 - 🔍 **Explorer** — Symbol Explorer をビルド・起動して自ネットワークのブロックを閲覧
 - ☁️ **ネットワーク公開** — Cloudflare 連携でノードをインターネットに公開
+- 📡 **Beacon 書き出し** — ノードが観測したネットワーク状態を Transport 鍵で署名し、検証可能な Beacon File として書き出し
 - 🔒 **ログイン認証** — `ADMIN_PASSWORD` を設定するとパスワード保護を有効化
 - 🌍 **多言語対応** — 日本語 / English 切り替え
 - 🌙 **ダーク / ライトテーマ** — 好みに応じて切り替え
@@ -160,11 +161,56 @@ http://localhost:5173
 
 詳しい操作手順は [MANUAL.md](MANUAL.md) を参照してください。
 
+### Beacon の書き出し
+
+**Beacon** タブで、稼働中のノードが観測したネットワーク状態を、そのノードの
+**Transport 秘密鍵で署名した Beacon File**（`*.beacon.json`）として書き出せます。
+
+Beacon は「この Transport Identity を持つノードが、この接続先で、このネットワーク
+状態を観測した」という署名済みの宣言です。ネットワーク単位ではなく **ノード単位**
+で生成します。
+
+含まれる情報は次のとおりです。
+
+| 項目 | 内容 |
+|---|---|
+| ネットワーク | `generationHash` |
+| ノード識別 | `transportPublicKey`（署名者）／ `mainPublicKey`（関連付け情報） |
+| P2P 接続先 | `p2pHost` / `p2pPort` |
+| REST 接続先 | `apiHost` / `apiPort` / `apiScheme` |
+| 観測ブロック | `height` / `blockHash` / `blockTimestamp` |
+
+書き出しの流れです。
+
+1. **Beacon** タブを開くと、設定と稼働ノードから値が自動収集されます
+2. 収集時に `generationHash`・`mainPublicKey`・`transportPublicKey` が**実ノードの値と一致するか照合**されます。1 つでも食い違えば生成しません
+3. 接続先（host / port / scheme）を確認し、必要なら編集します。**編集した値がそのまま署名対象**になります
+4. ネットワークパスワードを入力して **「Beacon を書き出す」** をクリック
+5. 署名後、SDK 自身でオフライン検証し、`format` / `hash` / `signature` / `metadata` がすべて有効な場合のみファイルがダウンロードされます
+
+いくつか設計上の要点があります。
+
+- **`p2pPort` / `apiPort` は「外部から実際に接続するポート」を優先**します。`docker port` で公開ポートを取得するため、`17900:7900` のような構成では 17900 が入ります
+- **`apiScheme` はポート番号から推測しません。** 判定材料が無い場合は警告を出し、ユーザーが確認・変更します
+- **P2P と REST は別ホストにできます。** Cloudflare トンネルやリバースプロキシで REST だけ別 FQDN になる構成に対応しています
+- **プライベート IP でも生成は可能**です。外部検証ができない旨の警告を出すだけで、エラーにはしません（Gateway や VPN 経由の運用があるため）
+- **Transport 秘密鍵はバックエンド内でのみ扱います。** 復号は署名の直前に行い、使用後は必ずゼロ化します。画面・ログ・API レスポンス・Beacon File のいずれにも出しません
+
+Beacon Protocol の実装（正規化・ハッシュ・署名・ファイル形式・検証）は BNL 内には持たず、
+独立した [Beacon SDK](https://github.com/bootarou/beacon) をバージョン固定
+（`github:bootarou/beacon#v1.0.0`）で利用しています。Protocol の正本は SDK 側です。
+
+> ℹ️ 現時点の BNL の役割は **Beacon File の生成まで**です。外部への送信、ブロック
+> チェーンへの記録、第三者によるオンライン検証は後続フェーズ（BEYOND）が担当します。
+
 ## プロジェクト構成
 
 ```
 ├── backend/
 │   ├── server.ts          # Express API + WebSocket サーバー
+│   ├── beacon.ts          # Beacon 生成（収集・鍵照合・署名・自己検証）
+│   ├── addresses-crypto.ts # addresses.yml の復号（server/beacon で共有）
+│   ├── beacon.test.ts     # Beacon のテスト
 │   └── package.json
 ├── frontend/
 │   ├── src/
@@ -204,6 +250,7 @@ http://localhost:5173
 - **WebSocket (ws)** — ターミナルログ配信
 - **symbol-bootstrap** — ノード構成・起動管理
 - **Docker CLI** — サイドカーコンテナ操作 (DinD パターン)
+- **@nftdrive/beacon-sdk** — Beacon Protocol v1（正規化・署名・検証）。`v1.0.0` 固定
 
 ## 環境変数
 

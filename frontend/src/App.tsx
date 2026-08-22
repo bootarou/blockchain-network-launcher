@@ -10,6 +10,7 @@ import { ManagementPage } from './components/ManagementPage';
 import { ExplorerPage } from './components/ExplorerPage';
 import { OperationsPage } from './components/OperationsPage';
 import { PublishNetwork } from './components/PublishNetwork';
+import { BeaconPanel } from './components/BeaconPanel';
 import { SidebarNav } from './components/SidebarNav';
 import { LoginPage } from './components/LoginPage';
 import { NodeHealthIndicator } from './components/NodeHealthIndicator';
@@ -21,7 +22,7 @@ import { useTheme } from './theme';
 
 function App() {
   const [config, setConfig] = useState<PresetConfig>(DEFAULT_PRESET);
-  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'operations' | 'manage' | 'explorer' | 'join' | 'share' | 'publish' | 'backup' | 'help'>('config');
+  const [activePanel, setActivePanel] = useState<'config' | 'dashboard' | 'operations' | 'manage' | 'explorer' | 'join' | 'share' | 'publish' | 'beacon' | 'backup' | 'help'>('config');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { t, lang, setLang } = useTranslation();
   const { theme, toggleTheme } = useTheme();
@@ -232,6 +233,8 @@ function App() {
           <ExplorerPage config={config} />
         ) : activePanel === 'publish' ? (
           <PublishNetwork />
+        ) : activePanel === 'beacon' ? (
+          <BeaconPanel />
         ) : activePanel === 'backup' ? (
           <BackupRestore />
         ) : activePanel === 'help' ? (
