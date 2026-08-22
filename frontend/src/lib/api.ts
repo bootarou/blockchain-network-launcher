@@ -150,6 +150,38 @@ export const api = {
     }
   },
 
+  // ── Beacon ─────────────────────────────────────────────────────────────
+
+  /** Rejects with the backend's {code, message, detail} so the UI can branch on code. */
+  beaconPreview: async (overrides: Record<string, unknown> = {}) => {
+    const res = await authFetch(`${API_BASE}/beacon/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(overrides),
+    });
+    const data = await res.json();
+    if (!res.ok) throw data;
+    return data;
+  },
+
+  /**
+   * Sign and return the Beacon File. The network password is sent so the
+   * backend can decrypt the transport key; it is never stored client-side.
+   */
+  beaconGenerate: async (password: string, overrides: Record<string, unknown> = {}) => {
+    const res = await authFetch(`${API_BASE}/beacon/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, ...overrides }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw data;
+    return data as {
+      fileName: string; json: string; payloadHash: string;
+      signature: string; payloadByteLength: number; preview: unknown;
+    };
+  },
+
   // ── Addresses ──────────────────────────────────────────────────────────
 
   getAddresses: async () => {

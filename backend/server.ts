@@ -9,6 +9,13 @@ import crypto from 'crypto';
 import yaml from 'js-yaml';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
+import { decryptAddressesObj } from './addresses-crypto.js';
+import {
+  BeaconProducerError,
+  collectBeaconPreview,
+  generateBeacon,
+  type BeaconEndpoints,
+} from './beacon.js';
 
 // =============================================================================
 // Setup
@@ -1115,53 +1122,6 @@ app.get('/api/addresses/download', (req, res) => {
 // =============================================================================
 // Address Viewer — Decrypt private keys & fetch balances
 // =============================================================================
-
-const ENCRYPT_PREFIX = 'ENCRYPTED:';
-
-/**
- * Decrypt a single ENCRYPTED: value using symbol-bootstrap's CryptoUtils scheme.
- * Algorithm: PBKDF2(SHA-256, 1024 iterations, 32-byte key) + AES-256-CBC (PKCS7).
- * Data format: salt(32 hex) + iv(32 hex) + ciphertext(base64)
- */
-function decryptPrivateKey(encryptedValue: string, password: string): string {
-  const data = encryptedValue.startsWith(ENCRYPT_PREFIX)
-    ? encryptedValue.slice(ENCRYPT_PREFIX.length)
-    : encryptedValue;
-
-  const saltHex = data.substr(0, 32);
-  const ivHex = data.substr(32, 32);
-  const cipherB64 = data.substring(64);
-
-  const salt = Buffer.from(saltHex, 'hex');
-  const iv = Buffer.from(ivHex, 'hex');
-  const key = crypto.pbkdf2Sync(password, salt, 1024, 32, 'sha256');
-
-  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-  let decrypted = decipher.update(Buffer.from(cipherB64, 'base64'));
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-  return decrypted.toString('utf8');
-}
-
-/**
- * Recursively walk an addresses object and decrypt all ENCRYPTED: privateKey fields.
- */
-function decryptAddressesObj(obj: any, password: string): any {
-  if (Array.isArray(obj)) {
-    return obj.map((item) => decryptAddressesObj(item, password));
-  }
-  if (obj && typeof obj === 'object') {
-    const result: any = {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (key === 'privateKey' && typeof value === 'string' && value.startsWith(ENCRYPT_PREFIX)) {
-        result[key] = decryptPrivateKey(value, password);
-      } else {
-        result[key] = decryptAddressesObj(value, password);
-      }
-    }
-    return result;
-  }
-  return obj;
-}
 
 // Decrypt addresses with password
 app.post('/api/addresses/decrypt', (req, res) => {
@@ -10320,6 +10280,140 @@ async function detectInflationPreset(
   // Ambiguous (or no) match means we cannot safely pick one.
   return matches.length === 1 ? matches[0] : null;
 }
+
+// =============================================================================
+// Beacon — produce a signed, verifiable statement about this node
+//
+// BNL is only the producer: it gathers what the running node reports, proves
+// the transport key belongs to that node, and hands everything to
+// @nftdrive/beacon-sdk (pinned to v1.0.0). Sending Beacons anywhere, writing
+// them on-chain and third-party verification are not part of this.
+// =============================================================================
+
+/** Endpoint values an operator may override before signing. */
+function readEndpointOverrides(body: unknown): Partial<BeaconEndpoints> {
+  const src = (body ?? {}) as Record<string, unknown>;
+  const out: Partial<BeaconEndpoints> = {};
+  if (typeof src.p2pHost === 'string' && src.p2pHost.trim()) out.p2pHost = src.p2pHost.trim();
+  if (typeof src.apiHost === 'string' && src.apiHost.trim()) out.apiHost = src.apiHost.trim();
+  const p2pPort = Number(src.p2pPort);
+  if (Number.isInteger(p2pPort) && p2pPort > 0) out.p2pPort = p2pPort;
+  const apiPort = Number(src.apiPort);
+  if (Number.isInteger(apiPort) && apiPort > 0) out.apiPort = apiPort;
+  if (src.apiScheme === 'http' || src.apiScheme === 'https') out.apiScheme = src.apiScheme;
+  return out;
+}
+
+function beaconPaths() {
+  return { targetDir: TARGET_DIR, presetPath: PRESET_PATH, uiMetaPath: UI_META_PATH };
+}
+
+function beaconRestUrl(): string {
+  return `http://${NODE_REST_HOST}:${NODE_REST_PORT}`;
+}
+
+/** Container that publishes the P2P port; names differ by preset. */
+function beaconP2pContainer(): string {
+  for (const name of ['api-node-0', 'node', 'peer-node-0']) {
+    try {
+      const out = execSync(`docker ps --filter "name=^${name}$" --format "{{.Names}}"`, {
+        timeout: 8_000, stdio: 'pipe',
+      }).toString().trim();
+      if (out === name) return name;
+    } catch { /* try the next candidate */ }
+  }
+  return 'api-node-0';
+}
+
+function beaconErrorResponse(res: express.Response, err: unknown): void {
+  if (err instanceof BeaconProducerError) {
+    // Internal code and user-facing message are separate so the UI can branch
+    // on the code without parsing Japanese prose.
+    res.status(400).json(err.toJSON());
+    return;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  res.status(500).json({ code: 'INTERNAL_ERROR', message });
+}
+
+/**
+ * Collect everything a Beacon would contain, without touching any key.
+ * Safe to call repeatedly while the operator adjusts the endpoints.
+ */
+app.post('/api/beacon/preview', async (req, res) => {
+  try {
+    if (!areNodeContainersRunning()) {
+      return res.status(400).json({
+        code: 'NODE_NOT_RUNNING',
+        message: 'ノードが起動していません。Beacon はノードの稼働中にのみ生成できます。',
+      });
+    }
+    const { nodeName } = (req.body ?? {}) as { nodeName?: string };
+    const preview = await collectBeaconPreview(beaconPaths(), {
+      nodeName,
+      restUrl: beaconRestUrl(),
+      p2pContainer: beaconP2pContainer(),
+      apiContainer: 'rest-gateway',
+      overrides: readEndpointOverrides(req.body),
+    });
+    res.json(preview);
+  } catch (err) {
+    beaconErrorResponse(res, err);
+  }
+});
+
+/**
+ * Sign and return the Beacon File.
+ *
+ * The file is returned rather than written server-side so the operator chooses
+ * where it lands; BNL is a web UI, so that is a browser download.
+ */
+app.post('/api/beacon/generate', async (req, res) => {
+  try {
+    const { password, nodeName } = (req.body ?? {}) as { password?: string; nodeName?: string };
+    if (!password) {
+      return res.status(400).json({
+        code: 'TRANSPORT_KEY_UNAVAILABLE',
+        message: 'ネットワークパスワードが必要です（transport 秘密鍵の復号に使用します）。',
+      });
+    }
+    if (!areNodeContainersRunning()) {
+      return res.status(400).json({
+        code: 'NODE_NOT_RUNNING',
+        message: 'ノードが起動していません。Beacon はノードの稼働中にのみ生成できます。',
+      });
+    }
+
+    // Re-collected here rather than trusting a preview round-tripped through
+    // the client: the block state must be read at signing time, and the key
+    // cross-checks must run against the node as it is right now.
+    const preview = await collectBeaconPreview(beaconPaths(), {
+      nodeName,
+      restUrl: beaconRestUrl(),
+      p2pContainer: beaconP2pContainer(),
+      apiContainer: 'rest-gateway',
+      overrides: readEndpointOverrides(req.body),
+    });
+
+    const beacon = await generateBeacon(beaconPaths(), preview, password, { nodeName });
+    broadcastLog(
+      `[Beacon] ✅ ${beacon.fileName} を生成しました (payload ${beacon.payloadByteLength} bytes, height ${preview.block.height})\n`,
+    );
+    res.json({
+      fileName: beacon.fileName,
+      json: beacon.json,
+      payloadHash: beacon.payloadHash,
+      signature: beacon.signature,
+      payloadByteLength: beacon.payloadByteLength,
+      preview,
+    });
+  } catch (err) {
+    if (err instanceof BeaconProducerError) {
+      broadcastLog(`[Beacon] ❌ ${err.code}: ${err.message}\n`);
+    }
+    beaconErrorResponse(res, err);
+  }
+});
 
 // =============================================================================
 // Join Network — fetch network properties from a remote node
