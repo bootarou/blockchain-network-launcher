@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v10 beta)
+# BNL One-Line Installer for Windows + WSL2 (v11 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -11,7 +11,7 @@ $LinuxInstallerUrl  = 'https://raw.githubusercontent.com/bootarou/blockchain-net
 $DistroName         = 'Ubuntu'
 $BnlWebUrl          = 'http://localhost:5173'
 $BnlProbeUrl        = 'http://127.0.0.1:5173'
-$StateDir            = Join-Path $env:ProgramData 'BNL'
+$StateDir            = Join-Path $env:LOCALAPPDATA 'BNL'
 $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
 $LogPath             = Join-Path $StateDir 'install.log'
@@ -135,15 +135,32 @@ function Get-WslDistroVersion {
 try {
     Write-Step 'Windows one-line installer'
 
-    if (-not (Test-IsAdministrator)) {
-        Write-Host 'Administrator privileges are required. Requesting UAC elevation...' -ForegroundColor Yellow
+    $isAdmin = Test-IsAdministrator
+    $existingDistros = Get-WslDistros
+    $existingUbuntuVersion = $null
+    if ($existingDistros -contains $DistroName) {
+        $existingUbuntuVersion = Get-WslDistroVersion -Name $DistroName
+    }
+
+    # Existing WSL2 + Ubuntu installations do not need Windows administrator
+    # privileges for normal BNL install/update/repair operations. WSL can launch
+    # the distro as Linux root without elevating the Windows process.
+    $canContinueWithoutAdmin = (($existingDistros -contains $DistroName) -and ($existingUbuntuVersion -eq 2))
+
+    if (-not $isAdmin -and -not $canContinueWithoutAdmin) {
+        Write-Host 'Windows administrator privileges are required for the initial WSL2 setup.' -ForegroundColor Yellow
+        Write-Host 'Requesting UAC elevation...' -ForegroundColor Yellow
         $elevatedCommand = "irm '$InstallerUrl' | iex"
-        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-Command', $elevatedCommand
-        )
-        return
+        try {
+            $argLine = "-NoProfile -ExecutionPolicy Bypass -Command `"$elevatedCommand`""
+            Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $argLine
+            return
+        }
+        catch {
+            Write-Warn 'Automatic UAC elevation was blocked by Windows.'
+            Write-Host 'Open PowerShell with "Run as administrator" and run the same one-line installer.' -ForegroundColor Yellow
+            throw
+        }
     }
 
     New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
@@ -153,7 +170,11 @@ try {
     } catch {
         # Logging must never prevent installation.
     }
-    Write-Ok 'Administrator privileges confirmed'
+    if ($isAdmin) {
+        Write-Ok 'Administrator privileges confirmed'
+    } else {
+        Write-Ok 'Existing WSL2 Ubuntu detected; Windows administrator elevation is not required'
+    }
     Write-Host "Log: $LogPath" -ForegroundColor DarkGray
 
     $build = [Environment]::OSVersion.Version.Build
@@ -162,66 +183,74 @@ try {
     }
     Write-Ok "Windows build $build"
 
-    # ---------------------------------------------------------------------
-    # Enable WSL2 prerequisites.
-    # ---------------------------------------------------------------------
-    Write-Step 'Checking WSL2 Windows features'
+    if ($isAdmin) {
+        # ---------------------------------------------------------------------
+        # Enable WSL2 prerequisites.
+        # ---------------------------------------------------------------------
+        Write-Step 'Checking WSL2 Windows features'
 
-    $rebootRequired = $false
-    foreach ($featureName in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
-        $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName
-        if ($feature.State -ne 'Enabled') {
-            Write-Host "Enabling $featureName ..."
-            Enable-WindowsOptionalFeature -Online -FeatureName $featureName -All -NoRestart | Out-Null
-            $rebootRequired = $true
+        $rebootRequired = $false
+        foreach ($featureName in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
+            $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName
+            if ($feature.State -ne 'Enabled') {
+                Write-Host "Enabling $featureName ..."
+                Enable-WindowsOptionalFeature -Online -FeatureName $featureName -All -NoRestart | Out-Null
+                $rebootRequired = $true
+            } else {
+                Write-Ok "$featureName enabled"
+            }
+        }
+
+        if ($rebootRequired) {
+            Register-ResumeAfterReboot
+            Write-Host ''
+            Write-Host 'WSL2 prerequisites were enabled.' -ForegroundColor Green
+            Write-Host 'Windows must restart once. The BNL installer will resume after sign-in.' -ForegroundColor Yellow
+            Write-Host 'Restarting in 15 seconds. Run "shutdown /a" to cancel.' -ForegroundColor Yellow
+            shutdown.exe /r /t 15 /c "BNL setup will continue after restart."
+            return
+        }
+
+        # ---------------------------------------------------------------------
+        # Update/install WSL runtime.
+        # ---------------------------------------------------------------------
+        Write-Step 'Preparing WSL2'
+
+        try {
+            & wsl.exe --update --web-download | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'wsl --update failed' }
+        } catch {
+            Write-Warn 'WSL update could not be completed; continuing with the installed WSL runtime.'
+        }
+
+        try {
+            Invoke-Native -FilePath 'wsl.exe' -Arguments @('--set-default-version', '2')
+        } catch {
+            Write-Warn 'Could not set the global default WSL version to 2. Continuing.'
+        }
+
+        # ---------------------------------------------------------------------
+        # Install Ubuntu when necessary.
+        # ---------------------------------------------------------------------
+        Write-Step "Checking WSL distribution: $DistroName"
+
+        $distros = Get-WslDistros
+        if ($distros -notcontains $DistroName) {
+            Write-Host "Installing $DistroName without launching its interactive first-run wizard..."
+            & wsl.exe --install -d $DistroName --no-launch --web-download
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn 'Web-download install failed; retrying with the standard source.'
+                Invoke-Native -FilePath 'wsl.exe' -Arguments @('--install', '-d', $DistroName, '--no-launch')
+            }
         } else {
-            Write-Ok "$featureName enabled"
+            Write-Ok "$DistroName already installed"
         }
-    }
 
-    if ($rebootRequired) {
-        Register-ResumeAfterReboot
-        Write-Host ''
-        Write-Host 'WSL2 prerequisites were enabled.' -ForegroundColor Green
-        Write-Host 'Windows must restart once. The BNL installer will resume after sign-in.' -ForegroundColor Yellow
-        Write-Host 'Restarting in 15 seconds. Run "shutdown /a" to cancel.' -ForegroundColor Yellow
-        shutdown.exe /r /t 15 /c "BNL setup will continue after restart."
-        return
-    }
-
-    # ---------------------------------------------------------------------
-    # Update/install WSL runtime.
-    # ---------------------------------------------------------------------
-    Write-Step 'Preparing WSL2'
-
-    try {
-        & wsl.exe --update --web-download | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw 'wsl --update failed' }
-    } catch {
-        Write-Warn 'WSL update could not be completed; continuing with the installed WSL runtime.'
-    }
-
-    try {
-        Invoke-Native -FilePath 'wsl.exe' -Arguments @('--set-default-version', '2')
-    } catch {
-        Write-Warn 'Could not set the global default WSL version to 2. Continuing.'
-    }
-
-    # ---------------------------------------------------------------------
-    # Install Ubuntu when necessary.
-    # ---------------------------------------------------------------------
-    Write-Step "Checking WSL distribution: $DistroName"
-
-    $distros = Get-WslDistros
-    if ($distros -notcontains $DistroName) {
-        Write-Host "Installing $DistroName without launching its interactive first-run wizard..."
-        & wsl.exe --install -d $DistroName --no-launch --web-download
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warn 'Web-download install failed; retrying with the standard source.'
-            Invoke-Native -FilePath 'wsl.exe' -Arguments @('--install', '-d', $DistroName, '--no-launch')
-        }
     } else {
-        Write-Ok "$DistroName already installed"
+        Write-Step 'Using existing WSL2 environment'
+        Write-Ok "$DistroName is already installed as WSL2"
+        Write-Host 'Skipping Windows feature changes and WSL installation/update steps.' -ForegroundColor DarkGray
+        $distros = $existingDistros
     }
 
     # Initialize the distro as root. This avoids the Ubuntu username/password wizard.
