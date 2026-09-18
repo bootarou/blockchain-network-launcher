@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v2 beta)
+# BNL One-Line Installer for Windows + WSL2 (v3 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -155,7 +155,7 @@ try {
     }
 
     try {
-        Invoke-Native wsl.exe --set-default-version 2
+        Invoke-Native -FilePath 'wsl.exe' -Arguments @('--set-default-version', '2')
     } catch {
         Write-Warn 'Could not set the global default WSL version to 2. Continuing.'
     }
@@ -171,15 +171,17 @@ try {
         & wsl.exe --install -d $DistroName --no-launch --web-download
         if ($LASTEXITCODE -ne 0) {
             Write-Warn 'Web-download install failed; retrying with the standard source.'
-            Invoke-Native wsl.exe --install -d $DistroName --no-launch
+            Invoke-Native -FilePath 'wsl.exe' -Arguments @('--install', '-d', $DistroName, '--no-launch')
         }
     } else {
         Write-Ok "$DistroName already installed"
     }
 
     # Initialize the distro as root. This avoids the Ubuntu username/password wizard.
+    # IMPORTANT: pass native arguments as an explicit array. PowerShell functions can
+    # otherwise reinterpret tokens such as -d / -u and shift WSL arguments.
     Write-Host 'Initializing Ubuntu as root...'
-    Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+    Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'true')
 
     # Convert only when the distro is actually WSL1.
     # Calling --set-version on an already-WSL2 distro can return
@@ -214,7 +216,7 @@ try {
         }
 
         # Start it again after a real conversion/verification cycle.
-        Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+        Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'true')
     }
 
     # systemd is standard on current WSL Ubuntu images. If it is not active,
@@ -264,10 +266,10 @@ if ! grep -qi '^systemd=true' /etc/wsl.conf 2>/dev/null; then
 fi
 '@
         $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($systemdScript))
-        Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc "echo '$encoded' | base64 -d | bash"
+        Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', '-lc', "echo '$encoded' | base64 -d | bash")
         & wsl.exe --terminate $DistroName | Out-Null
         Start-Sleep -Seconds 2
-        Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+        Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'true')
     }
 
     # ---------------------------------------------------------------------
@@ -281,7 +283,7 @@ fi
         throw 'Could not translate the Linux bootstrap path into WSL.'
     }
 
-    Invoke-Native wsl.exe -d $DistroName -u root -- bash $wslBootstrapPath
+    Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', $wslBootstrapPath)
 
     # ---------------------------------------------------------------------
     # Wait for BNL Web UI and open browser.
