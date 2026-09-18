@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v4 beta)
+# BNL One-Line Installer for Windows + WSL2 (v6 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -9,7 +9,8 @@ $ProgressPreference = 'SilentlyContinue'
 $InstallerUrl       = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1'
 $LinuxInstallerUrl  = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install-wsl.sh'
 $DistroName         = 'Ubuntu'
-$BnlWebUrl           = 'http://127.0.0.1:5173'
+$BnlWebUrl          = 'http://localhost:5173'
+$BnlProbeUrl        = 'http://127.0.0.1:5173'
 $StateDir            = Join-Path $env:ProgramData 'BNL'
 $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
@@ -34,6 +35,52 @@ function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function ConvertFrom-SecureStringPlain {
+    param([Parameter(Mandatory=$true)][Security.SecureString]$SecureString)
+
+    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+    }
+}
+
+function Read-BnlAdminPassword {
+    Write-Step 'BNL administrator password'
+    Write-Host 'Create the password used to access the BNL administration UI.' -ForegroundColor White
+    Write-Host 'Allowed: A-Z a-z 0-9 ! @ # % _ . -   Length: 8-64 characters' -ForegroundColor DarkGray
+    Write-Host 'The password will not be displayed or written to the Windows install log.' -ForegroundColor DarkGray
+    Write-Host ''
+
+    while ($true) {
+        $secure1 = Read-Host 'Admin password' -AsSecureString
+        $secure2 = Read-Host 'Confirm password' -AsSecureString
+        $plain1 = $null
+        $plain2 = $null
+        try {
+            $plain1 = ConvertFrom-SecureStringPlain $secure1
+            $plain2 = ConvertFrom-SecureStringPlain $secure2
+
+            if ($plain1 -ne $plain2) {
+                Write-Warn 'Passwords do not match. Please try again.'
+                continue
+            }
+            if ($plain1 -notmatch '^[A-Za-z0-9!@#%_.-]{8,64}$') {
+                Write-Warn 'Password must be 8-64 characters and use only: A-Z a-z 0-9 ! @ # % _ . -'
+                continue
+            }
+            return $plain1
+        }
+        finally {
+            $plain2 = $null
+            $secure1 = $null
+            $secure2 = $null
+        }
+    }
 }
 
 function Invoke-Native {
@@ -273,6 +320,36 @@ fi
     }
 
     # ---------------------------------------------------------------------
+    # Ensure BNL has an administrator password.
+    # Existing active ADMIN_PASSWORD values are preserved. For a fresh install,
+    # prompt securely and transfer the password to WSL via stdin (not argv/logs).
+    # ---------------------------------------------------------------------
+    $existingAdminPassword = $false
+    $adminCheckCommand = "if [ -f /opt/bnl/.env ] && grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' /opt/bnl/.env; then printf SET; fi"
+    $adminCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $adminCheckCommand 2>$null | Out-String).Trim()
+    if ($adminCheck -eq 'SET') {
+        $existingAdminPassword = $true
+        Write-Ok 'Existing BNL admin password detected; preserving it'
+    }
+
+    if (-not $existingAdminPassword) {
+        $adminPassword = Read-BnlAdminPassword
+        try {
+            # The password is sent through stdin and stored temporarily with mode 600.
+            # It never appears in the wsl.exe command line or transcript output.
+            $adminPassword | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; IFS= read -r p; printf "%s" "$p" > /tmp/bnl-admin-password'
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not transfer the BNL admin password into WSL (exit code $LASTEXITCODE)"
+            }
+            Write-Ok 'BNL admin password accepted'
+        }
+        finally {
+            $adminPassword = $null
+            [GC]::Collect()
+        }
+    }
+
+    # ---------------------------------------------------------------------
     # Download and execute Linux bootstrap.
     # ---------------------------------------------------------------------
     Write-Step 'Installing Docker Engine and BNL inside WSL'
@@ -297,7 +374,7 @@ fi
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $BnlWebUrl -TimeoutSec 1
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $BnlProbeUrl -TimeoutSec 1
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
                 $ready = $true
                 break
@@ -308,7 +385,7 @@ fi
     }
 
     if (-not $ready) {
-        Write-Warn "BNL was installed, but $BnlWebUrl did not become reachable in time."
+        Write-Warn "BNL was installed, but $BnlProbeUrl did not become reachable in time."
         Write-Host "Check logs with: wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs --tail=200'"
     } else {
         Write-Ok 'BNL Web UI is ready'
