@@ -9,7 +9,7 @@ $ProgressPreference = 'SilentlyContinue'
 $InstallerUrl       = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1'
 $LinuxInstallerUrl  = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install-wsl.sh'
 $DistroName         = 'Ubuntu'
-$BnlWebUrl           = 'http://localhost:5173'
+$BnlWebUrl           = 'http://127.0.0.1:5173'
 $StateDir            = Join-Path $env:ProgramData 'BNL'
 $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
@@ -297,7 +297,7 @@ fi
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $BnlWebUrl -TimeoutSec 3
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $BnlWebUrl -TimeoutSec 1
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
                 $ready = $true
                 break
