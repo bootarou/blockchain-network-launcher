@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v14 beta)
+# BNL One-Line Installer for Windows + WSL2 (v15 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -443,7 +443,7 @@ fi
     # otherwise default to the safest local-only binding, 127.0.0.1.
     # ---------------------------------------------------------------------
     $existingBindAddress = '127.0.0.1'
-    $bindCheckCommand = "if [ -f /opt/bnl/.env ]; then grep -E '^[[:space:]]*BIND_ADDRESS=' /opt/bnl/.env | tail -n1 | cut -d= -f2- | tr -d '\r\"'; fi"
+    $bindCheckCommand = "if [ -f /opt/bnl/.env ]; then grep -E '^[[:space:]]*BIND_ADDRESS=' /opt/bnl/.env | tail -n1 | cut -d= -f2-; fi"
     try {
         $bindCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $bindCheckCommand 2>$null | Out-String).Trim()
         $parsedExisting = $null
