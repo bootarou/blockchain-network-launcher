@@ -6,7 +6,7 @@ set -Eeuo pipefail
 
 BNL_REPO="https://github.com/bootarou/blockchain-network-launcher.git"
 BNL_DIR="/opt/bnl"
-BNL_WEB_URL="http://localhost:5173"
+BNL_WEB_URL="http://127.0.0.1:5173"
 DOCKER_KEYRING="/etc/apt/keyrings/docker.asc"
 DOCKER_SOURCE="/etc/apt/sources.list.d/docker.sources"
 
@@ -253,4 +253,3 @@ fi
 ok "BNL backend is reachable inside container (HTTP ${last_http})"
 printf '\nBNL Web UI: %s\n' "$BNL_WEB_URL"
 printf 'BNL directory: %s\n' "$BNL_DIR"
-
