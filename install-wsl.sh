@@ -154,6 +154,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Bind address
+# ---------------------------------------------------------------------------
+# install.ps1 asks for BIND_ADDRESS before the administrator password and
+# transfers the selected IPv4 address through a root-only temp file. If this
+# script is invoked directly, preserve an existing active value or fall back
+# to local-only 127.0.0.1.
+if [[ -f /tmp/bnl-bind-address ]]; then
+  bind_address="$(tr -d '\r\n' < /tmp/bnl-bind-address)"
+  rm -f /tmp/bnl-bind-address
+else
+  bind_address="$(grep -E '^[[:space:]]*BIND_ADDRESS=' .env | tail -n1 | cut -d= -f2- | tr -d '\r\"' || true)"
+  bind_address="${bind_address:-127.0.0.1}"
+fi
+
+if ! python3 - "$bind_address" <<'PYADDR'
+import ipaddress, sys
+try:
+    addr = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if addr.version == 4 else 1)
+PYADDR
+then
+  unset bind_address
+  fail "Invalid BIND_ADDRESS; an IPv4 address is required"
+fi
+
+if grep -Eq '^[[:space:]]*#?[[:space:]]*BIND_ADDRESS=' .env; then
+  sed -i -E "s|^[[:space:]]*#?[[:space:]]*BIND_ADDRESS=.*$|BIND_ADDRESS=${bind_address}|" .env
+else
+  printf '\nBIND_ADDRESS=%s\n' "$bind_address" >> .env
+fi
+chmod 600 .env
+ok "BIND_ADDRESS configured: ${bind_address}"
+unset bind_address
+
+# ---------------------------------------------------------------------------
 # Administrator password
 # ---------------------------------------------------------------------------
 # install.ps1 transfers the password through stdin into this root-only temp
@@ -201,10 +238,8 @@ ok "Blockchain data directory: $symbol_target_dir"
 # ---------------------------------------------------------------------------
 log "Building BNL"
 
-COMPOSE_BAKE=false docker compose build
-
 log "Starting BNL"
-docker compose up -d
+COMPOSE_BAKE=false docker compose up -d --build
 
 docker compose ps
 
