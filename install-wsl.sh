@@ -153,6 +153,36 @@ else
   ok "Existing .env preserved"
 fi
 
+# ---------------------------------------------------------------------------
+# Administrator password
+# ---------------------------------------------------------------------------
+# install.ps1 transfers the password through stdin into this root-only temp
+# file.  Do not print its contents.  Existing active ADMIN_PASSWORD values
+# always win so rerunning the installer cannot silently change credentials.
+if grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' .env; then
+  ok "Existing ADMIN_PASSWORD preserved"
+  rm -f /tmp/bnl-admin-password
+else
+  [[ -f /tmp/bnl-admin-password ]] || fail "ADMIN_PASSWORD is not configured and no installer password was provided"
+  admin_password="$(cat /tmp/bnl-admin-password)"
+  rm -f /tmp/bnl-admin-password
+
+  if [[ ! "$admin_password" =~ ^[A-Za-z0-9!@#%_.-]{8,64}$ ]]; then
+    unset admin_password
+    fail "Invalid BNL admin password format"
+  fi
+
+  admin_line="ADMIN_PASSWORD='${admin_password}'"
+  if grep -Eq '^[[:space:]]*#?[[:space:]]*ADMIN_PASSWORD=' .env; then
+    sed -i -E "s|^[[:space:]]*#?[[:space:]]*ADMIN_PASSWORD=.*$|${admin_line}|" .env
+  else
+    printf '\n%s\n' "$admin_line" >> .env
+  fi
+  unset admin_password admin_line
+  chmod 600 .env
+  ok "ADMIN_PASSWORD configured"
+fi
+
 symbol_target_dir="$(grep -E '^[[:space:]]*SYMBOL_TARGET_DIR=' .env | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
 symbol_target_dir="${symbol_target_dir:-/opt/symbol-target}"
 
