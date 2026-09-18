@@ -208,32 +208,37 @@ docker compose up -d
 
 docker compose ps
 
-# Fast readiness check against the backend API rather than waiting for the
-# 30-second Compose healthcheck interval.
-#
-# Important: when ADMIN_PASSWORD is enabled, /api/status can legitimately
-# return 401/403 before the browser authenticates.  For installation readiness
-# we only need to know that the HTTP server is listening, so any 1xx-4xx
-# response counts as ready.  000/no response and 5xx keep waiting.
+# Fast readiness check against the backend HTTP server rather than waiting
+# for the 30-second Compose healthcheck interval.  /api/status can require
+# authentication when ADMIN_PASSWORD is enabled, so HTTP 401/403 must still
+# count as "backend is up".  Any HTTP response below 500 proves that the
+# server accepted the connection; 000 means no HTTP response was received.
 log "Waiting for BNL backend"
 
 ready=0
-last_http_code="000"
+last_http="000"
 for _ in {1..90}; do
-  last_http_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:4000/api/status 2>/dev/null || true)"
-  if [[ "$last_http_code" =~ ^[1-4][0-9][0-9]$ ]]; then
-    ready=1
-    break
-  fi
+  last_http="$(curl -sS -o /dev/null \
+    --connect-timeout 1 --max-time 2 \
+    -w '%{http_code}' \
+    http://127.0.0.1:4000/api/status 2>/dev/null || true)"
+
+  case "$last_http" in
+    1??|2??|3??|4??)
+      ready=1
+      break
+      ;;
+  esac
+
   sleep 2
 done
 
 if [[ "$ready" -ne 1 ]]; then
-  warn "BNL backend did not become reachable in time (last HTTP code: $last_http_code). Last logs:"
+  warn "BNL did not become reachable in time (last HTTP: ${last_http}). Last logs:"
   docker compose logs --tail=100 || true
   exit 1
 fi
 
-ok "BNL backend is reachable (HTTP $last_http_code)"
+ok "BNL backend is reachable (HTTP ${last_http})"
 printf '\nBNL Web UI: %s\n' "$BNL_WEB_URL"
 printf 'BNL directory: %s\n' "$BNL_DIR"
