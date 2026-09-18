@@ -1,0 +1,269 @@
+# BNL One-Line Installer for Windows + WSL2
+# Usage (PowerShell):
+#   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+$InstallerUrl       = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1'
+$LinuxInstallerUrl  = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install-wsl.sh'
+$DistroName         = 'Ubuntu'
+$BnlWebUrl           = 'http://localhost:5173'
+$StateDir            = Join-Path $env:ProgramData 'BNL'
+$LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
+$RunOnceName         = 'BNLInstallerResume'
+
+function Write-Step([string]$Message) {
+    Write-Host "`n============================================================" -ForegroundColor DarkCyan
+    Write-Host " BNL | $Message" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor DarkCyan
+}
+
+function Write-Ok([string]$Message) {
+    Write-Host "[OK] $Message" -ForegroundColor Green
+}
+
+function Write-Warn([string]$Message) {
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
+}
+
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath exited with code $LASTEXITCODE"
+    }
+}
+
+function Register-ResumeAfterReboot {
+    New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
+    $resumeCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"irm '$InstallerUrl' | iex`""
+    $runOncePath = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+    New-ItemProperty -Path $runOncePath -Name $RunOnceName -Value $resumeCommand -PropertyType String -Force | Out-Null
+}
+
+function Remove-ResumeAfterReboot {
+    $runOncePath = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+    Remove-ItemProperty -Path $runOncePath -Name $RunOnceName -ErrorAction SilentlyContinue
+}
+
+function Get-WslDistros {
+    $raw = & wsl.exe -l -q 2>$null
+    if ($LASTEXITCODE -ne 0) { return @() }
+    return @($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
+}
+
+try {
+    Write-Step 'Windows one-line installer'
+
+    if (-not (Test-IsAdministrator)) {
+        Write-Host 'Administrator privileges are required. Requesting UAC elevation...' -ForegroundColor Yellow
+        $elevatedCommand = "irm '$InstallerUrl' | iex"
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command', $elevatedCommand
+        )
+        return
+    }
+
+    New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
+    Write-Ok 'Administrator privileges confirmed'
+
+    $build = [Environment]::OSVersion.Version.Build
+    if ($build -lt 19041) {
+        throw "Windows build $build is too old. Windows 10 version 2004 (build 19041) or later is required."
+    }
+    Write-Ok "Windows build $build"
+
+    # ---------------------------------------------------------------------
+    # Enable WSL2 prerequisites.
+    # ---------------------------------------------------------------------
+    Write-Step 'Checking WSL2 Windows features'
+
+    $rebootRequired = $false
+    foreach ($featureName in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
+        $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName
+        if ($feature.State -ne 'Enabled') {
+            Write-Host "Enabling $featureName ..."
+            Enable-WindowsOptionalFeature -Online -FeatureName $featureName -All -NoRestart | Out-Null
+            $rebootRequired = $true
+        } else {
+            Write-Ok "$featureName enabled"
+        }
+    }
+
+    if ($rebootRequired) {
+        Register-ResumeAfterReboot
+        Write-Host ''
+        Write-Host 'WSL2 prerequisites were enabled.' -ForegroundColor Green
+        Write-Host 'Windows must restart once. The BNL installer will resume after sign-in.' -ForegroundColor Yellow
+        Write-Host 'Restarting in 15 seconds. Run "shutdown /a" to cancel.' -ForegroundColor Yellow
+        shutdown.exe /r /t 15 /c "BNL setup will continue after restart."
+        return
+    }
+
+    # ---------------------------------------------------------------------
+    # Update/install WSL runtime.
+    # ---------------------------------------------------------------------
+    Write-Step 'Preparing WSL2'
+
+    try {
+        & wsl.exe --update --web-download | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'wsl --update failed' }
+    } catch {
+        Write-Warn 'WSL update could not be completed; continuing with the installed WSL runtime.'
+    }
+
+    try {
+        Invoke-Native wsl.exe --set-default-version 2
+    } catch {
+        Write-Warn 'Could not set the global default WSL version to 2. Continuing.'
+    }
+
+    # ---------------------------------------------------------------------
+    # Install Ubuntu when necessary.
+    # ---------------------------------------------------------------------
+    Write-Step "Checking WSL distribution: $DistroName"
+
+    $distros = Get-WslDistros
+    if ($distros -notcontains $DistroName) {
+        Write-Host "Installing $DistroName without launching its interactive first-run wizard..."
+        & wsl.exe --install -d $DistroName --no-launch --web-download
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn 'Web-download install failed; retrying with the standard source.'
+            Invoke-Native wsl.exe --install -d $DistroName --no-launch
+        }
+    } else {
+        Write-Ok "$DistroName already installed"
+    }
+
+    # Force WSL2 for this distro.
+    Invoke-Native wsl.exe --set-version $DistroName 2
+
+    # Initialize the distro as root. This avoids the Ubuntu username/password wizard.
+    Write-Host 'Initializing Ubuntu as root...'
+    Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+
+    # systemd is standard on current WSL Ubuntu images. If it is not active,
+    # enable only the [boot] systemd option and preserve any existing settings.
+    $systemdState = (& wsl.exe -d $DistroName -u root -- bash -lc 'ps -p 1 -o comm= 2>/dev/null || true' | Out-String).Trim()
+    if ($systemdState -ne 'systemd') {
+        Write-Host 'Enabling systemd inside WSL...'
+        $systemdScript = @'
+set -e
+if [ -f /etc/wsl.conf ]; then
+  cp /etc/wsl.conf /etc/wsl.conf.bnl-backup
+fi
+python3 - <<'PY' 2>/dev/null || true
+from pathlib import Path
+p=Path('/etc/wsl.conf')
+s=p.read_text() if p.exists() else ''
+lines=s.splitlines()
+out=[]
+in_boot=False
+seen_boot=False
+seen_systemd=False
+for line in lines:
+    stripped=line.strip()
+    if stripped.startswith('[') and stripped.endswith(']'):
+        if in_boot and not seen_systemd:
+            out.append('systemd=true')
+            seen_systemd=True
+        in_boot=(stripped.lower()=='[boot]')
+        if in_boot: seen_boot=True
+        out.append(line)
+        continue
+    if in_boot and stripped.lower().startswith('systemd='):
+        out.append('systemd=true')
+        seen_systemd=True
+    else:
+        out.append(line)
+if in_boot and not seen_systemd:
+    out.append('systemd=true')
+    seen_systemd=True
+if not seen_boot:
+    if out and out[-1].strip(): out.append('')
+    out += ['[boot]', 'systemd=true']
+p.write_text('\n'.join(out).rstrip()+'\n')
+PY
+if ! grep -qi '^systemd=true' /etc/wsl.conf 2>/dev/null; then
+  printf '\n[boot]\nsystemd=true\n' >> /etc/wsl.conf
+fi
+'@
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($systemdScript))
+        Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc "echo '$encoded' | base64 -d | bash"
+        & wsl.exe --terminate $DistroName | Out-Null
+        Start-Sleep -Seconds 2
+        Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+    }
+
+    # ---------------------------------------------------------------------
+    # Download and execute Linux bootstrap.
+    # ---------------------------------------------------------------------
+    Write-Step 'Installing Docker Engine and BNL inside WSL'
+
+    Invoke-WebRequest -UseBasicParsing -Uri $LinuxInstallerUrl -OutFile $LinuxInstallerPath
+    $wslBootstrapPath = (& wsl.exe -d $DistroName -u root -- wslpath -a $LinuxInstallerPath | Out-String).Trim()
+    if (-not $wslBootstrapPath) {
+        throw 'Could not translate the Linux bootstrap path into WSL.'
+    }
+
+    Invoke-Native wsl.exe -d $DistroName -u root -- bash $wslBootstrapPath
+
+    # ---------------------------------------------------------------------
+    # Wait for BNL Web UI and open browser.
+    # ---------------------------------------------------------------------
+    Write-Step 'Waiting for BNL Web UI'
+
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $BnlWebUrl -TimeoutSec 3
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+                $ready = $true
+                break
+            }
+        } catch {
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    if (-not $ready) {
+        Write-Warn "BNL was installed, but $BnlWebUrl did not become reachable in time."
+        Write-Host "Check logs with: wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs --tail=200'"
+    } else {
+        Write-Ok 'BNL Web UI is ready'
+        Start-Process $BnlWebUrl
+    }
+
+    Remove-ResumeAfterReboot
+
+    Write-Step 'Installation complete'
+    Write-Host "BNL: $BnlWebUrl" -ForegroundColor Green
+    Write-Host ''
+    Write-Host 'Useful commands:'
+    Write-Host "  Start : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose up -d'"
+    Write-Host "  Stop  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose down'"
+    Write-Host "  Logs  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs -f'"
+    Write-Host ''
+    Write-Host 'The installer is safe to run again. Existing .env is preserved.' -ForegroundColor DarkGray
+}
+catch {
+    Write-Host ''
+    Write-Host 'BNL installation failed.' -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'You can run the same one-line installer again after fixing the reported issue.' -ForegroundColor Yellow
+    exit 1
+}
