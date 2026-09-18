@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2
+# BNL One-Line Installer for Windows + WSL2 (v2 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -63,6 +63,26 @@ function Get-WslDistros {
     $raw = & wsl.exe -l -q 2>$null
     if ($LASTEXITCODE -ne 0) { return @() }
     return @($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
+}
+
+function Get-WslDistroVersion {
+    param([Parameter(Mandatory=$true)][string]$Name)
+
+    $raw = & wsl.exe -l -v 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+
+    foreach ($line in $raw) {
+        $clean = (($line -replace "`0", '').Trim() -replace '^\*\s*', '')
+        if (-not $clean) { continue }
+
+        # The target distro name is Ubuntu, so whitespace token parsing is safe here.
+        $parts = @($clean -split '\s+' | Where-Object { $_ })
+        if ($parts.Count -ge 2 -and $parts[0] -eq $Name -and $parts[-1] -match '^[12]$') {
+            return [int]$parts[-1]
+        }
+    }
+
+    return $null
 }
 
 try {
@@ -157,12 +177,45 @@ try {
         Write-Ok "$DistroName already installed"
     }
 
-    # Force WSL2 for this distro.
-    Invoke-Native wsl.exe --set-version $DistroName 2
-
     # Initialize the distro as root. This avoids the Ubuntu username/password wizard.
     Write-Host 'Initializing Ubuntu as root...'
     Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+
+    # Convert only when the distro is actually WSL1.
+    # Calling --set-version on an already-WSL2 distro can return
+    # WSL_E_VM_MODE_INVALID_STATE on some current WSL builds even though
+    # the distro is already at the requested version.
+    $distroVersion = Get-WslDistroVersion -Name $DistroName
+    if ($distroVersion -eq 2) {
+        Write-Ok "$DistroName is already WSL2; conversion skipped"
+    } else {
+        if ($distroVersion -eq 1) {
+            Write-Host "Converting $DistroName from WSL1 to WSL2..."
+        } else {
+            Write-Warn "Could not determine $DistroName WSL version. Verifying/converting to WSL2..."
+        }
+
+        # Make sure no VM instance is in a transitional/running state before conversion.
+        & wsl.exe --terminate $DistroName 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+
+        & wsl.exe --set-version $DistroName 2 | Out-Host
+        $setVersionExit = $LASTEXITCODE
+
+        # Re-check instead of trusting the exit code alone. Some WSL builds may
+        # report a non-zero code when the requested version is already active.
+        $verifiedVersion = Get-WslDistroVersion -Name $DistroName
+        if ($verifiedVersion -eq 2) {
+            Write-Ok "$DistroName is running as WSL2"
+        } elseif ($setVersionExit -ne 0) {
+            throw "wsl.exe --set-version failed with code $setVersionExit and $DistroName is not confirmed as WSL2"
+        } else {
+            throw "$DistroName could not be confirmed as WSL2 after conversion"
+        }
+
+        # Start it again after a real conversion/verification cycle.
+        Invoke-Native wsl.exe -d $DistroName -u root -- bash -lc 'true'
+    }
 
     # systemd is standard on current WSL Ubuntu images. If it is not active,
     # enable only the [boot] systemd option and preserve any existing settings.
@@ -286,6 +339,13 @@ catch {
         Write-Host ''
     }
 
+    # Stop the transcript before appending the structured error. Otherwise
+    # install.log is still locked by Start-Transcript.
+    if ($TranscriptStarted) {
+        try { Stop-Transcript | Out-Null } catch {}
+        $TranscriptStarted = $false
+    }
+
     try {
         New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
         Add-Content -Path $LogPath -Value "`r`n===== BNL ERROR $(Get-Date -Format o) =====`r`n$errorDetail" -Encoding UTF8
@@ -296,11 +356,6 @@ catch {
     Write-Host 'Copy the red error above, or run:' -ForegroundColor Yellow
     Write-Host "  Get-Content '$LogPath' -Tail 100" -ForegroundColor White
     Write-Host ''
-
-    if ($TranscriptStarted) {
-        try { Stop-Transcript | Out-Null } catch {}
-        $TranscriptStarted = $false
-    }
 
     # During beta testing, keep the window open so the actual error can be read.
     Write-Host 'Press Enter to close this window.' -ForegroundColor Yellow
