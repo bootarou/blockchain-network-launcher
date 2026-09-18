@@ -13,6 +13,8 @@ $BnlWebUrl           = 'http://localhost:5173'
 $StateDir            = Join-Path $env:ProgramData 'BNL'
 $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
+$LogPath             = Join-Path $StateDir 'install.log'
+$TranscriptStarted   = $false
 
 function Write-Step([string]$Message) {
     Write-Host "`n============================================================" -ForegroundColor DarkCyan
@@ -78,7 +80,14 @@ try {
     }
 
     New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
+    try {
+        Start-Transcript -Path $LogPath -Append -Force | Out-Null
+        $TranscriptStarted = $true
+    } catch {
+        # Logging must never prevent installation.
+    }
     Write-Ok 'Administrator privileges confirmed'
+    Write-Host "Log: $LogPath" -ForegroundColor DarkGray
 
     $build = [Environment]::OSVersion.Version.Build
     if ($build -lt 19041) {
@@ -258,12 +267,43 @@ fi
     Write-Host "  Logs  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs -f'"
     Write-Host ''
     Write-Host 'The installer is safe to run again. Existing .env is preserved.' -ForegroundColor DarkGray
+    if ($TranscriptStarted) {
+        try { Stop-Transcript | Out-Null } catch {}
+        $TranscriptStarted = $false
+    }
 }
 catch {
+    $errorMessage = $_.Exception.Message
+    $errorDetail = ($_ | Format-List * -Force | Out-String)
+
     Write-Host ''
     Write-Host 'BNL installation failed.' -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host $errorMessage -ForegroundColor Red
     Write-Host ''
-    Write-Host 'You can run the same one-line installer again after fixing the reported issue.' -ForegroundColor Yellow
-    exit 1
+    if ($_.ScriptStackTrace) {
+        Write-Host 'Location:' -ForegroundColor DarkYellow
+        Write-Host $_.ScriptStackTrace -ForegroundColor DarkYellow
+        Write-Host ''
+    }
+
+    try {
+        New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
+        Add-Content -Path $LogPath -Value "`r`n===== BNL ERROR $(Get-Date -Format o) =====`r`n$errorDetail" -Encoding UTF8
+    } catch {}
+
+    Write-Host "Log: $LogPath" -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host 'Copy the red error above, or run:' -ForegroundColor Yellow
+    Write-Host "  Get-Content '$LogPath' -Tail 100" -ForegroundColor White
+    Write-Host ''
+
+    if ($TranscriptStarted) {
+        try { Stop-Transcript | Out-Null } catch {}
+        $TranscriptStarted = $false
+    }
+
+    # During beta testing, keep the window open so the actual error can be read.
+    Write-Host 'Press Enter to close this window.' -ForegroundColor Yellow
+    [void](Read-Host)
+    return
 }
