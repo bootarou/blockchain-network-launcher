@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v3 beta)
+# BNL One-Line Installer for Windows + WSL2 (v4 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -278,12 +278,16 @@ fi
     Write-Step 'Installing Docker Engine and BNL inside WSL'
 
     Invoke-WebRequest -UseBasicParsing -Uri $LinuxInstallerUrl -OutFile $LinuxInstallerPath
-    $wslBootstrapPath = (& wsl.exe -d $DistroName -u root -- wslpath -a $LinuxInstallerPath | Out-String).Trim()
-    if (-not $wslBootstrapPath) {
-        throw 'Could not translate the Linux bootstrap path into WSL.'
-    }
 
-    Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', $wslBootstrapPath)
+    # Do not translate a Windows path with wslpath.  PowerShell 5.1 / WSL
+    # argument handling can make that fragile.  Instead, transfer the script
+    # contents to WSL as Base64 and execute the decoded file there.
+    $linuxBootstrapBytes = [System.IO.File]::ReadAllBytes($LinuxInstallerPath)
+    $linuxBootstrapBase64 = [Convert]::ToBase64String($linuxBootstrapBytes)
+
+    $bootstrapCommand = "set -euo pipefail; printf '%s' '$linuxBootstrapBase64' | base64 -d > /tmp/bnl-install-wsl.sh; chmod 700 /tmp/bnl-install-wsl.sh; bash /tmp/bnl-install-wsl.sh; rc=`$?; rm -f /tmp/bnl-install-wsl.sh; exit `$rc"
+
+    Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', '-lc', $bootstrapCommand)
 
     # ---------------------------------------------------------------------
     # Wait for BNL Web UI and open browser.
