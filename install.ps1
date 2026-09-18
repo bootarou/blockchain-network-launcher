@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v11 beta)
+# BNL One-Line Installer for Windows + WSL2 (v12 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -9,7 +9,7 @@ $ProgressPreference = 'SilentlyContinue'
 $InstallerUrl       = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1'
 $LinuxInstallerUrl  = 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install-wsl.sh'
 $DistroName         = 'Ubuntu'
-$BnlWebUrl          = 'http://localhost:5173'
+$BnlWebUrl          = 'http://127.0.0.1:5173'
 $BnlProbeUrl        = 'http://127.0.0.1:5173'
 $StateDir            = Join-Path $env:LOCALAPPDATA 'BNL'
 $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
@@ -130,6 +130,51 @@ function Get-WslDistroVersion {
     }
 
     return $null
+}
+
+function Start-BnlRuntime {
+    Write-Step 'Starting Ubuntu and BNL runtime'
+
+    # Merely invoking WSL is enough to wake a stopped distro. Do this explicitly
+    # so BNL also works immediately after Windows/WSL has gone idle or restarted.
+    Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'true')
+    Write-Ok "$DistroName is running"
+
+    # Start Docker and the existing BNL compose project inside Ubuntu. The script
+    # is transferred as Base64 to avoid PowerShell/native quoting differences.
+    $runtimeScript = @'
+set -euo pipefail
+
+if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ]; then
+  systemctl start docker
+else
+  if ! docker info >/dev/null 2>&1; then
+    if command -v service >/dev/null 2>&1; then
+      service docker start >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+for _ in $(seq 1 30); do
+  if docker info >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+docker info >/dev/null 2>&1
+
+if [ -d /opt/bnl ]; then
+  cd /opt/bnl
+  docker compose up -d
+fi
+'@
+
+    $runtimeEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($runtimeScript))
+    $runtimeCommand = "printf '%s' '$runtimeEncoded' | base64 -d | bash"
+    Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', '-lc', $runtimeCommand)
+
+    Write-Ok 'Docker and BNL runtime are running'
 }
 
 try {
@@ -399,6 +444,11 @@ fi
 
     Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', '-lc', $bootstrapCommand)
 
+    # The bootstrap starts BNL itself, but explicitly wake Ubuntu and re-assert
+    # Docker/Compose here before probing from Windows. This prevents the common
+    # case where WSL has stopped or gone idle between setup and browser launch.
+    Start-BnlRuntime
+
     # ---------------------------------------------------------------------
     # Wait for BNL Web UI and open browser.
     # ---------------------------------------------------------------------
@@ -432,7 +482,7 @@ fi
     Write-Host ''
     Write-Host 'Useful commands:'
     Write-Host "  Start : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose up -d'"
-    Write-Host "  Stop  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose down'"
+    Write-Host "  Stop  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose stop'"
     Write-Host "  Logs  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs -f'"
     Write-Host ''
     Write-Host 'The installer is safe to run again. Existing .env is preserved.' -ForegroundColor DarkGray
