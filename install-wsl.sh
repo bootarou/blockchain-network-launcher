@@ -253,3 +253,4 @@ fi
 ok "BNL backend is reachable inside container (HTTP ${last_http})"
 printf '\nBNL Web UI: %s\n' "$BNL_WEB_URL"
 printf 'BNL directory: %s\n' "$BNL_DIR"
+
