@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v7 beta)
+﻿# BNL One-Line Installer for Windows + WSL2 (v7 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
