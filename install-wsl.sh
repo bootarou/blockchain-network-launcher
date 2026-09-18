@@ -164,7 +164,9 @@ if grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' .env; then
   rm -f /tmp/bnl-admin-password
 else
   [[ -f /tmp/bnl-admin-password ]] || fail "ADMIN_PASSWORD is not configured and no installer password was provided"
-  admin_password="$(cat /tmp/bnl-admin-password)"
+  # Defensive cleanup: the PowerShell side already uses Base64, but remove any
+  # accidental CR/LF bytes before validating the recovered password.
+  admin_password="$(tr -d '\r\n' < /tmp/bnl-admin-password)"
   rm -f /tmp/bnl-admin-password
 
   if [[ ! "$admin_password" =~ ^[A-Za-z0-9!@#%_.-]{8,64}$ ]]; then
