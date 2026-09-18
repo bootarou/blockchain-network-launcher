@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v12 beta)
+# BNL One-Line Installer for Windows + WSL2 (v14 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -46,6 +46,36 @@ function ConvertFrom-SecureStringPlain {
     }
     finally {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+    }
+}
+
+
+function Read-BnlBindAddress {
+    param([string]$DefaultAddress = '127.0.0.1')
+
+    Write-Step 'BNL bind address'
+    Write-Host 'Choose the Windows/WSL host address used to publish the BNL Web UI and API.' -ForegroundColor White
+    Write-Host 'Recommended: 127.0.0.1 (local PC only)' -ForegroundColor Green
+    Write-Host 'Example: 0.0.0.0 exposes BNL on all host interfaces; use only when intentionally allowing network access.' -ForegroundColor Yellow
+    Write-Host ''
+
+    while ($true) {
+        $value = Read-Host "BIND_ADDRESS [$DefaultAddress]"
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $value = $DefaultAddress
+        }
+        $value = $value.Trim()
+
+        $parsed = $null
+        if ([System.Net.IPAddress]::TryParse($value, [ref]$parsed) -and
+            $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            if ($value -ne '127.0.0.1') {
+                Write-Warn "BIND_ADDRESS=$value may make BNL reachable beyond this PC depending on routing/firewall settings."
+            }
+            return $value
+        }
+
+        Write-Warn 'Enter a valid IPv4 address, for example 127.0.0.1 or 0.0.0.0.'
     }
 }
 
@@ -145,6 +175,19 @@ function Start-BnlRuntime {
     $runtimeScript = @'
 set -euo pipefail
 
+# Keep WSL alive while BNL is running. WSL does not treat systemd services
+# (including Docker) as a user-launched background process for idle lifetime
+# purposes, so the distro can otherwise terminate after the installer exits.
+KEEPALIVE_PID=/run/bnl-wsl-keepalive.pid
+if [ -f "$KEEPALIVE_PID" ] && kill -0 "$(cat "$KEEPALIVE_PID" 2>/dev/null)" 2>/dev/null; then
+  :
+else
+  rm -f "$KEEPALIVE_PID"
+  nohup bash -lc 'exec -a bnl-wsl-keepalive sleep infinity' \
+    >/var/log/bnl-wsl-keepalive.log 2>&1 </dev/null &
+  echo $! > "$KEEPALIVE_PID"
+fi
+
 if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ]; then
   systemctl start docker
 else
@@ -174,6 +217,7 @@ fi
     $runtimeCommand = "printf '%s' '$runtimeEncoded' | base64 -d | bash"
     Invoke-Native -FilePath 'wsl.exe' -Arguments @('-d', $DistroName, '-u', 'root', '--', 'bash', '-lc', $runtimeCommand)
 
+    Write-Ok 'Ubuntu keepalive is active'
     Write-Ok 'Docker and BNL runtime are running'
 }
 
@@ -394,6 +438,38 @@ fi
     }
 
     # ---------------------------------------------------------------------
+    # Configure BNL bind address before any other BNL application setting.
+    # Reuse the current active value as the prompt default when available;
+    # otherwise default to the safest local-only binding, 127.0.0.1.
+    # ---------------------------------------------------------------------
+    $existingBindAddress = '127.0.0.1'
+    $bindCheckCommand = "if [ -f /opt/bnl/.env ]; then grep -E '^[[:space:]]*BIND_ADDRESS=' /opt/bnl/.env | tail -n1 | cut -d= -f2- | tr -d '\r\"'; fi"
+    try {
+        $bindCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $bindCheckCommand 2>$null | Out-String).Trim()
+        $parsedExisting = $null
+        if ($bindCheck -and [System.Net.IPAddress]::TryParse($bindCheck, [ref]$parsedExisting) -and
+            $parsedExisting.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            $existingBindAddress = $bindCheck
+        }
+    } catch {}
+
+    $bindAddress = Read-BnlBindAddress -DefaultAddress $existingBindAddress
+    $bindBytes = [Text.Encoding]::UTF8.GetBytes($bindAddress)
+    $bindBase64 = [Convert]::ToBase64String($bindBytes)
+    $bindBase64 | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; tr -d "\r\n" | base64 -d > /tmp/bnl-bind-address'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not transfer BIND_ADDRESS into WSL (exit code $LASTEXITCODE)"
+    }
+    Write-Ok "BIND_ADDRESS accepted: $bindAddress"
+
+    # Use the selected bind address for the Windows-side readiness probe and
+    # browser. 0.0.0.0 is a listen address, not a browser destination, so use
+    # loopback for local access in that case.
+    $BnlAccessHost = if ($bindAddress -eq '0.0.0.0') { '127.0.0.1' } else { $bindAddress }
+    $BnlWebUrl = "http://${BnlAccessHost}:5173"
+    $BnlProbeUrl = $BnlWebUrl
+
+    # ---------------------------------------------------------------------
     # Ensure BNL has an administrator password.
     # Existing active ADMIN_PASSWORD values are preserved. For a fresh install,
     # prompt securely and transfer the password to WSL via stdin (not argv/logs).
@@ -481,11 +557,11 @@ fi
     Write-Host "BNL: $BnlWebUrl" -ForegroundColor Green
     Write-Host ''
     Write-Host 'Useful commands:'
-    Write-Host "  Start : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose up -d'"
-    Write-Host "  Stop  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose stop'"
+    Write-Host "  Start : rerun this installer for now (the Start shortcut will be added next)"
+    Write-Host "  Stop  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose stop; if [ -f /run/bnl-wsl-keepalive.pid ]; then kill `$(cat /run/bnl-wsl-keepalive.pid) 2>/dev/null || true; rm -f /run/bnl-wsl-keepalive.pid; fi'"
     Write-Host "  Logs  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs -f'"
     Write-Host ''
-    Write-Host 'The installer is safe to run again. Existing .env is preserved.' -ForegroundColor DarkGray
+    Write-Host 'The installer is safe to run again. Existing .env is preserved except for the BIND_ADDRESS value you confirm during setup.' -ForegroundColor DarkGray
     if ($TranscriptStarted) {
         try { Stop-Transcript | Out-Null } catch {}
         $TranscriptStarted = $false
