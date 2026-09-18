@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v6 beta)
+# BNL One-Line Installer for Windows + WSL2 (v7 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -335,9 +335,13 @@ fi
     if (-not $existingAdminPassword) {
         $adminPassword = Read-BnlAdminPassword
         try {
-            # The password is sent through stdin and stored temporarily with mode 600.
-            # It never appears in the wsl.exe command line or transcript output.
-            $adminPassword | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; IFS= read -r p; printf "%s" "$p" > /tmp/bnl-admin-password'
+            # Encode the password before crossing the Windows -> WSL stdin boundary.
+            # Windows PowerShell writes CRLF to native-process stdin; sending raw text
+            # can therefore leave a trailing CR in Linux. Base64 + CR/LF stripping
+            # avoids that while keeping the password out of argv and the transcript.
+            $adminPasswordBytes = [Text.Encoding]::UTF8.GetBytes($adminPassword)
+            $adminPasswordBase64 = [Convert]::ToBase64String($adminPasswordBytes)
+            $adminPasswordBase64 | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; tr -d "\r\n" | base64 -d > /tmp/bnl-admin-password'
             if ($LASTEXITCODE -ne 0) {
                 throw "Could not transfer the BNL admin password into WSL (exit code $LASTEXITCODE)"
             }
