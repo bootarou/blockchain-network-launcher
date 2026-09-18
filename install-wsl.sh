@@ -208,37 +208,48 @@ docker compose up -d
 
 docker compose ps
 
-# Fast readiness check against the backend HTTP server rather than waiting
-# for the 30-second Compose healthcheck interval.  /api/status can require
-# authentication when ADMIN_PASSWORD is enabled, so HTTP 401/403 must still
-# count as "backend is up".  Any HTTP response below 500 proves that the
-# server accepted the connection; 000 means no HTTP response was received.
+# Readiness is checked from INSIDE the symbol-manager container.
+# This deliberately avoids depending on WSL/Docker host-loopback forwarding,
+# which can behave differently across WSL versions. /api/status may require
+# authentication when ADMIN_PASSWORD is enabled, so any HTTP response below
+# 500 (including 401/403/404) proves that the backend accepted the connection.
 log "Waiting for BNL backend"
 
 ready=0
 last_http="000"
+last_state="unknown"
 for _ in {1..90}; do
-  last_http="$(curl -sS -o /dev/null \
-    --connect-timeout 1 --max-time 2 \
-    -w '%{http_code}' \
-    http://127.0.0.1:4000/api/status 2>/dev/null || true)"
+  container_id="$(docker compose ps -q symbol-manager 2>/dev/null || true)"
 
-  case "$last_http" in
-    1??|2??|3??|4??)
-      ready=1
-      break
-      ;;
-  esac
+  if [[ -n "$container_id" ]]; then
+    last_state="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+
+    if [[ "$last_state" == "running" ]]; then
+      last_http="$(docker compose exec -T symbol-manager \
+        curl -sS -o /dev/null \
+        --connect-timeout 1 --max-time 2 \
+        -w '%{http_code}' \
+        http://127.0.0.1:4000/api/status 2>/dev/null | tr -d '\r\n' || true)"
+
+      case "$last_http" in
+        1??|2??|3??|4??)
+          ready=1
+          break
+          ;;
+      esac
+    fi
+  fi
 
   sleep 2
 done
 
 if [[ "$ready" -ne 1 ]]; then
-  warn "BNL did not become reachable in time (last HTTP: ${last_http}). Last logs:"
+  warn "BNL backend did not become reachable in time (container=${last_state}, HTTP=${last_http}). Last logs:"
+  docker compose ps || true
   docker compose logs --tail=100 || true
   exit 1
 fi
 
-ok "BNL backend is reachable (HTTP ${last_http})"
+ok "BNL backend is reachable inside container (HTTP ${last_http})"
 printf '\nBNL Web UI: %s\n' "$BNL_WEB_URL"
 printf 'BNL directory: %s\n' "$BNL_DIR"
