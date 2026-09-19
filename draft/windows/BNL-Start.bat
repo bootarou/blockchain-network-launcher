@@ -1,6 +1,5 @@
 ﻿@echo off
-setlocal EnableExtensions
-chcp 65001 >nul
+setlocal EnableExtensions EnableDelayedExpansion
 
 echo ============================================================
 echo  BNL Start
@@ -20,22 +19,46 @@ wsl.exe -d Ubuntu -u root -- bash -lc "pgrep -f '^bnl-wsl-keepalive ' >/dev/null
 if errorlevel 1 goto :keepalive_error
 
 echo [4/5] Starting Docker...
-wsl.exe -d Ubuntu -u root -- bash -lc "docker info >/dev/null 2>&1 || systemctl start docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1"
-if errorlevel 1 goto :docker_error
+wsl.exe -d Ubuntu -u root -- systemctl start docker >nul 2>&1
+if errorlevel 1 (
+    wsl.exe -d Ubuntu -u root -- service docker start >nul 2>&1
+)
 
-wsl.exe -d Ubuntu -u root -- bash -lc "for i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"
-if errorlevel 1 goto :docker_error
+set "DOCKER_READY="
+for /L %%I in (1,1,30) do (
+    wsl.exe -d Ubuntu -u root -- docker info >nul 2>&1
+    if not errorlevel 1 (
+        set "DOCKER_READY=1"
+        goto :docker_ready
+    )
+    timeout /t 1 /nobreak >nul
+)
+
+:docker_ready
+if not defined DOCKER_READY goto :docker_error
+echo [OK] Docker is ready.
 
 echo [5/5] Starting BNL manager...
 wsl.exe -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose up -d symbol-manager"
 if errorlevel 1 goto :bnl_start_error
 
-echo Waiting for BNL Web UI...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ok=$false; for($i=0;$i -lt 60;$i++){ try { $r=Invoke-WebRequest 'http://127.0.0.1:5173' -UseBasicParsing -TimeoutSec 2; if($r.StatusCode -ge 100 -and $r.StatusCode -lt 500){$ok=$true; break} } catch {}; Start-Sleep -Seconds 1 }; if(-not $ok){exit 1}; Start-Process 'http://127.0.0.1:5173'"
-if errorlevel 1 goto :ui_error
-
 echo.
-echo [OK] BNL is running: http://127.0.0.1:5173
+echo Waiting for BNL Web UI...
+set "BNL_READY="
+for /L %%I in (1,1,60) do (
+    powershell.exe -NoProfile -Command "try { $r=Invoke-WebRequest 'http://127.0.0.1:5173' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -ge 100 -and $r.StatusCode -lt 500) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+    if not errorlevel 1 (
+        set "BNL_READY=1"
+        goto :bnl_ready
+    )
+    timeout /t 1 /nobreak >nul
+)
+
+:bnl_ready
+if not defined BNL_READY goto :web_error
+
+echo [OK] BNL is running.
+start "" "http://127.0.0.1:5173"
 exit /b 0
 
 :wsl_error
@@ -46,7 +69,7 @@ exit /b 1
 
 :bnl_missing
 echo.
-echo [ERROR] /opt/bnl was not found. Run BNL-Setup first.
+echo [ERROR] /opt/bnl not found. Run BNL-Setup first.
 pause
 exit /b 10
 
@@ -58,7 +81,7 @@ exit /b 12
 
 :docker_error
 echo.
-echo [ERROR] Docker did not start.
+echo [ERROR] Docker did not start within 30 seconds.
 echo Check with: wsl -d Ubuntu -u root -- docker info
 pause
 exit /b 11
@@ -68,18 +91,16 @@ echo.
 echo [ERROR] BNL manager could not be started.
 echo.
 echo Last BNL logs:
-wsl.exe -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose logs --tail=80 symbol-manager"
+wsl.exe -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose logs --tail 80 symbol-manager"
 pause
 exit /b 13
 
-:ui_error
+:web_error
 echo.
 echo [ERROR] BNL manager started, but Web UI did not become reachable.
-echo.
-echo Container status:
-wsl.exe -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose ps symbol-manager"
+echo Check: http://127.0.0.1:5173
 echo.
 echo Last BNL logs:
-wsl.exe -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose logs --tail=80 symbol-manager"
+wsl.exe -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose logs --tail 80 symbol-manager"
 pause
 exit /b 14
