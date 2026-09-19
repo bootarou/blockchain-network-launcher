@@ -1,4 +1,4 @@
-
+#!/usr/bin/env bash
 # BNL bootstrap for Ubuntu running under WSL2.
 # This script is intended to be called by install.ps1 as root.
 
@@ -28,6 +28,36 @@ warn() {
 fail() {
   printf '[ERROR] %s\n' "$1" >&2
   exit 1
+}
+
+# Keep the WSL distro alive after the Windows-side wsl.exe command returns.
+# Docker/systemd services alone are not relied on for the WSL lifetime.
+start_bnl_keepalive() {
+  local pid_file="/run/bnl-wsl-keepalive.pid"
+  local log_file="/var/log/bnl-wsl-keepalive.log"
+  local pid=""
+
+  if [[ -f "$pid_file" ]]; then
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      ok "Ubuntu keepalive is already active (PID ${pid})"
+      return 0
+    fi
+    rm -f "$pid_file"
+  fi
+
+  nohup bash -lc 'exec -a bnl-wsl-keepalive sleep infinity' \
+    >"$log_file" 2>&1 </dev/null &
+  pid=$!
+  printf '%s\n' "$pid" > "$pid_file"
+
+  sleep 0.2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$pid_file"
+    fail "Could not start Ubuntu keepalive"
+  fi
+
+  ok "Ubuntu keepalive started (PID ${pid})"
 }
 
 trap 'printf "[ERROR] BNL bootstrap failed at line %s\n" "$LINENO" >&2' ERR
@@ -237,14 +267,10 @@ unset bind_address
 # ---------------------------------------------------------------------------
 # Administrator password
 # ---------------------------------------------------------------------------
-# install.ps1 transfers the password through stdin into this root-only temp
-# file.  Do not print its contents.  Existing active ADMIN_PASSWORD values
-# always win so rerunning the installer cannot silently change credentials.
-if grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' .env; then
-  ok "Existing ADMIN_PASSWORD preserved"
-  rm -f /tmp/bnl-admin-password
-else
-  [[ -f /tmp/bnl-admin-password ]] || fail "ADMIN_PASSWORD is not configured and no installer password was provided"
+# install.ps1 creates /tmp/bnl-admin-password only when a fresh password is
+# required or the user explicitly chooses to change the existing password.
+# If the temp file is absent, an existing active ADMIN_PASSWORD is preserved.
+if [[ -f /tmp/bnl-admin-password ]]; then
   # Defensive cleanup: the PowerShell side already uses Base64, but remove any
   # accidental CR/LF bytes before validating the recovered password.
   admin_password="$(tr -d '\r\n' < /tmp/bnl-admin-password)"
@@ -263,7 +289,11 @@ else
   fi
   unset admin_password admin_line
   chmod 600 .env
-  ok "ADMIN_PASSWORD configured"
+  ok "ADMIN_PASSWORD configured/updated"
+elif grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' .env; then
+  ok "Existing ADMIN_PASSWORD preserved"
+else
+  fail "ADMIN_PASSWORD is not configured and no installer password was provided"
 fi
 
 symbol_target_dir="$(grep -E '^[[:space:]]*SYMBOL_TARGET_DIR=' .env | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
@@ -283,6 +313,7 @@ ok "Blockchain data directory: $symbol_target_dir"
 log "Building BNL"
 
 log "Starting BNL"
+start_bnl_keepalive
 COMPOSE_BAKE=false docker compose up -d --build
 
 docker compose ps
@@ -330,3 +361,5 @@ if [[ "$ready" -ne 1 ]]; then
 fi
 
 ok "BNL backend is reachable inside container (HTTP ${last_http})"
+printf '\nBNL Web UI: %s\n' "$BNL_WEB_URL"
+printf 'BNL directory: %s\n' "$BNL_DIR"
