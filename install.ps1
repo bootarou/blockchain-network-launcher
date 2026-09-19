@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v15 beta)
+# BNL One-Line Installer for Windows + WSL2 (v16 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -49,6 +49,60 @@ function ConvertFrom-SecureStringPlain {
     }
 }
 
+
+function Read-BnlBranch {
+    param([string]$DefaultBranch = 'main')
+
+    $allowedBranches = @(
+        'main',
+        'feat-custom-catapult',
+        'feat-empty-block-policy-cf',
+        'feat-PQC-custom-catapult',
+        'feat-empty-block-policy'
+    )
+
+    if ($allowedBranches -notcontains $DefaultBranch) {
+        $DefaultBranch = 'main'
+    }
+
+    Write-Step 'BNL branch selection'
+    Write-Host 'Choose the BNL branch to install or update.' -ForegroundColor White
+    Write-Host ''
+    Write-Host '  1) main' -ForegroundColor Cyan
+    Write-Host '     Standard / official catapult images (1.0.3.6 / 1.0.3.7 / 1.0.3.9)' -ForegroundColor DarkGray
+    Write-Host '  2) feat-custom-catapult' -ForegroundColor Cyan
+    Write-Host '     Custom-built catapult image support (non-PQC)' -ForegroundColor DarkGray
+    Write-Host '  3) feat-empty-block-policy-cf' -ForegroundColor Cyan
+    Write-Host '     Non-PQC BNL integrated image + empty-block policy' -ForegroundColor DarkGray
+    Write-Host '  4) feat-PQC-custom-catapult' -ForegroundColor Cyan
+    Write-Host '     PQC-only version (ML-DSA / iVRF)' -ForegroundColor DarkGray
+    Write-Host '  5) feat-empty-block-policy' -ForegroundColor Cyan
+    Write-Host '     PQC + empty-block suppression policy' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host "Current/default branch: $DefaultBranch" -ForegroundColor Green
+
+    while ($true) {
+        $value = Read-Host 'Select branch [1-5, Enter = default]'
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            return $DefaultBranch
+        }
+
+        $value = $value.Trim()
+        switch ($value) {
+            '1' { return 'main' }
+            '2' { return 'feat-custom-catapult' }
+            '3' { return 'feat-empty-block-policy-cf' }
+            '4' { return 'feat-PQC-custom-catapult' }
+            '5' { return 'feat-empty-block-policy' }
+            default {
+                if ($allowedBranches -contains $value) {
+                    return $value
+                }
+                Write-Warn 'Select 1-5, or enter one of the displayed branch names.'
+            }
+        }
+    }
+}
 
 function Read-BnlBindAddress {
     param([string]$DefaultAddress = '127.0.0.1')
@@ -438,6 +492,35 @@ fi
     }
 
     # ---------------------------------------------------------------------
+    # Choose which BNL branch to install/update before application settings.
+    # Reuse the currently checked-out supported branch as the default.
+    # ---------------------------------------------------------------------
+    $existingBranch = 'main'
+    $branchCheckCommand = "if [ -d /opt/bnl/.git ]; then git -C /opt/bnl branch --show-current 2>/dev/null || true; fi"
+    try {
+        $branchCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $branchCheckCommand 2>$null | Out-String).Trim()
+        $supportedBranches = @(
+            'main',
+            'feat-custom-catapult',
+            'feat-empty-block-policy-cf',
+            'feat-PQC-custom-catapult',
+            'feat-empty-block-policy'
+        )
+        if ($supportedBranches -contains $branchCheck) {
+            $existingBranch = $branchCheck
+        }
+    } catch {}
+
+    $selectedBranch = Read-BnlBranch -DefaultBranch $existingBranch
+    $branchBytes = [Text.Encoding]::UTF8.GetBytes($selectedBranch)
+    $branchBase64 = [Convert]::ToBase64String($branchBytes)
+    $branchBase64 | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; tr -d "\r\n" | base64 -d > /tmp/bnl-branch'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not transfer the selected BNL branch into WSL (exit code $LASTEXITCODE)"
+    }
+    Write-Ok "BNL branch selected: $selectedBranch"
+
+    # ---------------------------------------------------------------------
     # Configure BNL bind address before any other BNL application setting.
     # Reuse the current active value as the prompt default when available;
     # otherwise default to the safest local-only binding, 127.0.0.1.
@@ -604,4 +687,3 @@ catch {
     [void](Read-Host)
     return
 }
-
