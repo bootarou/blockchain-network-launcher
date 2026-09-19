@@ -208,9 +208,8 @@ else
   if [[ -e "$BNL_DIR" ]]; then
     fail "$BNL_DIR exists but is not a Git repository"
   fi
-  git clone "$BNL_REPO" "$BNL_DIR"
+  git clone --branch "$BNL_BRANCH" --single-branch "$BNL_REPO" "$BNL_DIR"
   cd "$BNL_DIR"
-  git switch "$BNL_BRANCH"
 fi
 
 ok "BNL repository ready at $BNL_DIR"
