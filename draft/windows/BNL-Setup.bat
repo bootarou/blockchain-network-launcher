@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal EnableExtensions
 
 echo ============================================================
@@ -12,7 +12,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$u='https://raw.gith
 if errorlevel 1 (
   echo.
   echo [ERROR] BNL Setup failed.
-  echo Log: %%LOCALAPPDATA%%\BNL\install.log
+  echo Log: %LOCALAPPDATA%\BNL\install.log
   pause
   exit /b 1
 )
