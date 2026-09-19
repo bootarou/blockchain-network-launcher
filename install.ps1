@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v16 beta)
+# BNL One-Line Installer for Windows + WSL2 (v18 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -164,6 +164,27 @@ function Read-BnlAdminPassword {
             $secure1 = $null
             $secure2 = $null
         }
+    }
+}
+
+function Read-BnlAdminPasswordAction {
+    Write-Step 'Existing BNL administrator password'
+    Write-Host 'An ADMIN_PASSWORD is already configured.' -ForegroundColor White
+    Write-Host 'The current password will never be displayed.' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '  1) Keep current password (default)' -ForegroundColor White
+    Write-Host '  2) Change password' -ForegroundColor White
+    Write-Host ''
+
+    while ($true) {
+        $value = Read-Host 'Select [1]'
+        if ([string]::IsNullOrWhiteSpace($value) -or $value.Trim() -eq '1') {
+            return 'keep'
+        }
+        if ($value.Trim() -eq '2') {
+            return 'change'
+        }
+        Write-Warn 'Select 1 or 2.'
     }
 }
 
@@ -553,19 +574,32 @@ fi
     $BnlProbeUrl = $BnlWebUrl
 
     # ---------------------------------------------------------------------
-    # Ensure BNL has an administrator password.
-    # Existing active ADMIN_PASSWORD values are preserved. For a fresh install,
-    # prompt securely and transfer the password to WSL via stdin (not argv/logs).
+    # Configure the BNL administrator password.
+    # Fresh installs require a password. Existing installs let the user keep
+    # the current password (default) or replace it without ever displaying it.
     # ---------------------------------------------------------------------
+    # Remove any stale secret from a previously interrupted installer run before
+    # deciding whether a new password should be transferred this time.
+    & wsl.exe -d $DistroName -u root -- bash -lc 'rm -f /tmp/bnl-admin-password' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not clear stale BNL admin password state in WSL (exit code $LASTEXITCODE)"
+    }
+
     $existingAdminPassword = $false
+    $changeAdminPassword = $false
     $adminCheckCommand = "if [ -f /opt/bnl/.env ] && grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' /opt/bnl/.env; then printf SET; fi"
     $adminCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $adminCheckCommand 2>$null | Out-String).Trim()
     if ($adminCheck -eq 'SET') {
         $existingAdminPassword = $true
-        Write-Ok 'Existing BNL admin password detected; preserving it'
+        $adminAction = Read-BnlAdminPasswordAction
+        if ($adminAction -eq 'change') {
+            $changeAdminPassword = $true
+        } else {
+            Write-Ok 'Existing BNL admin password will be kept'
+        }
     }
 
-    if (-not $existingAdminPassword) {
+    if ((-not $existingAdminPassword) -or $changeAdminPassword) {
         $adminPassword = Read-BnlAdminPassword
         try {
             # Encode the password before crossing the Windows -> WSL stdin boundary.
@@ -578,10 +612,16 @@ fi
             if ($LASTEXITCODE -ne 0) {
                 throw "Could not transfer the BNL admin password into WSL (exit code $LASTEXITCODE)"
             }
-            Write-Ok 'BNL admin password accepted'
+            if ($changeAdminPassword) {
+                Write-Ok 'New BNL admin password accepted; it will replace the existing password'
+            } else {
+                Write-Ok 'BNL admin password accepted'
+            }
         }
         finally {
             $adminPassword = $null
+            $adminPasswordBase64 = $null
+            $adminPasswordBytes = $null
             [GC]::Collect()
         }
     }
@@ -644,7 +684,7 @@ fi
     Write-Host "  Stop  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose stop; if [ -f /run/bnl-wsl-keepalive.pid ]; then kill `$(cat /run/bnl-wsl-keepalive.pid) 2>/dev/null || true; rm -f /run/bnl-wsl-keepalive.pid; fi'"
     Write-Host "  Logs  : wsl -d $DistroName -u root -- bash -lc 'cd /opt/bnl && docker compose logs -f'"
     Write-Host ''
-    Write-Host 'The installer is safe to run again. Existing .env is preserved except for the BIND_ADDRESS value you confirm during setup.' -ForegroundColor DarkGray
+    Write-Host 'The installer is safe to run again. You can keep or change the existing ADMIN_PASSWORD during setup, and BIND_ADDRESS can also be changed.' -ForegroundColor DarkGray
     if ($TranscriptStarted) {
         try { Stop-Transcript | Out-Null } catch {}
         $TranscriptStarted = $false
