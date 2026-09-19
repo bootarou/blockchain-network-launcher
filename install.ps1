@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v20 beta)
+# BNL One-Line Installer for Windows + WSL2 (v21 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -255,7 +255,7 @@ function Write-WslTextFile {
 
 function Register-ResumeAfterReboot {
     New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
-    $resumeCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"irm '$InstallerUrl' | iex`""
+    $resumeCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"`$u='$InstallerUrl?cache='+[guid]::NewGuid(); Invoke-Expression (Invoke-RestMethod `$u)`""
     $runOncePath = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
     New-ItemProperty -Path $runOncePath -Name $RunOnceName -Value $resumeCommand -PropertyType String -Force | Out-Null
 }
@@ -291,14 +291,63 @@ function Get-WslDistroVersion {
     return $null
 }
 
+function Test-WindowsOptionalFeatureEnabled {
+    param([Parameter(Mandatory=$true)][string]$FeatureName)
+
+    try {
+        # Win32_OptionalFeature.InstallState:
+        # 1 = Enabled, 2 = Disabled, 3 = Absent, 4 = Unknown.
+        # WMI/CIM is used here because this check must also work before UAC elevation.
+        $escapedName = $FeatureName.Replace("'", "''")
+        $feature = Get-CimInstance -ClassName Win32_OptionalFeature -Filter "Name='$escapedName'" -ErrorAction Stop
+        if ($null -eq $feature) {
+            return $false
+        }
+        return ([int]$feature.InstallState -eq 1)
+    }
+    catch {
+        # If we cannot prove that the prerequisite is enabled, do not skip the
+        # administrator repair path.
+        return $false
+    }
+}
+
 function Test-WslDistroLaunchable {
     param([Parameter(Mandatory=$true)][string]$Name)
 
-    # A distro can remain registered and still appear as VERSION 2 even when
-    # VirtualMachinePlatform / WSL Windows features have been disabled. In that
-    # state `wsl -l -v` is not sufficient to prove that the VM can actually run.
-    & wsl.exe -d $Name -u root -- true 2>$null
-    return ($LASTEXITCODE -eq 0)
+    # Do not rely on PowerShell's $LASTEXITCODE here. Capture wsl.exe's process
+    # exit code directly so failures such as 0xffffffff / HCS errors cannot be
+    # mistaken for a successful health probe.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'wsl.exe'
+    $psi.Arguments = "-d $Name -u root -- true"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+
+    try {
+        if (-not $process.Start()) {
+            return $false
+        }
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+
+        return ($process.ExitCode -eq 0)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($process) {
+            $process.Dispose()
+        }
+    }
 }
 
 function Start-BnlRuntime {
@@ -364,30 +413,42 @@ try {
     Write-Step 'Windows one-line installer'
 
     $isAdmin = Test-IsAdministrator
+
+    # Check the Windows prerequisites independently of distro registration.
+    # A distro can remain listed as VERSION 2 after these features are disabled.
+    $wslFeatureEnabled = Test-WindowsOptionalFeatureEnabled -FeatureName 'Microsoft-Windows-Subsystem-Linux'
+    $vmPlatformEnabled = Test-WindowsOptionalFeatureEnabled -FeatureName 'VirtualMachinePlatform'
+
     $existingDistros = Get-WslDistros
     $existingUbuntuVersion = $null
     $existingUbuntuLaunchable = $false
+
     if ($existingDistros -contains $DistroName) {
         $existingUbuntuVersion = Get-WslDistroVersion -Name $DistroName
-        if ($existingUbuntuVersion -eq 2) {
+
+        # Only attempt a VM launch probe when the required Windows features are
+        # actually enabled. This avoids trusting stale WSL registration state.
+        if (
+            ($existingUbuntuVersion -eq 2) -and
+            $wslFeatureEnabled -and
+            $vmPlatformEnabled
+        ) {
             $existingUbuntuLaunchable = Test-WslDistroLaunchable -Name $DistroName
         }
     }
 
-    # A registered VERSION 2 distro is not enough. If the Windows WSL/VM
-    # features were disabled, the distro can still be listed but launching it
-    # fails with HCS_E_SERVICE_NOT_AVAILABLE. Only skip elevation when Ubuntu
-    # can actually start successfully.
     $canContinueWithoutAdmin = (
         ($existingDistros -contains $DistroName) -and
         ($existingUbuntuVersion -eq 2) -and
+        $wslFeatureEnabled -and
+        $vmPlatformEnabled -and
         $existingUbuntuLaunchable
     )
 
     if (-not $isAdmin -and -not $canContinueWithoutAdmin) {
         Write-Host 'Windows administrator privileges are required for the initial WSL2 setup.' -ForegroundColor Yellow
         Write-Host 'Requesting UAC elevation...' -ForegroundColor Yellow
-        $elevatedCommand = "irm '$InstallerUrl' | iex"
+        $elevatedCommand = "`$u='$InstallerUrl?cache='+[guid]::NewGuid(); Invoke-Expression (Invoke-RestMethod `$u)"
         try {
             $argLine = "-NoProfile -ExecutionPolicy Bypass -Command `"$elevatedCommand`""
             Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $argLine
@@ -409,11 +470,28 @@ try {
     }
     if ($isAdmin) {
         Write-Ok 'Administrator privileges confirmed'
-        if (($existingDistros -contains $DistroName) -and ($existingUbuntuVersion -eq 2) -and (-not $existingUbuntuLaunchable)) {
+
+        if (-not $wslFeatureEnabled) {
+            Write-Warn 'Windows Subsystem for Linux feature is not enabled.'
+        }
+        if (-not $vmPlatformEnabled) {
+            Write-Warn 'Virtual Machine Platform feature is not enabled.'
+        }
+        if (
+            ($existingDistros -contains $DistroName) -and
+            ($existingUbuntuVersion -eq 2) -and
+            $wslFeatureEnabled -and
+            $vmPlatformEnabled -and
+            (-not $existingUbuntuLaunchable)
+        ) {
             Write-Warn 'Ubuntu is registered as WSL2, but the WSL2 VM cannot currently start.'
-            Write-Warn 'Windows WSL/Virtual Machine Platform prerequisites will be checked and repaired.'
+        }
+
+        if ((-not $wslFeatureEnabled) -or (-not $vmPlatformEnabled) -or (-not $existingUbuntuLaunchable)) {
+            Write-Warn 'WSL2 prerequisites will be checked and repaired.'
         }
     } else {
+        Write-Ok 'WSL2 Windows features are enabled'
         Write-Ok 'Existing and launchable WSL2 Ubuntu detected; Windows administrator elevation is not required'
     }
     Write-Host "Log: $LogPath" -ForegroundColor DarkGray
