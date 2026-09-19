@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v18 beta)
+# BNL One-Line Installer for Windows + WSL2 (v19 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -196,6 +196,60 @@ function Invoke-Native {
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$FilePath exited with code $LASTEXITCODE"
+    }
+}
+
+
+function Write-WslTextFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Text,
+        [Parameter(Mandatory=$true)][string]$LinuxPath
+    )
+
+    # Only allow the installer-owned temporary paths used below.
+    if ($LinuxPath -notmatch '^/tmp/bnl-[A-Za-z0-9._-]+$') {
+        throw "Refusing unexpected WSL temporary path: $LinuxPath"
+    }
+
+    # Do not use a PowerShell pipeline to feed wsl.exe. Windows PowerShell 5.1
+    # can alter native-process stdin / CRLF handling in ways that are fragile
+    # across repeated WSL starts. Redirect stdin explicitly through .NET instead.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'wsl.exe'
+    $psi.Arguments = "-d $DistroName -u root -- bash -c `"umask 077; cat > '$LinuxPath'`""
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+
+    try {
+        if (-not $process.Start()) {
+            throw "Could not start wsl.exe while writing $LinuxPath"
+        }
+
+        $process.StandardInput.Write($Text)
+        $process.StandardInput.Close()
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+
+        if ($process.ExitCode -ne 0) {
+            $detail = $stderr.Trim()
+            if ($detail) {
+                throw "Could not write $LinuxPath inside WSL (exit code $($process.ExitCode)): $detail"
+            }
+            throw "Could not write $LinuxPath inside WSL (exit code $($process.ExitCode))"
+        }
+    }
+    finally {
+        if ($process) {
+            $process.Dispose()
+        }
     }
 }
 
@@ -533,12 +587,7 @@ fi
     } catch {}
 
     $selectedBranch = Read-BnlBranch -DefaultBranch $existingBranch
-    $branchBytes = [Text.Encoding]::UTF8.GetBytes($selectedBranch)
-    $branchBase64 = [Convert]::ToBase64String($branchBytes)
-    $branchBase64 | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; tr -d "\r\n" | base64 -d > /tmp/bnl-branch'
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not transfer the selected BNL branch into WSL (exit code $LASTEXITCODE)"
-    }
+    Write-WslTextFile -Text $selectedBranch -LinuxPath '/tmp/bnl-branch'
     Write-Ok "BNL branch selected: $selectedBranch"
 
     # ---------------------------------------------------------------------
@@ -558,12 +607,7 @@ fi
     } catch {}
 
     $bindAddress = Read-BnlBindAddress -DefaultAddress $existingBindAddress
-    $bindBytes = [Text.Encoding]::UTF8.GetBytes($bindAddress)
-    $bindBase64 = [Convert]::ToBase64String($bindBytes)
-    $bindBase64 | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; tr -d "\r\n" | base64 -d > /tmp/bnl-bind-address'
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not transfer BIND_ADDRESS into WSL (exit code $LASTEXITCODE)"
-    }
+    Write-WslTextFile -Text $bindAddress -LinuxPath '/tmp/bnl-bind-address'
     Write-Ok "BIND_ADDRESS accepted: $bindAddress"
 
     # Use the selected bind address for the Windows-side readiness probe and
@@ -602,16 +646,9 @@ fi
     if ((-not $existingAdminPassword) -or $changeAdminPassword) {
         $adminPassword = Read-BnlAdminPassword
         try {
-            # Encode the password before crossing the Windows -> WSL stdin boundary.
-            # Windows PowerShell writes CRLF to native-process stdin; sending raw text
-            # can therefore leave a trailing CR in Linux. Base64 + CR/LF stripping
-            # avoids that while keeping the password out of argv and the transcript.
-            $adminPasswordBytes = [Text.Encoding]::UTF8.GetBytes($adminPassword)
-            $adminPasswordBase64 = [Convert]::ToBase64String($adminPasswordBytes)
-            $adminPasswordBase64 | & wsl.exe -d $DistroName -u root -- bash -lc 'umask 077; tr -d "\r\n" | base64 -d > /tmp/bnl-admin-password'
-            if ($LASTEXITCODE -ne 0) {
-                throw "Could not transfer the BNL admin password into WSL (exit code $LASTEXITCODE)"
-            }
+            # Stream the secret directly to WSL stdin. The password is not placed
+            # in argv and is not written to the PowerShell transcript.
+            Write-WslTextFile -Text $adminPassword -LinuxPath '/tmp/bnl-admin-password'
             if ($changeAdminPassword) {
                 Write-Ok 'New BNL admin password accepted; it will replace the existing password'
             } else {
@@ -620,8 +657,6 @@ fi
         }
         finally {
             $adminPassword = $null
-            $adminPasswordBase64 = $null
-            $adminPasswordBytes = $null
             [GC]::Collect()
         }
     }
