@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v19 beta)
+# BNL One-Line Installer for Windows + WSL2 (v20 beta)
 # Usage (PowerShell):
 #   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
 
@@ -291,6 +291,16 @@ function Get-WslDistroVersion {
     return $null
 }
 
+function Test-WslDistroLaunchable {
+    param([Parameter(Mandatory=$true)][string]$Name)
+
+    # A distro can remain registered and still appear as VERSION 2 even when
+    # VirtualMachinePlatform / WSL Windows features have been disabled. In that
+    # state `wsl -l -v` is not sufficient to prove that the VM can actually run.
+    & wsl.exe -d $Name -u root -- true 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Start-BnlRuntime {
     Write-Step 'Starting Ubuntu and BNL runtime'
 
@@ -356,14 +366,23 @@ try {
     $isAdmin = Test-IsAdministrator
     $existingDistros = Get-WslDistros
     $existingUbuntuVersion = $null
+    $existingUbuntuLaunchable = $false
     if ($existingDistros -contains $DistroName) {
         $existingUbuntuVersion = Get-WslDistroVersion -Name $DistroName
+        if ($existingUbuntuVersion -eq 2) {
+            $existingUbuntuLaunchable = Test-WslDistroLaunchable -Name $DistroName
+        }
     }
 
-    # Existing WSL2 + Ubuntu installations do not need Windows administrator
-    # privileges for normal BNL install/update/repair operations. WSL can launch
-    # the distro as Linux root without elevating the Windows process.
-    $canContinueWithoutAdmin = (($existingDistros -contains $DistroName) -and ($existingUbuntuVersion -eq 2))
+    # A registered VERSION 2 distro is not enough. If the Windows WSL/VM
+    # features were disabled, the distro can still be listed but launching it
+    # fails with HCS_E_SERVICE_NOT_AVAILABLE. Only skip elevation when Ubuntu
+    # can actually start successfully.
+    $canContinueWithoutAdmin = (
+        ($existingDistros -contains $DistroName) -and
+        ($existingUbuntuVersion -eq 2) -and
+        $existingUbuntuLaunchable
+    )
 
     if (-not $isAdmin -and -not $canContinueWithoutAdmin) {
         Write-Host 'Windows administrator privileges are required for the initial WSL2 setup.' -ForegroundColor Yellow
@@ -390,8 +409,12 @@ try {
     }
     if ($isAdmin) {
         Write-Ok 'Administrator privileges confirmed'
+        if (($existingDistros -contains $DistroName) -and ($existingUbuntuVersion -eq 2) -and (-not $existingUbuntuLaunchable)) {
+            Write-Warn 'Ubuntu is registered as WSL2, but the WSL2 VM cannot currently start.'
+            Write-Warn 'Windows WSL/Virtual Machine Platform prerequisites will be checked and repaired.'
+        }
     } else {
-        Write-Ok 'Existing WSL2 Ubuntu detected; Windows administrator elevation is not required'
+        Write-Ok 'Existing and launchable WSL2 Ubuntu detected; Windows administrator elevation is not required'
     }
     Write-Host "Log: $LogPath" -ForegroundColor DarkGray
 
