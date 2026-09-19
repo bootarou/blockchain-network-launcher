@@ -1,6 +1,8 @@
-# BNL One-Line Installer for Windows + WSL2 (v21 beta)
+# BNL One-Line Installer for Windows + WSL2 (v22 beta)
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
+#   $p = Join-Path $env:TEMP 'bnl-install.ps1'
+#   Invoke-WebRequest 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1' -OutFile $p
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -12,6 +14,7 @@ $DistroName         = 'Ubuntu'
 $BnlWebUrl          = 'http://127.0.0.1:5173'
 $BnlProbeUrl        = 'http://127.0.0.1:5173'
 $StateDir            = Join-Path $env:LOCALAPPDATA 'BNL'
+$LocalInstallerPath = Join-Path $StateDir 'install.ps1'
 $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
 $LogPath             = Join-Path $StateDir 'install.log'
@@ -253,9 +256,34 @@ function Write-WslTextFile {
     }
 }
 
+function Stage-LocalInstaller {
+    New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
+
+    # Keep a stable local copy for UAC elevation and post-reboot resume.
+    # The installer is always executed with powershell.exe -File; downloaded
+    # script text is never evaluated as an in-memory command string.
+    if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
+        $sourcePath = [IO.Path]::GetFullPath($PSCommandPath)
+        $targetPath = [IO.Path]::GetFullPath($LocalInstallerPath)
+
+        if (-not [string]::Equals($sourcePath, $targetPath, [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -LiteralPath $sourcePath -Destination $LocalInstallerPath -Force
+        }
+    }
+    elseif (-not (Test-Path -LiteralPath $LocalInstallerPath)) {
+        Invoke-WebRequest -UseBasicParsing -Uri ($InstallerUrl + '?cache=' + [guid]::NewGuid()) -OutFile $LocalInstallerPath
+    }
+
+    if (-not (Test-Path -LiteralPath $LocalInstallerPath)) {
+        throw "Could not stage the local BNL installer at $LocalInstallerPath"
+    }
+
+    return $LocalInstallerPath
+}
+
 function Register-ResumeAfterReboot {
     New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
-    $resumeCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"`$u='$InstallerUrl?cache='+[guid]::NewGuid(); Invoke-Expression (Invoke-RestMethod `$u)`""
+    $resumeCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LocalInstallerPath`""
     $runOncePath = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
     New-ItemProperty -Path $runOncePath -Name $RunOnceName -Value $resumeCommand -PropertyType String -Force | Out-Null
 }
@@ -410,8 +438,9 @@ fi
 }
 
 try {
-    Write-Step 'Windows one-line installer'
+    Write-Step 'Windows installer'
 
+    $LocalInstallerPath = Stage-LocalInstaller
     $isAdmin = Test-IsAdministrator
 
     # Check the Windows prerequisites independently of distro registration.
@@ -448,15 +477,14 @@ try {
     if (-not $isAdmin -and -not $canContinueWithoutAdmin) {
         Write-Host 'Windows administrator privileges are required for the initial WSL2 setup.' -ForegroundColor Yellow
         Write-Host 'Requesting UAC elevation...' -ForegroundColor Yellow
-        $elevatedCommand = "`$u='$InstallerUrl?cache='+[guid]::NewGuid(); Invoke-Expression (Invoke-RestMethod `$u)"
         try {
-            $argLine = "-NoProfile -ExecutionPolicy Bypass -Command `"$elevatedCommand`""
+            $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$LocalInstallerPath`""
             Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Verb RunAs -ArgumentList $argLine
             return
         }
         catch {
             Write-Warn 'Automatic UAC elevation was blocked by Windows.'
-            Write-Host 'Open PowerShell with "Run as administrator" and run the same one-line installer.' -ForegroundColor Yellow
+            Write-Host 'Open PowerShell with "Run as administrator" and run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${LocalInstallerPath}"' -ForegroundColor Yellow
             throw
         }
     }
