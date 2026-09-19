@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+
 # BNL bootstrap for Ubuntu running under WSL2.
 # This script is intended to be called by install.ps1 as root.
 
@@ -6,6 +6,7 @@ set -Eeuo pipefail
 
 BNL_REPO="https://github.com/bootarou/blockchain-network-launcher.git"
 BNL_DIR="/opt/bnl"
+BNL_BRANCH="main"
 BNL_WEB_URL="http://127.0.0.1:5173"
 DOCKER_KEYRING="/etc/apt/keyrings/docker.asc"
 DOCKER_SOURCE="/etc/apt/sources.list.d/docker.sources"
@@ -120,17 +121,58 @@ docker compose version
 ok "Docker Engine is ready"
 
 # ---------------------------------------------------------------------------
-# BNL repository
+# BNL branch + repository
 # ---------------------------------------------------------------------------
-log "Preparing BNL repository"
+# install.ps1 transfers the selected branch through a root-only temp file.
+# Direct invocation defaults to the currently checked-out supported branch,
+# otherwise main.
+if [[ -f /tmp/bnl-branch ]]; then
+  BNL_BRANCH="$(tr -d '\r\n' < /tmp/bnl-branch)"
+  rm -f /tmp/bnl-branch
+elif [[ -d "$BNL_DIR/.git" ]]; then
+  detected_branch="$(git -C "$BNL_DIR" branch --show-current 2>/dev/null || true)"
+  case "$detected_branch" in
+    main|feat-custom-catapult|feat-empty-block-policy-cf|feat-PQC-custom-catapult|feat-empty-block-policy)
+      BNL_BRANCH="$detected_branch"
+      ;;
+  esac
+  unset detected_branch
+fi
+
+case "$BNL_BRANCH" in
+  main|feat-custom-catapult|feat-empty-block-policy-cf|feat-PQC-custom-catapult|feat-empty-block-policy) ;;
+  *) fail "Unsupported BNL branch: $BNL_BRANCH" ;;
+esac
+
+log "Preparing BNL repository ($BNL_BRANCH)"
 
 if [[ -d "$BNL_DIR/.git" ]]; then
   cd "$BNL_DIR"
-  if [[ -n "$(git status --porcelain)" ]]; then
-    warn "Local changes detected in $BNL_DIR; skipping automatic git pull"
+  git fetch --prune origin
+
+  git show-ref --verify --quiet "refs/remotes/origin/$BNL_BRANCH" \
+    || fail "Remote branch origin/$BNL_BRANCH was not found"
+
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  tracked_changes="$(git status --porcelain --untracked-files=no)"
+
+  if [[ "$current_branch" != "$BNL_BRANCH" ]]; then
+    if [[ -n "$tracked_changes" ]]; then
+      fail "Tracked local changes exist in $BNL_DIR. Commit/stash them before switching from ${current_branch:-detached} to $BNL_BRANCH"
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$BNL_BRANCH"; then
+      git switch "$BNL_BRANCH"
+    else
+      git switch --track -c "$BNL_BRANCH" "origin/$BNL_BRANCH"
+    fi
+    current_branch="$BNL_BRANCH"
+  fi
+
+  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    warn "Tracked local changes detected in $BNL_DIR; preserving them and skipping automatic pull"
   else
-    git fetch --prune origin
-    git pull --ff-only
+    git merge --ff-only "origin/$BNL_BRANCH"
   fi
 else
   if [[ -e "$BNL_DIR" ]]; then
@@ -138,9 +180,11 @@ else
   fi
   git clone "$BNL_REPO" "$BNL_DIR"
   cd "$BNL_DIR"
+  git switch "$BNL_BRANCH"
 fi
 
 ok "BNL repository ready at $BNL_DIR"
+ok "BNL branch: $BNL_BRANCH"
 
 # ---------------------------------------------------------------------------
 # Environment configuration
@@ -286,5 +330,3 @@ if [[ "$ready" -ne 1 ]]; then
 fi
 
 ok "BNL backend is reachable inside container (HTTP ${last_http})"
-printf '\nBNL Web UI: %s\n' "$BNL_WEB_URL"
-printf 'BNL directory: %s\n' "$BNL_DIR"
