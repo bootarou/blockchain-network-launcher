@@ -68,3 +68,7 @@ shared/seed/
 
 # sample-share
 bda-test.symbol-network.zip
+
+# BNL Tray build output
+tray/dist/
+bnl-tray.exe
