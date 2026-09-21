@@ -47,10 +47,19 @@ ARG SYMBOL_BOOTSTRAP_BRANCH=main
 # the layers below rebuild.  (Only meaningful for the default GitHub repo;
 # override builds can pass --no-cache instead.)
 ADD https://api.github.com/repos/bootarou/symbol-bootstrap/git/refs/heads/${SYMBOL_BOOTSTRAP_BRANCH} /tmp/symbol-bootstrap-ref.json
+#
+# The second npm install is not redundant: lib/service/VotingUtils.js does
+# `require('tweetnacl')` without symbol-bootstrap declaring tweetnacl anywhere.
+# It only ever resolved because npm happened to hoist the copy symbol-sdk depends
+# on to the top level. In this dependency tree npm nests it under
+# node_modules/symbol-sdk/node_modules instead, where `require('tweetnacl')` from
+# lib/ cannot see it, and `symbol-bootstrap config` dies with MODULE_NOT_FOUND.
+# Installing it explicitly makes the resolution independent of npm's hoisting.
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
     && git clone --branch "${SYMBOL_BOOTSTRAP_BRANCH}" --depth 1 "${SYMBOL_BOOTSTRAP_REPO}" /opt/symbol-bootstrap \
     && cd /opt/symbol-bootstrap \
     && npm install --omit=dev --no-audit --no-fund \
+    && npm install --omit=dev --no-audit --no-fund tweetnacl@^1.0.3 \
     && chmod +x /opt/symbol-bootstrap/bin/run \
     && ln -s /opt/symbol-bootstrap/bin/run /usr/local/bin/symbol-bootstrap \
     && symbol-bootstrap --version
@@ -64,13 +73,19 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
 #     schedules shown when configuring or joining a network are read from them,
 #     and a joining node that misses the inflation schedule diverges at the first
 #     height that pays a block reward.
+#  3. the config service must actually load. `symbol-bootstrap --version` only
+#     exercises oclif, so it passed while a missing transitive dependency made
+#     every `config` run fail with MODULE_NOT_FOUND. Loading the service pulls in
+#     the real require graph, which is what users hit at Step 1.
 RUN set -eu; \
     SB_ROOT=/opt/symbol-bootstrap; \
     test -f "$SB_ROOT/config/node/resources/config-node.properties.mustache" \
       || { echo "ERROR: bootstrap templates missing ($SB_ROOT/config)" >&2; exit 1; }; \
     test -f "$SB_ROOT/presets/shared.yml" \
       || { echo "ERROR: bootstrap presets missing ($SB_ROOT/presets)" >&2; exit 1; }; \
-    echo "symbol-bootstrap verified: templates + presets present in $SB_ROOT"
+    node -e "require('$SB_ROOT/lib/service/ConfigService.js')" \
+      || { echo "ERROR: symbol-bootstrap cannot load ConfigService - a dependency is missing" >&2; exit 1; }; \
+    echo "symbol-bootstrap verified: templates + presets + config service load"
 
 WORKDIR /app
 
