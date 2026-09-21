@@ -34,20 +34,34 @@ RUN npm install -g ${SYMBOL_BOOTSTRAP_REPO}
 # Workaround: `npm install -g <git-url>` respects .npmignore / package.json
 # "files", which can omit config/node/resources/*.mustache templates.
 # These templates are required by nemgen during `symbol-bootstrap config`.
-# We pack the installed package, extract the config/ tree, and restore it.
-RUN SB_ROOT=$(npm root -g)/symbol-bootstrap \
-    && if [ ! -f "$SB_ROOT/config/node/resources/config-node.properties.mustache" ]; then \
-         cd /tmp \
-         && npm pack symbol-bootstrap --pack-destination /tmp 2>/dev/null \
-         && TARBALL=$(ls /tmp/symbol-bootstrap-*.tgz | head -1) \
-         && tar xzf "$TARBALL" \
-         && cp -r /tmp/package/config/* "$SB_ROOT/config/" \
-         && cp -r /tmp/package/presets/* "$SB_ROOT/presets/" 2>/dev/null || true \
-         && rm -rf /tmp/package /tmp/symbol-bootstrap-*.tgz \
-         && echo "✅ Restored missing bootstrap templates to $SB_ROOT/config/" \
-       ; else \
-         echo "✅ Bootstrap templates already present" \
-       ; fi
+# We pack the published package, extract the config/ tree, and restore it.
+#
+# The closing check is what makes this safe.  The previous version ended the
+# restore chain with `|| true`, so a failing `npm pack`/`tar`/`cp` still let the
+# RUN succeed - and, because `&&` and `||` bind equally and left to right, it
+# even printed the success message.  The image then shipped without templates
+# and the problem only surfaced much later, at a user's first node start, as
+# "property not found (cache_database, maxLogFiles)" from nemgen.  Fail here
+# instead, where it is one line of build output.
+RUN set -eu; \
+    SB_ROOT="$(npm root -g)/symbol-bootstrap"; \
+    TEMPLATE="$SB_ROOT/config/node/resources/config-node.properties.mustache"; \
+    if [ ! -f "$TEMPLATE" ]; then \
+      echo "Bootstrap templates missing - restoring from the published package"; \
+      cd /tmp; \
+      npm pack symbol-bootstrap --pack-destination /tmp; \
+      TARBALL="$(ls /tmp/symbol-bootstrap-*.tgz | head -1)"; \
+      tar xzf "$TARBALL"; \
+      mkdir -p "$SB_ROOT/config" "$SB_ROOT/presets"; \
+      cp -r /tmp/package/config/. "$SB_ROOT/config/"; \
+      if [ -d /tmp/package/presets ]; then cp -r /tmp/package/presets/. "$SB_ROOT/presets/"; fi; \
+      rm -rf /tmp/package /tmp/symbol-bootstrap-*.tgz; \
+    fi; \
+    if [ ! -f "$TEMPLATE" ]; then \
+      echo "ERROR: $TEMPLATE is still missing - nemgen would fail at runtime" >&2; \
+      exit 1; \
+    fi; \
+    echo "Bootstrap templates present: $TEMPLATE"
 
 WORKDIR /app
 
