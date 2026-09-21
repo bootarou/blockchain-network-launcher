@@ -7972,6 +7972,26 @@ app.post('/api/commands/start', async (req, res) => {
         hardenGeneratedConfigs(TARGET_DIR, restartVersion);
         validateGeneratedConfigsOrThrow(TARGET_DIR, restartVersion);
 
+        // 3f. Ensure the locally-built patched server image exists.
+        //
+        //     docker-compose.yml can reference symbol-server-patched:<tag>, which
+        //     is built by ensurePatchedImage() and never exists in any registry.
+        //     Full mode builds it in Step 0b, but restart mode used to go straight
+        //     to `run`.  When /opt/symbol-target arrives already populated — from a
+        //     network package, /api/restore, or a copy of another machine's target
+        //     dir — the very first Start already satisfies the restart-mode
+        //     condition (data + preset + compose all present) while this machine
+        //     has never built that image.  Docker then treats the name as a
+        //     registry reference and fails with "pull access denied".
+        //
+        //     ensurePatchedImage() inspects the image first and returns early when
+        //     it is present, so an ordinary Stop → Start pays only one
+        //     `docker image inspect`.
+        const restartPatchedTag = await ensurePatchedImage(restartVersion);
+        if (restartPatchedTag) {
+          patchDockerComposeImages(TARGET_DIR, restartVersion, restartPatchedTag);
+        }
+
         // 4. Run containers
         broadcastLog('[System] Step 2/3 – Starting containers (symbol-bootstrap run)...\n');
         await runBootstrapCommand('run', ['-d'], {
