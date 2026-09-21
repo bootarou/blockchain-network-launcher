@@ -2465,6 +2465,15 @@ function resolveBootstrapTemplateDirs(): string[] {
     broadcastLog(`[Pre-Patch] Template dir (${label}): ${real}\n`);
   };
 
+  // Strategy -1: the install location this image ships (Dockerfile: git clone →
+  // /opt/symbol-bootstrap). This is where runBootstrapCommand() executes from, so
+  // it is the authoritative template location; the strategies below only matter
+  // for images built before the switch to a fixed install path.
+  try {
+    const candidate = path.join(resolveBootstrapRoot(), 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'bootstrap install');
+  } catch { /* fall through */ }
+
   // Strategy 0: require.resolve
   try {
     const pkgJson = require.resolve('symbol-bootstrap/package.json');
@@ -2479,9 +2488,10 @@ function resolveBootstrapTemplateDirs(): string[] {
     if (fs.existsSync(candidate)) addDir(candidate, 'npm root -g');
   } catch { /* fall through */ }
 
-  // Strategy 1b: npx cache — runBootstrapCommand() uses `npx -y symbol-bootstrap`
-  //   so the ACTUAL templates used at runtime live in the npx cache, NOT the
-  //   global install dir.  This is the single most important location to patch.
+  // Strategy 1b: npx cache — left over from when runBootstrapCommand() could fall
+  //   back to `npx symbol-bootstrap`.  Nothing executes from here any more, but a
+  //   stale copy is still patched so that an image mid-upgrade cannot end up
+  //   running unpatched templates.
   try {
     const homeDir = process.env.HOME || '/root';
     const npxCacheDir = path.join(homeDir, '.npm', '_npx');
@@ -2528,101 +2538,40 @@ function resolveBootstrapTemplateDirs(): string[] {
   return dirs;
 }
 
-// npx spec used to run symbol-bootstrap when no cached or global binary exists.
-// Shared with runBootstrapCommand() so priming can never fetch a different
-// version than the one that actually generates the configuration.
-const BOOTSTRAP_NPX_SPEC = 'symbol-bootstrap@1.1.10';
-const BOOTSTRAP_PRIME_TIMEOUT_MS = 180_000;
+// Where the Dockerfile installs symbol-bootstrap (git clone → fixed path,
+// symlinked into /usr/local/bin). Everything that needs the package - the
+// binary, the nemgen mustache templates and the network presets - resolves from
+// here, so there is exactly one copy and it is the one the build verified.
+const BOOTSTRAP_BIN = process.env.SYMBOL_BOOTSTRAP_BIN || '/usr/local/bin/symbol-bootstrap';
+
+/**
+ * Returns the root directory of the installed symbol-bootstrap package.
+ *
+ * Resolved from the binary rather than hardcoded, so that a SYMBOL_BOOTSTRAP_BIN
+ * override moves the templates and presets with it.
+ */
+function resolveBootstrapRoot(): string {
+  try {
+    if (fs.existsSync(BOOTSTRAP_BIN)) {
+      // <root>/bin/run, reached through the /usr/local/bin symlink.
+      return path.dirname(path.dirname(fs.realpathSync(BOOTSTRAP_BIN)));
+    }
+  } catch { /* fall through to the default */ }
+  return '/opt/symbol-bootstrap';
+}
 
 /**
  * Decides which symbol-bootstrap will actually run.
  *
- * There can be several copies on disk - a global install, and one per npx cache
- * entry - and the whole class of bug this guards against is "the copy we patch
- * is not the copy that runs".  Step 0c therefore asks this the same question
- * runBootstrapCommand() does, instead of guessing.
- *
- * Preference order: a cached npx binary, then a global binary, then npx (which
- * downloads the package on first use).
+ * There is deliberately no npx fallback.  Falling back to the public registry
+ * package meant the launcher could run a different symbol-bootstrap than the one
+ * built into the image - a different copy from the one whose templates had just
+ * been patched, and potentially a different version than the fork this image is
+ * built around.  Failing loudly is the safer outcome: a missing binary means the
+ * image is broken and rebuilding it is the fix.
  */
-function resolveBootstrapInvocation(): { cmd: string; prefixArgs: string[]; usesNpx: boolean } {
-  try {
-    const cached = execSync(
-      'find /root/.npm/_npx -type l -path "*/node_modules/.bin/symbol-bootstrap" 2>/dev/null | sort | tail -n 1',
-      { timeout: 5_000, stdio: 'pipe' },
-    ).toString().trim();
-    if (cached && fs.existsSync(cached)) {
-      return { cmd: cached, prefixArgs: [], usesNpx: false };
-    }
-  } catch { /* fall through */ }
-
-  try {
-    const globalBin = execSync('command -v symbol-bootstrap 2>/dev/null || true', {
-      timeout: 3_000,
-      stdio: 'pipe',
-    }).toString().trim();
-    // existsSync follows symlinks, so a global bin left dangling by npm is
-    // correctly rejected here rather than failing later at spawn time.
-    if (globalBin && fs.existsSync(globalBin)) {
-      return { cmd: globalBin, prefixArgs: [], usesNpx: false };
-    }
-  } catch { /* fall through */ }
-
-  return { cmd: 'npx', prefixArgs: ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC], usesNpx: true };
-}
-
-/**
- * Materialise symbol-bootstrap so that its mustache templates exist on disk.
- *
- * runBootstrapCommand() falls back to `npx <spec>`, which downloads the package
- * on first use.  Until that has happened once, there is nothing for
- * patchMustacheTemplates() to patch, so the first `symbol-bootstrap config` on a
- * clean machine generates a config-node.properties without the properties nemgen
- * requires and dies with "property not found (cache_database, maxLogFiles)".
- * The retry then succeeds only because the failed run left the package in the
- * npx cache.
- *
- * Priming deliberately does not run on every start - it can stall on a slow
- * network.  It runs only when nothing patchable was found, which is precisely
- * the state that would otherwise guarantee a failed start.  A timeout or a
- * non-zero exit is non-fatal: the start continues and may still succeed.
- */
-async function primeBootstrapTemplates(): Promise<void> {
-  broadcastLog(`[Pre-Patch] Priming ${BOOTSTRAP_NPX_SPEC} so its templates exist on disk...\n`);
-
-  await new Promise<void>((resolve) => {
-    const cp = spawn('npx', ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC, '--version'], {
-      cwd: '/',
-      env: { ...process.env, FORCE_COLOR: '0' },
-      shell: false,
-    });
-
-    let settled = false;
-    const finish = (message: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      broadcastLog(message);
-      resolve();
-    };
-
-    const timer = setTimeout(() => {
-      try { cp.kill('SIGKILL'); } catch { /* already gone */ }
-      finish(`[Pre-Patch] ⚠️  Priming timed out after ${BOOTSTRAP_PRIME_TIMEOUT_MS / 1000}s — continuing\n`);
-    }, BOOTSTRAP_PRIME_TIMEOUT_MS);
-
-    // Drain both streams so the child cannot block on a full pipe. The output is
-    // npm install noise and is not worth showing.
-    cp.stdout?.on('data', () => {});
-    cp.stderr?.on('data', () => {});
-
-    cp.on('error', (e: Error) => finish(`[Pre-Patch] ⚠️  Priming failed: ${e.message} — continuing\n`));
-    cp.on('close', (code) => finish(
-      code === 0
-        ? '[Pre-Patch] Priming complete\n'
-        : `[Pre-Patch] ⚠️  Priming exited with code ${code} — continuing\n`,
-    ));
-  });
+function resolveBootstrapInvocation(): { cmd: string; prefixArgs: string[] } {
+  return { cmd: BOOTSTRAP_BIN, prefixArgs: [] };
 }
 
 /**
@@ -6206,10 +6155,20 @@ function runBootstrapCommand(
       }
     }
 
-    // Prefer a cached symbol-bootstrap binary to avoid npx network stalls.
-    // Fallback to npx only when no cached/global binary exists.
+    // The binary is installed by the Dockerfile (git clone → /opt/symbol-bootstrap,
+    // symlinked into /usr/local/bin). If it is missing the image is broken; say so
+    // rather than silently downloading a different symbol-bootstrap from the
+    // registry and generating a network with it.
     const invocation = resolveBootstrapInvocation();
     const bootstrapCmd = invocation.cmd;
+    if (!fs.existsSync(bootstrapCmd)) {
+      const msg = `❌ symbol-bootstrap not found at ${bootstrapCmd} — rebuild the manager image`;
+      broadcastLog(`[CMD] ${msg}\n`);
+      networkStatus.state = 'error';
+      broadcastStatus();
+      reject(new Error(msg));
+      return;
+    }
     const bootstrapArgs = [...invocation.prefixArgs, command, ...resolvedArgs];
 
     // CWD must be '/' because symbol-bootstrap internally does
@@ -8215,45 +8174,21 @@ app.post('/api/commands/start', async (req, res) => {
       broadcastLog('[System] Step 0/6 – Ensuring patched server image...\n');
       const patchedTag = await ensurePatchedImage(version);
 
-      // Step 0c: Pre-patch mustache templates so nemgen sees all required props
-      //   Priming is not done up front: it can hang on unstable networks and
-      //   block startup, and normally the templates are already on disk.  We
-      //   patch whatever copies are discoverable first.
+      // Step 0c: Pre-patch mustache templates so nemgen sees all required props.
+      //   The templates ship in the image at a fixed location and the build
+      //   verifies they are there, so the copy patched here is always the copy
+      //   the binary at Step 1 reads from.
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
 
-      //   The copy that runs has to be the copy we patch.  When neither a cached
-      //   npx binary nor a usable global binary exists, `symbol-bootstrap config`
-      //   fetches its own copy through npx at Step 1 - after this patching - and
-      //   generates the configuration from those untouched templates, even though
-      //   another copy (a global install, which may be a symlink into npm's cache)
-      //   was patched here.  Materialise the npx copy first so that it is one of
-      //   the copies patched below.
-      if (version.configPatches.length > 0 && resolveBootstrapInvocation().usesNpx) {
-        broadcastLog('[Pre-Patch] symbol-bootstrap will run via npx and is not downloaded yet '
-          + '— priming so the copy that runs is the copy that gets patched\n');
-        await primeBootstrapTemplates();
-      }
+      const templatesFound = patchMustacheTemplates(version, basePreset);
 
-      let templatesFound = patchMustacheTemplates(version, basePreset);
-
-      //   ...but finding nothing is different from finding nothing to do.  On a
-      //   machine where symbol-bootstrap has never run, the package is not on
-      //   disk yet (runBootstrapCommand falls back to `npx`, which downloads it
-      //   at Step 1), so there is no template to patch and the generated config
-      //   is missing properties nemgen requires — the first start on a clean
-      //   machine always fails with "property not found (cache_database,
-      //   maxLogFiles)", and only succeeds on retry because the failed run
-      //   populated the npx cache.  Prime once here so the first start behaves
-      //   like the retry.  This costs nothing in the normal case, because it
-      //   only runs when nothing patchable exists.
+      //   Finding none means the image is not what the build produced. nemgen
+      //   would then fail on a missing cache_database.maxLogFiles, so say what
+      //   is wrong while the message can still be connected to the cause.
       if (templatesFound === 0 && version.configPatches.length > 0) {
-        broadcastLog('[Pre-Patch] No templates on disk — priming symbol-bootstrap once\n');
-        await primeBootstrapTemplates();
-        templatesFound = patchMustacheTemplates(version, basePreset);
-        if (templatesFound === 0) {
-          broadcastLog('[Pre-Patch] ⚠️  Still no templates after priming; '
-            + 'nemgen may reject the generated config\n');
-        }
+        broadcastLog('[Pre-Patch] ⚠️  No symbol-bootstrap templates found in '
+          + `${resolveBootstrapRoot()} — the manager image looks incomplete; `
+          + 'nemgen may reject the generated config\n');
       }
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
@@ -9159,7 +9094,10 @@ app.post('/api/commands/fullReset', async (_req, res) => {
 
     // 2. symbol-bootstrap stop (for V1 / any leftover)
     try {
-      execSync(`npx -y symbol-bootstrap stop -t "${TARGET_DIR}"`, {
+      // The installed binary, not npx: this ran an unpinned registry version,
+      // which could stop containers under a different project name than the one
+      // the launcher started.
+      execSync(`"${BOOTSTRAP_BIN}" stop -t "${TARGET_DIR}"`, {
         cwd: '/',
         timeout: 60_000,
         stdio: 'pipe',
@@ -9793,7 +9731,16 @@ function resolveBootstrapPresetsDirs(): string[] {
   const add = (dir: string) => {
     if (fs.existsSync(dir) && !dirs.includes(dir)) dirs.push(dir);
   };
-  // The npx cache is what runBootstrapCommand() actually executes, so prefer it.
+
+  // The installed package is what runBootstrapCommand() executes, so its presets
+  // are the ones that match the network this launcher builds. Reading any other
+  // copy would hand the Config screen an inflation or finalization schedule from
+  // a different symbol-bootstrap, and a joining node that takes the wrong
+  // inflation schedule diverges at the first height that pays a block reward.
+  add(path.join(resolveBootstrapRoot(), 'presets'));
+
+  // Fallbacks for images built before the switch to a fixed install path.
+  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
   try {
     const npxCacheDir = path.join(process.env.HOME || '/root', '.npm', '_npx');
     if (fs.existsSync(npxCacheDir)) {
@@ -9801,8 +9748,8 @@ function resolveBootstrapPresetsDirs(): string[] {
         add(path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'presets'));
       }
     }
-  } catch { /* fall through to the global install */ }
-  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
+  } catch { /* the entries above are enough */ }
+
   return dirs;
 }
 
