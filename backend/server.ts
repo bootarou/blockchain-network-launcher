@@ -2608,7 +2608,73 @@ function patchCertCaTemplates() {
   }
 }
 
-function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string) {
+// npx spec used to run symbol-bootstrap when no cached or global binary exists.
+// Shared with runBootstrapCommand() so priming can never fetch a different
+// version than the one that actually generates the configuration.
+const BOOTSTRAP_NPX_SPEC = 'symbol-bootstrap@1.1.10';
+const BOOTSTRAP_PRIME_TIMEOUT_MS = 180_000;
+
+/**
+ * Materialise symbol-bootstrap so that its mustache templates exist on disk.
+ *
+ * runBootstrapCommand() falls back to `npx <spec>`, which downloads the package
+ * on first use.  Until that has happened once, there is nothing for
+ * patchMustacheTemplates() to patch, so the first `symbol-bootstrap config` on a
+ * clean machine generates a config-node.properties without the properties nemgen
+ * requires and dies with "property not found (cache_database, maxLogFiles)".
+ * The retry then succeeds only because the failed run left the package in the
+ * npx cache.
+ *
+ * Priming deliberately does not run on every start - it can stall on a slow
+ * network.  It runs only when nothing patchable was found, which is precisely
+ * the state that would otherwise guarantee a failed start.  A timeout or a
+ * non-zero exit is non-fatal: the start continues and may still succeed.
+ */
+async function primeBootstrapTemplates(): Promise<void> {
+  broadcastLog(`[Pre-Patch] Priming ${BOOTSTRAP_NPX_SPEC} so its templates exist on disk...\n`);
+
+  await new Promise<void>((resolve) => {
+    const cp = spawn('npx', ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC, '--version'], {
+      cwd: '/',
+      env: { ...process.env, FORCE_COLOR: '0' },
+      shell: false,
+    });
+
+    let settled = false;
+    const finish = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      broadcastLog(message);
+      resolve();
+    };
+
+    const timer = setTimeout(() => {
+      try { cp.kill('SIGKILL'); } catch { /* already gone */ }
+      finish(`[Pre-Patch] ⚠️  Priming timed out after ${BOOTSTRAP_PRIME_TIMEOUT_MS / 1000}s — continuing\n`);
+    }, BOOTSTRAP_PRIME_TIMEOUT_MS);
+
+    // Drain both streams so the child cannot block on a full pipe. The output is
+    // npm install noise and is not worth showing.
+    cp.stdout?.on('data', () => {});
+    cp.stderr?.on('data', () => {});
+
+    cp.on('error', (e: Error) => finish(`[Pre-Patch] ⚠️  Priming failed: ${e.message} — continuing\n`));
+    cp.on('close', (code) => finish(
+      code === 0
+        ? '[Pre-Patch] Priming complete\n'
+        : `[Pre-Patch] ⚠️  Priming exited with code ${code} — continuing\n`,
+    ));
+  });
+}
+
+/**
+ * Patches the symbol-bootstrap mustache templates in place.
+ *
+ * Returns the number of template files that were found, so the caller can tell
+ * "everything was already correct" apart from "there was nothing to patch".
+ */
+function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string): number {
   // Keep version defaults during config generation. Nemgen requires
   // fork_heights.uniqueAggregateTransactionHash to be parseable (non-empty).
   // Official network fork heights are patched later from source node properties.
@@ -2617,6 +2683,8 @@ function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string
   const templateDirs = resolveBootstrapTemplateDirs();
   broadcastLog(`[Pre-Patch] Version: ${version.id}, patches: ${patches.length}, template dirs: ${templateDirs.length}\n`);
 
+  let templatesFound = 0;
+
   for (const templateDir of templateDirs) {
   for (const patch of patches) {
     const templatePath = path.join(templateDir, patch.file + '.mustache');
@@ -2624,6 +2692,7 @@ function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string
       broadcastLog(`[Pre-Patch] ⚠️  Template not found: ${templatePath}\n`);
       continue;
     }
+    templatesFound++;
 
     let content = fs.readFileSync(templatePath, 'utf-8');
     let patched = false;
@@ -2726,6 +2795,8 @@ function patchMustacheTemplates(version: CatapultVersionDef, basePreset?: string
     }
   }
   } // end for templateDirs
+
+  return templatesFound;
 }
 
 /**
@@ -6517,7 +6588,7 @@ function runBootstrapCommand(
 
     if (!bootstrapCmd) {
       bootstrapCmd = 'npx';
-      bootstrapArgs = ['-y', '--prefer-offline', 'symbol-bootstrap@1.1.10', command, ...resolvedArgs];
+      bootstrapArgs = ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC, command, ...resolvedArgs];
     }
 
     // CWD must be '/' because symbol-bootstrap internally does
@@ -8534,13 +8605,34 @@ app.post('/api/commands/start', async (req, res) => {
       const patchedTag = await ensurePatchedImage(version);
 
       // Step 0c: Pre-patch mustache templates so nemgen sees all required props
-      //   IMPORTANT: npx cache priming can hang on unstable networks and block
-      //   startup. We skip explicit priming here and patch whatever template
-      //   copies are currently discoverable.
+      //   Priming is not done up front: it can hang on unstable networks and
+      //   block startup, and normally the templates are already on disk.  We
+      //   patch whatever copies are discoverable first.
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
-      broadcastLog('[Pre-Patch] Skipping npx cache priming for startup stability\n');
-      patchMustacheTemplates(version, basePreset);
-      // CA cert extensions (OpenSSL ≥3.6 strictness — see patchCertCaTemplates)
+      let templatesFound = patchMustacheTemplates(version, basePreset);
+
+      //   ...but finding nothing is different from finding nothing to do.  On a
+      //   machine where symbol-bootstrap has never run, the package is not on
+      //   disk yet (runBootstrapCommand falls back to `npx`, which downloads it
+      //   at Step 1), so there is no template to patch and the generated config
+      //   is missing properties nemgen requires — the first start on a clean
+      //   machine always fails with "property not found (cache_database,
+      //   maxLogFiles)", and only succeeds on retry because the failed run
+      //   populated the npx cache.  Prime once here so the first start behaves
+      //   like the retry.  This costs nothing in the normal case, because it
+      //   only runs when nothing patchable exists.
+      if (templatesFound === 0 && version.configPatches.length > 0) {
+        broadcastLog('[Pre-Patch] No templates on disk — priming symbol-bootstrap once\n');
+        await primeBootstrapTemplates();
+        templatesFound = patchMustacheTemplates(version, basePreset);
+        if (templatesFound === 0) {
+          broadcastLog('[Pre-Patch] ⚠️  Still no templates after priming; '
+            + 'nemgen may reject the generated config\n');
+        }
+      }
+
+      // CA cert extensions (OpenSSL ≥3.6 strictness — see patchCertCaTemplates).
+      // Runs after any priming so that a freshly materialised copy is patched too.
       patchCertCaTemplates();
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
