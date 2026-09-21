@@ -30,6 +30,34 @@ fail() {
   exit 1
 }
 
+# retry <attempts> <description> <command...>
+#
+# Network operations here are not safe to attempt only once. A single reset
+# while cloning aborts the whole installation after the user has already
+# answered every prompt - branch, bind address and admin password - and the
+# error they see ("Recv failure: Connection reset by peer") reads like a broken
+# installer rather than a dropped connection. Retrying costs nothing when the
+# first attempt succeeds.
+retry() {
+  local attempts="$1"; shift
+  local description="$1"; shift
+  local attempt=1
+  local delay=3
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if (( attempt >= attempts )); then
+      fail "$description failed after $attempts attempts (check network connectivity from inside WSL)"
+    fi
+    warn "$description failed (attempt $attempt/$attempts); retrying in ${delay}s"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
 # Keep the WSL distro alive after the Windows-side wsl.exe command returns.
 # Docker/systemd services alone are not relied on for the WSL lifetime.
 start_bnl_keepalive() {
@@ -112,7 +140,8 @@ else
   fi
 
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$DOCKER_KEYRING"
+  curl -fsSL --retry 3 --retry-connrefused --connect-timeout 20 \
+    https://download.docker.com/linux/ubuntu/gpg -o "$DOCKER_KEYRING"
   chmod a+r "$DOCKER_KEYRING"
 
   cat > "$DOCKER_SOURCE" <<EOF
@@ -178,7 +207,7 @@ log "Preparing BNL repository ($BNL_BRANCH)"
 
 if [[ -d "$BNL_DIR/.git" ]]; then
   cd "$BNL_DIR"
-  git fetch --prune origin
+  retry 3 "Fetching from origin" git fetch --prune origin
 
   git show-ref --verify --quiet "refs/remotes/origin/$BNL_BRANCH" \
     || fail "Remote branch origin/$BNL_BRANCH was not found"
@@ -208,7 +237,13 @@ else
   if [[ -e "$BNL_DIR" ]]; then
     fail "$BNL_DIR exists but is not a Git repository"
   fi
-  git clone --branch "$BNL_BRANCH" --single-branch "$BNL_REPO" "$BNL_DIR"
+  # The directory is known not to exist (the check above fails otherwise), so a
+  # leftover here can only be a partial clone from a previous attempt.
+  clone_bnl_repo() {
+    rm -rf "$BNL_DIR"
+    git clone --branch "$BNL_BRANCH" --single-branch "$BNL_REPO" "$BNL_DIR"
+  }
+  retry 3 "Cloning $BNL_REPO" clone_bnl_repo
   cd "$BNL_DIR"
 fi
 
