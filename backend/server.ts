@@ -2615,6 +2615,43 @@ const BOOTSTRAP_NPX_SPEC = 'symbol-bootstrap@1.1.10';
 const BOOTSTRAP_PRIME_TIMEOUT_MS = 180_000;
 
 /**
+ * Decides which symbol-bootstrap will actually run.
+ *
+ * There can be several copies on disk - a global install, and one per npx cache
+ * entry - and the whole class of bug this guards against is "the copy we patch
+ * is not the copy that runs".  Step 0c therefore asks this the same question
+ * runBootstrapCommand() does, instead of guessing.
+ *
+ * Preference order: a cached npx binary, then a global binary, then npx (which
+ * downloads the package on first use).
+ */
+function resolveBootstrapInvocation(): { cmd: string; prefixArgs: string[]; usesNpx: boolean } {
+  try {
+    const cached = execSync(
+      'find /root/.npm/_npx -type l -path "*/node_modules/.bin/symbol-bootstrap" 2>/dev/null | sort | tail -n 1',
+      { timeout: 5_000, stdio: 'pipe' },
+    ).toString().trim();
+    if (cached && fs.existsSync(cached)) {
+      return { cmd: cached, prefixArgs: [], usesNpx: false };
+    }
+  } catch { /* fall through */ }
+
+  try {
+    const globalBin = execSync('command -v symbol-bootstrap 2>/dev/null || true', {
+      timeout: 3_000,
+      stdio: 'pipe',
+    }).toString().trim();
+    // existsSync follows symlinks, so a global bin left dangling by npm is
+    // correctly rejected here rather than failing later at spawn time.
+    if (globalBin && fs.existsSync(globalBin)) {
+      return { cmd: globalBin, prefixArgs: [], usesNpx: false };
+    }
+  } catch { /* fall through */ }
+
+  return { cmd: 'npx', prefixArgs: ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC], usesNpx: true };
+}
+
+/**
  * Materialise symbol-bootstrap so that its mustache templates exist on disk.
  *
  * runBootstrapCommand() falls back to `npx <spec>`, which downloads the package
@@ -6560,36 +6597,9 @@ function runBootstrapCommand(
 
     // Prefer a cached symbol-bootstrap binary to avoid npx network stalls.
     // Fallback to npx only when no cached/global binary exists.
-    let bootstrapCmd = '';
-    let bootstrapArgs: string[] = [];
-    try {
-      const cached = execSync(
-        'find /root/.npm/_npx -type l -path "*/node_modules/.bin/symbol-bootstrap" 2>/dev/null | sort | tail -n 1',
-        { timeout: 5_000, stdio: 'pipe' },
-      ).toString().trim();
-      if (cached && fs.existsSync(cached)) {
-        bootstrapCmd = cached;
-        bootstrapArgs = [command, ...resolvedArgs];
-      }
-    } catch { /* fall through */ }
-
-    if (!bootstrapCmd) {
-      try {
-        const globalBin = execSync('command -v symbol-bootstrap 2>/dev/null || true', {
-          timeout: 3_000,
-          stdio: 'pipe',
-        }).toString().trim();
-        if (globalBin && fs.existsSync(globalBin)) {
-          bootstrapCmd = globalBin;
-          bootstrapArgs = [command, ...resolvedArgs];
-        }
-      } catch { /* fall through */ }
-    }
-
-    if (!bootstrapCmd) {
-      bootstrapCmd = 'npx';
-      bootstrapArgs = ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC, command, ...resolvedArgs];
-    }
+    const invocation = resolveBootstrapInvocation();
+    const bootstrapCmd = invocation.cmd;
+    const bootstrapArgs = [...invocation.prefixArgs, command, ...resolvedArgs];
 
     // CWD must be '/' because symbol-bootstrap internally does
     //   path.join(process.cwd(), target)  — in ComposeService
@@ -8609,6 +8619,20 @@ app.post('/api/commands/start', async (req, res) => {
       //   block startup, and normally the templates are already on disk.  We
       //   patch whatever copies are discoverable first.
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
+
+      //   The copy that runs has to be the copy we patch.  When neither a cached
+      //   npx binary nor a usable global binary exists, `symbol-bootstrap config`
+      //   fetches its own copy through npx at Step 1 - after this patching - and
+      //   generates the configuration from those untouched templates, even though
+      //   another copy (a global install, which may be a symlink into npm's cache)
+      //   was patched here.  Materialise the npx copy first so that it is one of
+      //   the copies patched below.
+      if (version.configPatches.length > 0 && resolveBootstrapInvocation().usesNpx) {
+        broadcastLog('[Pre-Patch] symbol-bootstrap will run via npx and is not downloaded yet '
+          + '— priming so the copy that runs is the copy that gets patched\n');
+        await primeBootstrapTemplates();
+      }
+
       let templatesFound = patchMustacheTemplates(version, basePreset);
 
       //   ...but finding nothing is different from finding nothing to do.  On a
