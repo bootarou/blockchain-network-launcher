@@ -2538,6 +2538,24 @@ app.post('/api/images/import', (req, res) => {
  * inside `symbol-bootstrap config`) sees all required properties.
  * This must be called BEFORE `symbol-bootstrap config`.
  */
+/**
+ * Returns the root directory of the installed PQC symbol-bootstrap package.
+ *
+ * Everything that reads from the package - the nemgen mustache templates and the
+ * network presets - resolves through here, so they cannot drift apart and end up
+ * describing two different symbol-bootstrap installs.
+ */
+function resolveBootstrapRoot(): string {
+  try {
+    const bin = process.env.SYMBOL_BOOTSTRAP_BIN || '/opt/symbol-bootstrap/bin/run';
+    if (fs.existsSync(bin)) {
+      // <root>/bin/run, reached through the /usr/local/bin symlink.
+      return path.dirname(path.dirname(fs.realpathSync(bin)));
+    }
+  } catch { /* fall through to the default */ }
+  return '/opt/symbol-bootstrap';
+}
+
 function resolveBootstrapTemplateDirs(): string[] {
   const { execSync } = require('child_process') as typeof import('child_process');
   const dirs: string[] = [];
@@ -2555,10 +2573,7 @@ function resolveBootstrapTemplateDirs(): string[] {
   // /opt/symbol-bootstrap). This is where runBootstrapCommand() executes from,
   // so it is the authoritative template location.
   try {
-    const bin = process.env.SYMBOL_BOOTSTRAP_BIN || '/opt/symbol-bootstrap/bin/run';
-    const realBin = fs.existsSync(bin) ? fs.realpathSync(bin) : bin;   // follow /usr/local/bin symlink
-    const sbRoot = path.dirname(path.dirname(realBin));                // <root>/bin/run → <root>
-    const candidate = path.join(sbRoot, 'config', 'node', 'resources');
+    const candidate = path.join(resolveBootstrapRoot(), 'config', 'node', 'resources');
     if (fs.existsSync(candidate)) addDir(candidate, 'pqc install');
   } catch { /* fall through */ }
 
@@ -10034,7 +10049,19 @@ function resolveBootstrapPresetsDirs(): string[] {
   const add = (dir: string) => {
     if (fs.existsSync(dir) && !dirs.includes(dir)) dirs.push(dir);
   };
-  // The npx cache is what runBootstrapCommand() actually executes, so prefer it.
+  // The PQC install is what runBootstrapCommand() executes, so its presets are
+  // the ones that match the network this launcher builds.
+  //
+  // This used to prefer the npx cache, from before the switch to a fixed install
+  // path. Nothing runs from there any more, so any copy left in it is a classic
+  // (ed25519) symbol-bootstrap - and reading its presets would hand the Config
+  // screen inflation and finalization schedules from the wrong edition. A joining
+  // node that takes the wrong inflation schedule diverges from the network at the
+  // first height that pays a block reward.
+  add(path.join(resolveBootstrapRoot(), 'presets'));
+
+  // Fallbacks for images built before the fixed install path.
+  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
   try {
     const npxCacheDir = path.join(process.env.HOME || '/root', '.npm', '_npx');
     if (fs.existsSync(npxCacheDir)) {
@@ -10042,8 +10069,8 @@ function resolveBootstrapPresetsDirs(): string[] {
         add(path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'presets'));
       }
     }
-  } catch { /* fall through to the global install */ }
-  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
+  } catch { /* the entries above are enough */ }
+
   return dirs;
 }
 
