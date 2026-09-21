@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v22 beta)
+# BNL One-Line Installer for Windows + WSL2 (v23 beta)
 # Usage (PowerShell):
 #   $p = Join-Path $env:TEMP 'bnl-install.ps1'
 #   Invoke-WebRequest 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1' -OutFile $p
@@ -293,19 +293,68 @@ function Remove-ResumeAfterReboot {
     Remove-ItemProperty -Path $runOncePath -Name $RunOnceName -ErrorAction SilentlyContinue
 }
 
+function Invoke-WslQuery {
+    param([Parameter(Mandatory=$true)][string]$Arguments)
+
+    # Query wsl.exe through the process API instead of the call operator, for two
+    # reasons that both break machines where WSL is not installed yet:
+    #
+    #   1. Under $ErrorActionPreference = 'Stop', anything a native command writes
+    #      to stderr becomes a terminating NativeCommandError in Windows
+    #      PowerShell 5.1 - even with 2>$null, and before $LASTEXITCODE can be
+    #      checked. wsl.exe reports "WSL is not installed" on stderr, so the
+    #      installer aborted instead of going on to install WSL.
+    #   2. wsl.exe writes UTF-16LE. Decoding it with the console code page turns
+    #      the message into mojibake, which is what users saw in the error above.
+    $result = [pscustomobject]@{ ExitCode = -1; Output = @(); Error = '' }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'wsl.exe'
+    $psi.Arguments = $Arguments
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::Unicode
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::Unicode
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+
+    try {
+        if (-not $process.Start()) { return $result }
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+
+        $result.ExitCode = $process.ExitCode
+        $result.Output = @($stdout -split "`r?`n")
+        $result.Error = $stderr.Trim()
+        return $result
+    }
+    catch {
+        # wsl.exe missing entirely (no WSL optional feature) lands here.
+        return $result
+    }
+    finally {
+        if ($process) { $process.Dispose() }
+    }
+}
+
 function Get-WslDistros {
-    $raw = & wsl.exe -l -q 2>$null
-    if ($LASTEXITCODE -ne 0) { return @() }
-    return @($raw | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
+    $result = Invoke-WslQuery -Arguments '-l -q'
+    if ($result.ExitCode -ne 0) { return @() }
+    return @($result.Output | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ })
 }
 
 function Get-WslDistroVersion {
     param([Parameter(Mandatory=$true)][string]$Name)
 
-    $raw = & wsl.exe -l -v 2>$null
-    if ($LASTEXITCODE -ne 0) { return $null }
+    $result = Invoke-WslQuery -Arguments '-l -v'
+    if ($result.ExitCode -ne 0) { return $null }
 
-    foreach ($line in $raw) {
+    foreach ($line in $result.Output) {
         $clean = (($line -replace "`0", '').Trim() -replace '^\*\s*', '')
         if (-not $clean) { continue }
 
@@ -621,7 +670,9 @@ try {
         }
 
         # Make sure no VM instance is in a transitional/running state before conversion.
-        & wsl.exe --terminate $DistroName 2>$null | Out-Null
+        # Terminating a distro that is not running writes to stderr, which would
+        # abort the installer under $ErrorActionPreference = 'Stop'.
+        try { & wsl.exe --terminate $DistroName 2>$null | Out-Null } catch { }
         Start-Sleep -Seconds 2
 
         & wsl.exe --set-version $DistroName 2 | Out-Host
@@ -761,7 +812,14 @@ fi
     $existingAdminPassword = $false
     $changeAdminPassword = $false
     $adminCheckCommand = "if [ -f /opt/bnl/.env ] && grep -Eq '^[[:space:]]*ADMIN_PASSWORD=.+$' /opt/bnl/.env; then printf SET; fi"
-    $adminCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $adminCheckCommand 2>$null | Out-String).Trim()
+    $adminCheck = ''
+    try {
+        $adminCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $adminCheckCommand 2>$null | Out-String).Trim()
+    }
+    catch {
+        # Anything bash writes to stderr (a locale warning from -l, for example)
+        # would otherwise abort the installer under $ErrorActionPreference='Stop'.
+    }
     if ($adminCheck -eq 'SET') {
         $existingAdminPassword = $true
         $adminAction = Read-BnlAdminPasswordAction
