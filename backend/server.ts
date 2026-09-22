@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import yaml from 'js-yaml';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
+import { buildNemesisSeedState } from './nemesis-seed.js';
 import { decryptAddressesObj } from './addresses-crypto.js';
 import {
   BeaconProducerError,
@@ -6012,64 +6013,6 @@ function writeUint16LE(value: number): Buffer {
 function hexToBuffer(hex: string): Buffer {
   return Buffer.from(hex, 'hex');
 }
-/**
- * Build a proper proof.index.dat (48 bytes) = FinalizationStatistics:
- *   Epoch (uint32) + Point (uint32) + Height (uint64) + Hash (32 bytes)
- * The catapult FinalizationIndexFile::get() requires exactly 48 bytes;
- * if the file is any other size it returns all-zero statistics (Height=0)
- * which causes LoadHashAtHeight to crash with a NULL-pointer dereference.
- */
-function buildProofIndexDat(nemesisEntityHash: Buffer | string): Buffer {
-  const hash = typeof nemesisEntityHash === 'string'
-    ? Buffer.from(nemesisEntityHash, 'hex')
-    : nemesisEntityHash;
-  return Buffer.concat([
-    writeUint32LE(1),   // Epoch = 1
-    writeUint32LE(1),   // Point = 1
-    writeUint64LE(1),   // Height = 1
-    hash,               // 32-byte nemesis block EntityHash
-  ]);
-}
-
-/**
- * proof.index.dat for a joining node, seeded from the source node's CURRENT
- * finalization statistics instead of the nemesis statistics.
- *
- * Writing epoch 1 here is a trap: with unfinalizedBlocksDuration = 0m,
- * catapult's local-finalized-height supplier loads the proof of
- * (statistics.epoch - 1) during every chain compare.  At epoch 1 that is
- * epoch 0, and the server dies with "loadProof called with epoch 0" as soon
- * as the network has finalized epoch 2 — a boot crash-loop (and a segfault
- * in the gcc-1.0.3.9 patched build, observed 2026-07-04).  Seeding current
- * statistics (epoch ≥ 2) makes that lookup resolve to the locally present
- * nemesis proof instead.
- */
-async function buildProofIndexFromSource(sourceNodeUrl: string, nemesisEntityHash: Buffer | string): Promise<Buffer> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    const r = await fetch(`${sourceNodeUrl.replace(/\/+$/, '')}/chain/info`, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (r.ok) {
-      const info = await r.json() as { latestFinalizedBlock?: { finalizationEpoch: number; finalizationPoint: number; height: string; hash: string } };
-      const fin = info?.latestFinalizedBlock;
-      const epoch = Number(fin?.finalizationEpoch ?? 0);
-      if (fin && epoch >= 2 && /^[0-9A-Fa-f]{64}$/.test(String(fin.hash))) {
-        broadcastLog(`[Nemesis] proof.index.dat seeded from source finalization (epoch ${epoch}, height ${fin.height})\n`);
-        return Buffer.concat([
-          writeUint32LE(epoch),
-          writeUint32LE(Number(fin.finalizationPoint)),
-          writeUint64LE(Number(fin.height)),
-          Buffer.from(String(fin.hash), 'hex'),
-        ]);
-      }
-      broadcastLog(`[Nemesis] ⚠️ Source finalization epoch is still ${epoch || 1} — using nemesis statistics. If the node starts crash-looping once the network finalizes epoch 2, re-import / reset data to pick up current statistics.\n`);
-    }
-  } catch (e: any) {
-    broadcastLog(`[Nemesis] ⚠️ Could not fetch source finalization statistics (${e.message}) — using nemesis statistics\n`);
-  }
-  return buildProofIndexDat(nemesisEntityHash);
-}
 /** Convert a hex-encoded uint64 (big-endian display) → little-endian Buffer */
 function hexUint64ToLE(hex: string): Buffer {
   const buf = Buffer.from(hex.padStart(16, '0'), 'hex');
@@ -6286,7 +6229,8 @@ async function installImportedSeed(targetDir: string): Promise<void> {
 
   const elementBuf = fs.readFileSync(path.join(seedSrc, '00001.dat'));
   const stmtBuf = fs.readFileSync(path.join(seedSrc, '00001.stmt'));
-  const hashesBuf = fs.readFileSync(path.join(seedSrc, 'hashes.dat'));
+  const seedState = buildNemesisSeedState(elementBuf);
+  const hashesBuf = seedState.hashes;
 
   broadcastLog(`[Nemesis] Imported seed: 00001.dat=${elementBuf.length}B, 00001.stmt=${stmtBuf.length}B, hashes.dat=${hashesBuf.length}B\n`);
 
@@ -6299,27 +6243,19 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   fs.writeFileSync(path.join(seedDir, '00001.stmt'), stmtBuf);
   fs.writeFileSync(path.join(seedDir, 'hashes.dat'), hashesBuf);
 
-  // Copy optional files if present
-  for (const opt of ['00001.proof', 'proof.heights.dat']) {
+  // The imported package is a genesis seed, not a chain snapshot.
+  fs.writeFileSync(path.join(seedDir, '00001.proof'), seedState.proof);
+  for (const opt of ['proof.heights.dat']) {
     const src = path.join(seedSrc, opt);
     if (fs.existsSync(src)) fs.writeFileSync(path.join(seedDir, opt), fs.readFileSync(src));
   }
 
   // index.dat
-  const indexSrc = path.join(SEED_DIR, 'index.dat');
-  fs.writeFileSync(path.join(seedBase, 'index.dat'),
-    fs.existsSync(indexSrc) ? fs.readFileSync(indexSrc) : writeUint64LE(1));
+  fs.writeFileSync(path.join(seedBase, 'index.dat'), seedState.index);
 
   // proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-  // hashes.dat layout: [NullHash(32) | EntityHash(32) | ...]
-  const nemesisEntityHash = hashesBuf.subarray(32, 64);
-  let importSourceUrl = '';
-  try {
-    if (fs.existsSync(UI_META_PATH)) importSourceUrl = String(parseJsonFile(UI_META_PATH).sourceNodeUrl || '');
-  } catch { /* ignore */ }
-  const proofIndexBuf = importSourceUrl
-    ? await buildProofIndexFromSource(importSourceUrl, nemesisEntityHash)
-    : buildProofIndexDat(nemesisEntityHash);
+  const proofIndexBuf = seedState.proofIndex;
+  broadcastLog('[Nemesis] Starting synchronization from nemesis (epoch 1, height 1)\n');
   fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
 
   // --- Patch data/00000/ inside each node directory ---
@@ -6349,11 +6285,8 @@ async function installImportedSeed(targetDir: string): Promise<void> {
       fs.writeFileSync(path.join(dataDir00, '00001.stmt'), stmtBuf);
       fs.writeFileSync(path.join(dataDir00, 'hashes.dat'), hashesBuf);
 
-      // Optional proof
-      const proofSrc = path.join(seedSrc, '00001.proof');
-      if (fs.existsSync(proofSrc)) {
-        fs.writeFileSync(path.join(dataDir00, '00001.proof'), fs.readFileSync(proofSrc));
-      }
+      // Genesis proof must agree with the local finalization index.
+      fs.writeFileSync(path.join(dataDir00, '00001.proof'), seedState.proof);
       const phSrc = path.join(seedSrc, 'proof.heights.dat');
       if (fs.existsSync(phSrc)) {
         fs.writeFileSync(path.join(dataDir00, 'proof.heights.dat'), fs.readFileSync(phSrc));
@@ -6438,6 +6371,7 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   elemParts.push(writeUint32LE(merkleRoots.length));
   for (const r of merkleRoots) elemParts.push(hexToBuffer(r));
   const elementBuf = Buffer.concat(elemParts);
+  const seedState = buildNemesisSeedState(elementBuf);
 
   // --- Write seed files ---
   const seedBase = path.join(targetDir, 'nemesis', 'seed');
@@ -6447,29 +6381,19 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   // 00001.dat
   fs.writeFileSync(path.join(seedDir, '00001.dat'), elementBuf);
 
-  // hashes.dat  (entityHash 32 + generationHash 32 = 64)
-  fs.writeFileSync(path.join(seedDir, 'hashes.dat'),
-    Buffer.concat([hexToBuffer(meta.hash), hexToBuffer(meta.generationHash)]));
+  fs.writeFileSync(path.join(seedDir, 'hashes.dat'), seedState.hashes);
 
   // index.dat  (uint64 height = 1)
   fs.writeFileSync(path.join(seedBase, 'index.dat'), writeUint64LE(1));
 
   // proof.index.dat — must be exactly 48 bytes (FinalizationStatistics)
-  const proofIndexBuf = await buildProofIndexFromSource(base, meta.hash);
+  const proofIndexBuf = seedState.proofIndex;
   fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
 
-  // proof.heights.dat  (epoch4 + point4 + height8 + hash32 = 48)
-  fs.writeFileSync(path.join(seedDir, 'proof.heights.dat'),
-    Buffer.concat([writeUint32LE(1), writeUint32LE(1), writeUint64LE(1), hexToBuffer(meta.hash)]));
+  fs.writeFileSync(path.join(seedDir, '00001.proof'), seedState.proof);
 
-  // 00001.proof  (version4 + epoch4 + point4 + height8 + hash32 + voteCount4 = 56)
-  fs.writeFileSync(path.join(seedDir, '00001.proof'),
-    Buffer.concat([writeUint32LE(1), writeUint32LE(1), writeUint32LE(1),
-                   writeUint64LE(1), hexToBuffer(meta.hash), writeUint32LE(0)]));
-
-  // 00001.stmt  (empty statement: 3 × uint32(0) = 12 bytes)
-  fs.writeFileSync(path.join(seedDir, '00001.stmt'),
-    Buffer.concat([writeUint32LE(0), writeUint32LE(0), writeUint32LE(0)]));
+  const stmtPayload = serializeNemesisStatements(txStmts, mosaicResolutions);
+  fs.writeFileSync(path.join(seedDir, '00001.stmt'), stmtPayload);
 
   broadcastLog(`[Nemesis] ✅ Seed rebuilt: 00001.dat=${elementBuf.length}B, hashes.dat=64B\n`);
 
@@ -6477,7 +6401,7 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   //   Catapult block files are named by block height: 00001.dat = block 1 (genesis).
   //   We write raw block element data (no 800-byte offset header).
   const datBlock = elementBuf;  // raw block element, no header
-  const datHashes = Buffer.concat([hexToBuffer(meta.hash), hexToBuffer(meta.generationHash)]);
+  const datHashes = seedState.hashes;
 
   const nodesDataDir = path.join(targetDir, 'nodes');
   broadcastLog(`[Nemesis] Checking nodesDataDir: ${nodesDataDir} exists=${fs.existsSync(nodesDataDir)}\n`);
@@ -6514,23 +6438,11 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
       fs.writeFileSync(hashPath, datHashes);
 
       // 00001.stmt – raw statement payload (no 800-byte header)
-      const stmtPayload = serializeNemesisStatements(txStmts, mosaicResolutions);
       const stmtBuf = stmtPayload;
       fs.writeFileSync(path.join(dataDir00, '00001.stmt'), stmtBuf);
 
       // 00001.proof – finalization proof entry (no 800-byte header)
-      const proofPayload = Buffer.concat([
-        writeUint32LE(52),            // entry size
-        writeUint32LE(1),             // finalization epoch
-        writeUint32LE(1),             // finalization point
-        writeUint64LE(1),             // height
-        hexToBuffer(meta.hash),       // block hash
-      ]);
-      fs.writeFileSync(path.join(dataDir00, '00001.proof'), proofPayload);
-
-      // proof.heights.dat (no 800-byte header in this file)
-      fs.writeFileSync(path.join(dataDir00, 'proof.heights.dat'),
-        Buffer.concat([writeUint32LE(1), writeUint32LE(1), writeUint64LE(1), hexToBuffer(meta.hash)]));
+      fs.writeFileSync(path.join(dataDir00, '00001.proof'), seedState.proof);
 
       // data/index.dat  (uint64 = 1 = current chain height)
       fs.writeFileSync(path.join(dataDir, 'index.dat'), writeUint64LE(1));
@@ -9173,6 +9085,7 @@ app.post('/api/commands/start', async (req, res) => {
             } catch (e: any) {
               broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
               broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
+              throw e;
             }
           } else if (sourceUrl) {
             try {
@@ -9181,6 +9094,7 @@ app.post('/api/commands/start', async (req, res) => {
             } catch (e: any) {
               broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
               broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
+              throw e;
             }
           } else {
             broadcastLog('[System] Step 4d – No imported seed and no source node URL; using local generation.\n');
@@ -9221,13 +9135,16 @@ app.post('/api/commands/start', async (req, res) => {
             for (const f of seedFiles) {
               fs.copyFileSync(path.join(nemSeedDir00, f), path.join(nodeSeedDir00, f));
             }
+            for (const f of ['index.dat', 'proof.index.dat']) {
+              const src = path.join(TARGET_DIR, 'nemesis', 'seed', f);
+              if (fs.existsSync(src)) fs.copyFileSync(src, path.join(nodeDir, 'seed', f));
+            }
             broadcastLog(`[System] ✅ ${nodeName}/seed/00000/ updated: ${seedFiles.join(', ')}\n`);
 
-            // Only force-update data/00000/ on upgrade/restart (non-empty data dir).
-            // On fresh start, leave data/00000/ empty so the container's own
-            // seed→data copy works without EEXIST conflicts.
+            // Only copy into data populated during this fresh setup. A restart
+            // or backup restore must retain its synchronized proofs and indexes.
             const dataHasBlocks = fs.existsSync(path.join(nodeDataDir00, '00001.dat'));
-            if (dataHasBlocks) {
+            if (dataHasBlocks && !dataExists) {
               for (const f of seedFiles) {
                 // Skip overwriting hashes.dat if the existing one is larger —
                 // it contains hashes for blocks generated beyond genesis.
