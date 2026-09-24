@@ -10,6 +10,7 @@ import yaml from 'js-yaml';
 import archiver from 'archiver';
 import { BackupFiles } from './backup-files.js';
 import { LocalRecovery, queueProblems } from './local-recovery.js';
+import { CertificateRenewal, CertificateError, redactBootstrapArgs, secretLogFilter } from './certificate-renewal.js';
 import AdmZip from 'adm-zip';
 import { buildNemesisSeedState } from './nemesis-seed.js';
 import { decryptAddressesObj } from './addresses-crypto.js';
@@ -272,8 +273,12 @@ let isStartSequenceInFlight = false;
 
 const backupFiles = new BackupFiles(path.join(SHARED_DIR, 'backups'));
 const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog);
+const certificateRenewal = new CertificateRenewal(TARGET_DIR, PRESET_PATH, path.join(SHARED_DIR, 'certificate-renewal.json'), broadcastLog);
 let pendingMutations = 0;
 app.use('/api', (req, res, next) => {
+  if (certificateRenewal.busy && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return res.status(409).json({ error: 'CERTIFICATE_RENEWAL_ACTIVE', renewal: certificateRenewal.status() });
+  }
   if (localRecovery.busy && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
       && !['/recovery/apply', '/recovery/abandon'].includes(req.path)) {
     return res.status(409).json({ error: 'LOCAL_RECOVERY_ACTIVE', recovery: localRecovery.status() });
@@ -2000,7 +2005,7 @@ app.get('/api/certificate-info', async (_req, res) => {
     const nodeCert = readCert(path.join(nodeCertDir, 'node.crt.pem'));
     const caCert = readCert(path.join(nodeCertDir, 'ca.cert.pem'));
     const restNodeCert = readCert(path.join(gatewayCertDir, 'node.crt.pem'));
-    const restCaCert = readCert(path.join(gatewayCertDir, 'rest-ca.cert.pem'));
+    const restCaCert = readCert(path.join(gatewayCertDir, 'ca.cert.pem'));
 
     // Also read preset config values for reference
     let presetNodeDays: number | null = null;
@@ -2017,6 +2022,8 @@ app.get('/api/certificate-info', async (_req, res) => {
 
     res.json({
       available: nodeCert.exists || caCert.exists,
+      renewal: certificateRenewal.status(),
+      renewalBusy: certificateRenewal.busy,
       nodeCert,
       caCert,
       restNodeCert,
@@ -2033,68 +2040,32 @@ app.get('/api/certificate-info', async (_req, res) => {
 
 // =============================================================================
 // Certificate renewal endpoint
-// Runs `symbol-bootstrap renewCertificates` then regenerates REST gateway cert.
-// Requires: node stopped, password.
+// Stage, validate and switch node/CA/REST certificates with unchanged identity.
 // =============================================================================
 app.post('/api/certificate-renew', async (req, res) => {
   try {
-    const { password, force } = req.body;
-    if (!password) {
+    const { password, force = false, mode = 'node' } = req.body || {};
+    if (typeof password !== 'string' || !password.trim()) {
       return res.status(400).json({ error: 'PASSWORD_REQUIRED' });
     }
-
-    // Node must be stopped
+    if (!['node', 'ca'].includes(mode) || typeof force !== 'boolean') {
+      return res.status(400).json({ error: 'INVALID_RENEWAL_OPTIONS' });
+    }
+    if (activeProcess || isStartSequenceInFlight || pendingMutations > 1 || backupFiles.busy || localRecovery.busy) {
+      return res.status(409).json({ error: 'OPERATION_IN_PROGRESS' });
+    }
     if (networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
       return res.status(409).json({ error: 'NODE_RUNNING' });
     }
-
-    // Certificate files must exist
-    const nodeCertDir = resolveNodeCertDir(TARGET_DIR);
-    if (!fs.existsSync(path.join(nodeCertDir, 'node.crt.pem'))) {
-      return res.status(404).json({ error: 'NO_CERTIFICATES' });
-    }
-
-    broadcastLog('[Cert] Starting certificate renewal...\n');
-
-    // Ensure the CA template has proper CA extensions before regeneration
-    // (required by OpenSSL ≥3.6 inside newer server images).
-    patchCertCaTemplates();
-
-    // Run symbol-bootstrap renewCertificates
-    const args = [`--password=${password}`];
-    if (force) args.push('--force');
-
-    try {
-      await runBootstrapCommand('renewCertificates', args, {
-        stateWhileRunning: 'stopping',   // reuse a transient state
-        stateOnSuccess: 'stopped',
-      });
-      broadcastLog('[Cert] ✅ Node certificates renewed via symbol-bootstrap\n');
-    } catch (err: any) {
-      broadcastLog(`[Cert] ⚠️  renewCertificates failed: ${err.message}\n`);
-      networkStatus.state = 'stopped';
-      broadcastStatus();
-      return res.status(500).json({ error: 'RENEW_FAILED', message: err.message });
-    }
-
-    // Re-sync REST gateway certificate (must match api-node after renewal)
-    try {
-      broadcastLog('[Cert] Re-syncing REST gateway certificate...\n');
-      generateRestGatewayCert(TARGET_DIR, true);
-      broadcastLog('[Cert] ✅ REST gateway certificate re-synced\n');
-    } catch (err: any) {
-      broadcastLog(`[Cert] ⚠️  REST gateway cert sync failed: ${err.message}\n`);
-      // Non-fatal: node cert was already renewed
-    }
-
-    broadcastLog('[Cert] ✅ Certificate renewal complete. Please restart the node.\n');
+    const result = await certificateRenewal.renew(password, mode, force);
     networkStatus.state = 'stopped';
     broadcastStatus();
-    res.json({ success: true });
+    res.json(result);
   } catch (err: any) {
-    networkStatus.state = 'stopped';
-    broadcastStatus();
-    res.status(500).json({ error: err.message });
+    res.status(err instanceof CertificateError ? err.status : 500).json({
+      error: err instanceof CertificateError ? err.code : 'CERTIFICATE_RENEWAL_FAILED',
+      renewal: certificateRenewal.status(),
+    });
   }
 });
 
@@ -6526,7 +6497,7 @@ function runBootstrapCommand(
   options?: { stateWhileRunning?: NetworkStatus['state']; stateOnSuccess?: NetworkStatus['state'] }
 ) {
   return new Promise<number>((resolve, reject) => {
-    const fullCmd = `symbol-bootstrap ${command} ${args.join(' ')}`;
+    const fullCmd = `symbol-bootstrap ${command} ${redactBootstrapArgs(args).join(' ')}`;
     broadcastLog(`\n[CMD] > ${fullCmd}\n`);
     broadcastLog(`[CMD] (target: ${TARGET_DIR})\n`);
 
@@ -6571,15 +6542,19 @@ function runBootstrapCommand(
     activeProcess = cp;
     networkStatus.pid = cp.pid ?? null;
 
+    const stdoutLog = secretLogFilter(args, broadcastLog);
+    const stderrLog = secretLogFilter(args, broadcastLog);
     cp.stdout?.on('data', (data: Buffer) => {
-      broadcastLog(data.toString());
+      stdoutLog(data.toString());
     });
 
     cp.stderr?.on('data', (data: Buffer) => {
-      broadcastLog(data.toString());
+      stderrLog(data.toString());
     });
 
     cp.on('close', (code) => {
+      stdoutLog('', true);
+      stderrLog('', true);
       activeProcess = null;
       networkStatus.pid = null;
 

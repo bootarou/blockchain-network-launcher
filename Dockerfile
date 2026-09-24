@@ -7,6 +7,7 @@ FROM node:20-bookworm
 # Install Docker CLI to interact with host docker daemon (DinD pattern)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    openssl \
     curl \
     gnupg \
     lsb-release \
