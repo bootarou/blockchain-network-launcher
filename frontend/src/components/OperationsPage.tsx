@@ -19,6 +19,7 @@ import { api } from '../lib/api';
 import { configToYaml, yamlToConfig } from '../lib/utils';
 import type { PresetConfig } from '../constants';
 import { TerminalLogs } from './TerminalLogs';
+import { LocalRecoveryStatus } from './LocalRecoveryStatus';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -34,6 +35,7 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeModal, setActiveModal] = useState<'start' | 'stop' | null>(null);
   const [networkState, setNetworkState] = useState<string>('stopped');
+  const [recoveryBusy, setRecoveryBusy] = useState(true);
 
   const fetchNetworkState = useCallback(async () => {
     try {
@@ -141,9 +143,7 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
     }
   };
 
-  // Crash diagnosis + auto-recovery: detects 0-byte block/state files left
-  // behind by an unexpected shutdown (power loss, forced reboot) and, after
-  // confirmation, resets data to seed for a network resync (keys preserved).
+  // Prepare a separate rebuilt dataset; applying it requires a second confirmation.
   const handleCrashRecovery = async () => {
     setCmdStatus((state) => ({ ...state, crashRecovery: 'running' }));
     const finish = (status: CommandStatus) => {
@@ -160,29 +160,6 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
         finish('idle');
         return;
       }
-      // Escalation path: file-level diagnosis can miss internal corruption
-      // (e.g. a poisoned RocksDB statedb that segfaults catapult on boot),
-      // so offer an explicit data reset when nothing is detected.
-      const runExplicitReset = async (withForce: boolean): Promise<boolean> => {
-        const r = await api.sendCommand('crashRecovery', withForce ? { resetData: true, force: true } : { resetData: true });
-        if (r.needsForce) {
-          if (!confirm(t('dashboard.confirmCrashForce'))) return false;
-          return runExplicitReset(true);
-        }
-        if (r.error) throw new Error(r.error);
-        alert(t('dashboard.crashResetDone'));
-        return true;
-      };
-
-      if (diag.verdict === 'clean') {
-        if (confirm(t('dashboard.crashOfferReset'))) {
-          finish((await runExplicitReset(false)) ? 'success' : 'idle');
-          return;
-        }
-        finish('success');
-        return;
-      }
-
       const damageList = [
         ...(diag.corruptBlockFiles ?? []),
         ...(diag.corruptStateFiles ?? []),
@@ -192,33 +169,10 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
         ...(diag.orphanSpoolFiles ?? []),
       ].slice(0, 8).join('\n');
 
-      let force = false;
-      if (diag.verdict === 'locks-only') {
-        if (!confirm(`${t('dashboard.confirmCrashClean')}\n\n${damageList}`)) {
-          finish('idle');
-          return;
-        }
-      } else {
-        const src = diag.resyncSource;
-        const srcLine = src?.ok
-          ? `${t('dashboard.crashResyncFrom')}: ${src.url} (height ${src.remoteHeight})`
-          : `${t('dashboard.crashNoSource')}\n(${src?.reason ?? ''})`;
-        if (!confirm(`${t('dashboard.confirmCrashReset')}\n\n${damageList}\n\n${srcLine}`)) {
-          finish('idle');
-          return;
-        }
-        if (!src?.ok) {
-          if (!confirm(t('dashboard.confirmCrashForce'))) {
-            finish('idle');
-            return;
-          }
-          force = true;
-        }
-      }
-
-      const result = await api.sendCommand('crashRecovery', force ? { force: true } : undefined);
+      if (!confirm(`${t('recovery.confirm.prepare')}\n\n${damageList}`)) { finish('idle'); return; }
+      const result = await api.sendCommand('crashRecovery');
       if (result.error) throw new Error(result.error);
-      alert(result.action === 'reset' ? t('dashboard.crashResetDone') : t('dashboard.crashCleanDone'));
+      setRecoveryBusy(true);
       finish('success');
     } catch (err) {
       alert(`${t('dashboard.crashRecoveryFailed')}\n${(err as Error).message}`);
@@ -317,7 +271,8 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
         <p className="text-zinc-400 text-sm">{t('operations.description')}</p>
       </div>
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-5 text-zinc-100">
+      <LocalRecoveryStatus onBusy={setRecoveryBusy} />
+      <fieldset disabled={recoveryBusy} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-5 text-zinc-100 min-w-0 disabled:opacity-60">
         <h3 className="text-xl font-bold flex items-center gap-2">
           <Activity className="w-5 h-5 text-indigo-400" />
           {t('dashboard.title')}
@@ -458,7 +413,7 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
             {t('dashboard.import')}
           </button>
         </div>
-      </div>
+      </fieldset>
 
       <div className="space-y-3">
         <div>

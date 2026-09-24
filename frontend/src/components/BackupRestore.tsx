@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Download, Upload, ShieldCheck, AlertTriangle, CheckCircle2, XCircle, FileArchive, RefreshCw } from 'lucide-react';
+import { Download, Upload, ShieldCheck, AlertTriangle, CheckCircle2, XCircle, FileArchive, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from '../i18n';
-import { api } from '../lib/api';
+import { api, type BackupFile } from '../lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -46,7 +46,13 @@ export function BackupRestore() {
   // ── Backup state ──
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [backups, setBackups] = useState<BackupFile[]>([]);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [listError, setListError] = useState(false);
+  const [listLoaded, setListLoaded] = useState(false);
+  const creating = backups.some(backup => backup.state === 'creating');
+  const backupBusy = creating || submitting;
   const [fullBackup, setFullBackup] = useState(false);
 
   // ── Restore state ──
@@ -74,25 +80,48 @@ export function BackupRestore() {
     fetchStatus();
   }, [fetchStatus]);
 
-  // ── Backup download handler ──
-  const handleDownload = async () => {
-    setDownloading(true);
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const data = await api.listBackups();
+        if (!disposed) {
+          setBackups(data.backups);
+          setStatus(previous => previous ? { ...previous, nodeState: data.nodeState } : previous);
+          setListError(false);
+          setListLoaded(true);
+        }
+      } catch { if (!disposed) setListError(true); }
+      finally { if (!disposed) timer = setTimeout(poll, 2000); }
+    };
+    void poll();
+    return () => { disposed = true; clearTimeout(timer); };
+  }, []);
+
+  const handleCreate = async () => {
+    setSubmitting(true);
+    setBackupError(null);
     try {
-      const url = api.getBackupDownloadUrl(fullBackup);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = '';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } finally {
-      // Small delay to let the download start
-      setTimeout(() => setDownloading(false), 2000);
-    }
+      const job = await api.createBackup(fullBackup);
+      setBackups(previous => [job, ...previous.filter(item => item.id !== job.id)]);
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : String(error));
+    } finally { setSubmitting(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm(t('backup.saved.confirmDelete'))) return;
+    setBackupError(null);
+    try {
+      await api.deleteBackup(id);
+      setBackups(previous => previous.filter(job => job.id !== id));
+    } catch (error) { setBackupError(error instanceof Error ? error.message : String(error)); }
   };
 
   // ── Restore handler ──
   const handleRestore = async (file: File) => {
+    if (status?.nodeState !== 'stopped' || restoring || backupBusy || !listLoaded || listError) return;
     if (!confirm(t('backup.restore.confirm'))) return;
 
     setRestoring(true);
@@ -206,15 +235,15 @@ export function BackupRestore() {
                       key={key}
                       className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-zinc-800/50 border border-zinc-700/50"
                     >
-                      <div className="flex items-center gap-3">
-                        <FileArchive className="w-4 h-4 text-zinc-500" />
-                        <div>
+                      <div className="flex items-center gap-3 min-w-0">
+                        <FileArchive className="w-4 h-4 text-zinc-500 shrink-0" />
+                        <div className="min-w-0 break-words">
                           <span className="text-sm text-zinc-200">{t(labelKey)}</span>
-                          <span className="text-xs text-zinc-600 ml-2">({key})</span>
+                          <span className="text-xs text-zinc-600 block sm:inline sm:ml-2 break-all">({key})</span>
                         </div>
                       </div>
                       <span
-                        className={`text-xs font-medium ${
+                        className={`text-xs font-medium shrink-0 whitespace-nowrap ml-2 ${
                           available ? 'text-emerald-400' : 'text-zinc-600'
                         }`}
                       >
@@ -244,8 +273,8 @@ export function BackupRestore() {
             } ${isStopped ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}>
               <input
                 type="checkbox"
-                checked={fullBackup && isStopped}
-                disabled={!isStopped}
+                checked={fullBackup}
+                disabled={!isStopped || backupBusy || restoring}
                 onChange={(e) => setFullBackup(e.target.checked)}
                 className="mt-0.5 w-4 h-4 rounded border-zinc-600 bg-zinc-900 text-teal-500 focus:ring-teal-500/30"
               />
@@ -268,19 +297,51 @@ export function BackupRestore() {
 
           {/* Download button */}
           <button
-            onClick={handleDownload}
-            disabled={!status?.canBackup || downloading}
+            onClick={handleCreate}
+            disabled={!status?.canBackup || backupBusy || restoring || !listLoaded || listError || (fullBackup && !isStopped)}
             className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-colors
               bg-teal-600 hover:bg-teal-500 text-white
               disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-teal-600"
           >
-            {downloading ? (
+            {backupBusy ? (
               <RefreshCw className="w-4 h-4 animate-spin" />
             ) : (
-              <Download className="w-4 h-4" />
+              <FileArchive className="w-4 h-4" />
             )}
-            {downloading ? t('backup.downloading') : t('backup.download')}
+            {backupBusy ? t('backup.saved.creating') : t('backup.saved.create')}
           </button>
+          {(backupError || listError) && <p role="alert" className="text-sm text-red-300 break-words">{backupError || t('backup.saved.loadError')}</p>}
+          <div className="border-t border-zinc-800 pt-4">
+            <h4 className="text-sm font-medium text-zinc-200 mb-3">{t('backup.saved.title')}</h4>
+            {!listLoaded && !listError && <p className="text-sm text-zinc-500">{t('backup.status.checking')}</p>}
+            {listLoaded && backups.length === 0 && <p className="text-sm text-zinc-500">{t('backup.saved.empty')}</p>}
+            <ul className="divide-y divide-zinc-800">
+              {backups.map(job => (
+                <li key={job.id} className="py-3 flex flex-wrap items-center gap-3">
+                  <div className="min-w-0 flex-1 basis-52">
+                    <p className="text-sm text-zinc-200 break-all">{job.filename}</p>
+                    <p className={`text-xs mt-1 ${job.state === 'failed' ? 'text-red-300' : 'text-zinc-400'}`}>
+                      {t(`backup.saved.${job.state}`)} · {formatBytes(job.bytes)}
+                      {job.state === 'creating' && ` · ${t('backup.saved.files', { count: String(job.processedFiles) })}`}
+                    </p>
+                    {job.error && <p className="text-xs text-red-300 mt-1 break-words">{job.error}</p>}
+                  </div>
+                  {job.state === 'ready' && (
+                    <a href={api.getBackupDownloadUrl(job.id)} download title={t('backup.download')} aria-label={t('backup.download')}
+                      className="p-2 text-teal-400 hover:bg-zinc-800 rounded-md shrink-0">
+                      <Download className="w-5 h-5" />
+                    </a>
+                  )}
+                  {job.state !== 'creating' && (
+                    <button onClick={() => handleDelete(job.id)} title={t('backup.saved.delete')} aria-label={t('backup.saved.delete')}
+                      className="p-2 text-zinc-400 hover:text-red-300 hover:bg-zinc-800 rounded-md shrink-0">
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </section>
 
@@ -311,11 +372,11 @@ export function BackupRestore() {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={() => isStopped && !restoring && fileInputRef.current?.click()}
+            onClick={() => isStopped && !restoring && !backupBusy && listLoaded && !listError && fileInputRef.current?.click()}
             className={`relative flex flex-col items-center justify-center gap-3 p-8 rounded-xl border-2 border-dashed transition-colors cursor-pointer
               ${dragOver
                 ? 'border-sky-400 bg-sky-950/20'
-                : isStopped && !restoring
+                : isStopped && !restoring && !backupBusy && listLoaded && !listError
                   ? 'border-zinc-700 bg-zinc-800/30 hover:border-zinc-600 hover:bg-zinc-800/50'
                   : 'border-zinc-800 bg-zinc-900/30 cursor-not-allowed opacity-50'
               }`}
@@ -326,7 +387,7 @@ export function BackupRestore() {
               accept=".zip"
               className="hidden"
               onChange={handleFileSelect}
-              disabled={!isStopped || restoring}
+              disabled={!isStopped || restoring || backupBusy || !listLoaded || listError}
             />
 
             {restoring ? (
