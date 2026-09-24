@@ -65,6 +65,9 @@ Thumbs.db
 *~
 shared/.auth-secret
 shared/seed/
+shared/backups/
+shared/local-recovery.json
+shared/local-recovery.json.tmp
 
 # sample-share
 bda-test.symbol-network.zip
