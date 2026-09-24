@@ -653,11 +653,11 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
 
   const nodeStopped = networkState === 'stopped' || networkState === 'error';
 
-  const certs: { key: string; label: string; entry: CertEntry | undefined }[] = [
-    { key: 'node', label: t('cert.nodeCert'), entry: data.nodeCert },
-    { key: 'ca', label: t('cert.caCert'), entry: data.caCert },
-    { key: 'restNode', label: t('cert.restNodeCert'), entry: data.restNodeCert },
-    { key: 'restCa', label: t('cert.restCaCert'), entry: data.restCaCert },
+  const certs: { key: string; label: string; description: string; entry: CertEntry | undefined }[] = [
+    { key: 'node', label: t('cert.nodeCert'), description: t('cert.nodeDescription'), entry: data.nodeCert },
+    { key: 'ca', label: t('cert.caCert'), description: t('cert.caDescription'), entry: data.caCert },
+    { key: 'restNode', label: t('cert.restNodeCert'), description: t('cert.restDescription'), entry: data.restNodeCert },
+    { key: 'restCa', label: t('cert.restCaCert'), description: t('cert.legacyCaDescription'), entry: data.restCaCert },
   ];
 
   // Find the minimum days remaining for the overall status icon
@@ -703,7 +703,7 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
   return (
     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
       {/* Header */}
-      <div className="flex items-center gap-2 text-xs text-zinc-500">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
         {certIcon(minDays)}
         <span>{t('cert.title')}</span>
         {minDays !== null && minDays <= 90 && (
@@ -713,12 +713,13 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
         )}
         <button
           onClick={() => { setShowRenewDialog(true); setRenewSuccess(false); setRenewError(''); }}
-          className="ml-auto text-[10px] px-2 py-0.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors flex items-center gap-1"
+          className="ml-auto max-w-full text-xs text-left px-2 py-1 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors flex items-center gap-1"
         >
-          <RefreshCw className="w-3 h-3" />
+          <RefreshCw className="w-3 h-3 shrink-0" />
           {t('cert.renewButton')}
         </button>
       </div>
+      <p className="text-xs leading-relaxed text-zinc-400">{t('cert.scopeNote')}</p>
 
       {/* Renew dialog */}
       {showRenewDialog && (
@@ -811,22 +812,23 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
 
       {/* Certificate cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {certs.map(({ key, label, entry }) => {
+        {certs.map(({ key, label, description, entry }) => {
           if (!entry?.exists) return null;
           return (
             <div
               key={key}
               className={`border rounded-lg p-3 space-y-1.5 ${certDaysBg(entry.daysRemaining)}`}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs text-zinc-400 font-medium">{label}</span>
                 {entry.daysRemaining !== null && (
-                  <span className={`text-lg font-bold tracking-tight ${certDaysColor(entry.daysRemaining)}`}>
+                  <span className={`text-lg font-bold whitespace-nowrap ${certDaysColor(entry.daysRemaining)}`}>
                     {entry.daysRemaining.toLocaleString()}<span className="text-xs font-normal ml-0.5">{t('cert.days')}</span>
                   </span>
                 )}
               </div>
-              <div className="flex items-center justify-between text-[10px] text-zinc-500">
+              <p className="text-xs leading-relaxed text-zinc-400">{description}</p>
+              <div className="flex flex-wrap items-center justify-between gap-x-2 text-[10px] text-zinc-500">
                 <span>{t('cert.validFrom')} {formatDate(entry.notBefore)}</span>
                 <span>{t('cert.validUntil')} {formatDate(entry.notAfter)}</span>
               </div>
