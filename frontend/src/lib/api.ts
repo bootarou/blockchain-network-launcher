@@ -291,11 +291,11 @@ export const api = {
     }
   },
 
-  renewCertificate: async (password: string, force?: boolean) => {
+  renewCertificate: async (password: string, force?: boolean, mode: 'node' | 'ca' = 'node') => {
     const res = await authFetch(`${API_BASE}/certificate-renew`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password, force }),
+      body: JSON.stringify({ password, force, mode }),
     });
     return res.json();
   },

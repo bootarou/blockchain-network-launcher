@@ -93,6 +93,8 @@ interface CertEntry {
 
 interface CertificateData {
   available: boolean;
+  renewalBusy?: boolean;
+  renewal?: { state: string; work: string; error?: string } | null;
   nodeCert?: CertEntry;
   caCert?: CertEntry;
   restNodeCert?: CertEntry;
@@ -647,8 +649,12 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
   const [renewing, setRenewing] = useState(false);
   const [renewError, setRenewError] = useState('');
   const [renewSuccess, setRenewSuccess] = useState(false);
+  const [renewMode, setRenewMode] = useState<'node' | 'ca'>('node');
+  const [confirmCa, setConfirmCa] = useState(false);
+  const [renewed, setRenewed] = useState(false);
+  const [backupDir, setBackupDir] = useState('');
 
-  if (!data.available) return null;
+  if (!data.available && !data.renewalBusy) return null;
 
   const nodeStopped = networkState === 'stopped' || networkState === 'error';
 
@@ -666,13 +672,15 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
   const minDays = allDays.length > 0 ? Math.min(...allDays) : null;
 
   const handleRenew = async () => {
-    if (!renewPassword.trim()) return;
+    if (!renewPassword.trim() || renewing || !nodeStopped || data.renewalBusy || (renewMode === 'ca' && !confirmCa)) return;
     setRenewing(true);
     setRenewError('');
     setRenewSuccess(false);
     try {
-      const result = await api.renewCertificate(renewPassword, forceRenew);
+      const result = await api.renewCertificate(renewPassword, forceRenew, renewMode);
       if (result.success) {
+        setRenewed(result.renewed === true);
+        setBackupDir(result.backupDir || '');
         setRenewSuccess(true);
         setRenewPassword('');
         onRenewed();
@@ -683,7 +691,8 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
       } else if (result.error === 'NO_CERTIFICATES') {
         setRenewError(t('cert.errorNoCertificates'));
       } else {
-        setRenewError(result.message || result.error || 'Unknown error');
+        setRenewError(`${t('cert.errorRenewFailed')} (${result.error || 'UNKNOWN'})`);
+        onRenewed();
       }
     } catch {
       setRenewError(t('cert.errorRenewFailed'));
@@ -697,6 +706,9 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
     setRenewError('');
     setRenewSuccess(false);
     setForceRenew(false);
+    setRenewMode('node');
+    setConfirmCa(false);
+    setBackupDir('');
   };
 
   return (
@@ -719,6 +731,12 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
         </button>
       </div>
       <p className="text-xs leading-relaxed text-zinc-400">{t('cert.scopeNote')}</p>
+      {data.renewalBusy && (
+        <p role="alert" className="text-xs text-amber-400 break-all">
+          {data.renewal?.state === 'manual' ? t('cert.manualRequired') : t('cert.renewing')}
+          {data.renewal?.state === 'manual' && ` ${data.renewal.work}`}
+        </p>
+      )}
 
       {/* Renew dialog */}
       {showRenewDialog && (
@@ -746,18 +764,37 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
           {/* Success */}
           {renewSuccess && (
             <div className="bg-emerald-950/40 border border-emerald-800/50 rounded-lg p-3 space-y-1">
-              <div className="text-xs text-emerald-400">{t('cert.renewSuccess')}</div>
+              <div className="text-xs text-emerald-400">{t(renewed ? 'cert.renewSuccess' : 'cert.renewUnchanged')}</div>
               <div className="text-[10px] text-zinc-500">{t('cert.renewRestartHint')}</div>
+              {backupDir && <div className="text-xs text-zinc-400 break-all">{t('cert.backupLocation')} {backupDir}</div>}
             </div>
           )}
 
           {!renewSuccess && (
             <>
+              <fieldset disabled={renewing || data.renewalBusy} className="space-y-2 text-xs text-zinc-300">
+                <legend className="mb-2">{t('cert.modeLabel')}</legend>
+                {(['node', 'ca'] as const).map(mode => (
+                  <label key={mode} className="flex items-start gap-2">
+                    <input type="radio" name="certificate-renewal-mode" value={mode} checked={renewMode === mode}
+                      onChange={() => { setRenewMode(mode); setConfirmCa(false); }} className="mt-0.5" />
+                    <span>{t(mode === 'ca' ? 'cert.modeCa' : 'cert.modeNode')}</span>
+                  </label>
+                ))}
+              </fieldset>
+              {renewMode === 'ca' && (
+                <label className="flex items-start gap-2 text-xs text-amber-300">
+                  <input type="checkbox" checked={confirmCa} disabled={renewing || data.renewalBusy}
+                    onChange={e => setConfirmCa(e.target.checked)} className="mt-0.5" />
+                  <span>{t('cert.confirmCa')}</span>
+                </label>
+              )}
               {/* Password input */}
               <div>
                 <div className="text-[10px] text-zinc-500 mb-1">{t('cert.passwordLabel')}</div>
                 <input
                   type="password"
+                  disabled={renewing || data.renewalBusy}
                   value={renewPassword}
                   onChange={(e) => setRenewPassword(e.target.value)}
                   placeholder={t('cert.passwordPlaceholder')}
@@ -767,21 +804,22 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
               </div>
 
               {/* Force option */}
-              <label className="flex items-center gap-2 text-[10px] text-zinc-500 cursor-pointer">
+              {renewMode === 'node' && <label className="flex items-center gap-2 text-[10px] text-zinc-500 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={forceRenew}
+                  disabled={renewing || data.renewalBusy}
                   onChange={(e) => setForceRenew(e.target.checked)}
                   className="rounded border-zinc-600 bg-zinc-900 text-indigo-500 focus:ring-indigo-500/30"
                 />
                 {t('cert.forceRenew')}
-              </label>
+              </label>}
 
               {/* Actions */}
               <div className="flex items-center gap-2 pt-1">
                 <button
                   onClick={handleRenew}
-                  disabled={!renewPassword.trim() || renewing || !nodeStopped}
+                  disabled={!renewPassword.trim() || renewing || !nodeStopped || data.renewalBusy || (renewMode === 'ca' && !confirmCa)}
                   className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
                   title={!nodeStopped ? t('cert.errorNodeRunning') : ''}
                 >
@@ -790,6 +828,7 @@ function CertificateIndicator({ data, networkState, onRenewed }: {
                 </button>
                 <button
                   onClick={closeDialog}
+                  disabled={renewing}
                   className="text-xs px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
                 >
                   {t('cert.renewCancel')}
