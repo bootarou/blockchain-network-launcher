@@ -151,7 +151,7 @@ test('creation refuses running containers, Docker failures and competing mutatio
     && n.getText(tree).includes('pendingMutations++'));
   assert.ok(middleware);
   const handlers = evaluate(`let pendingMutations = 0;\n${middleware.getText(tree)}\n${route('post', '/api/backups')}\nexport function pending() { return pendingMutations; }`, {
-    app, backupFiles: store, localRecovery: { busy: false }, activeProcess: null, isStartSequenceInFlight: false,
+    app, backupFiles: store, localRecovery: { busy: false }, certificateRenewal: { busy: false }, activeProcess: null, isStartSequenceInFlight: false,
     networkStatus: nodeState, broadcastLog() {}, fs, path,
     PRESET_PATH: input, UI_META_PATH: path.join(root, 'no-meta'), TARGET_DIR: path.join(root, 'target'),
     NODE_CONTAINER_NAMES: ['db', 'api-node-0'],

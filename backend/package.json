@@ -4,7 +4,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch server.ts",
-    "test": "vitest run && node --test nemesis-seed.test.cjs backup-files.test.cjs local-recovery.test.cjs",
+    "test": "vitest run && node --test nemesis-seed.test.cjs backup-files.test.cjs local-recovery.test.cjs certificate-renewal.test.cjs",
+    "test:certificates": "node --test certificate-renewal.test.cjs",
     "test:recovery": "node --test local-recovery.test.cjs",
     "test:seed": "node --test nemesis-seed.test.cjs",
     "test:backup": "node --test backup-files.test.cjs"
