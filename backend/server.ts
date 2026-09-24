@@ -8,6 +8,8 @@ import path from 'path';
 import crypto from 'crypto';
 import yaml from 'js-yaml';
 import archiver from 'archiver';
+import { BackupFiles } from './backup-files.js';
+import { LocalRecovery, queueProblems } from './local-recovery.js';
 import AdmZip from 'adm-zip';
 import { buildNemesisSeedState } from './nemesis-seed.js';
 import { decryptAddressesObj } from './addresses-crypto.js';
@@ -267,6 +269,47 @@ let networkStatus: NetworkStatus = {
 
 let activeProcess: ChildProcess | null = null;
 let isStartSequenceInFlight = false;
+
+const backupFiles = new BackupFiles(path.join(SHARED_DIR, 'backups'));
+const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog);
+let pendingMutations = 0;
+app.use('/api', (req, res, next) => {
+  if (localRecovery.busy && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+      && !['/recovery/apply', '/recovery/abandon'].includes(req.path)) {
+    return res.status(409).json({ error: 'LOCAL_RECOVERY_ACTIVE', recovery: localRecovery.status() });
+  }
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || req.path.startsWith('/backups')) return next();
+  if (backupFiles.busy) {
+    return res.status(409).json({ error: 'BACKUP_IN_PROGRESS', message: 'Wait for backup creation to finish.' });
+  }
+  pendingMutations++;
+  let released = false;
+  const release = () => { if (!released) { released = true; pendingMutations--; } };
+  // end is also called when an async handler completes after its client disconnected.
+  const end = res.end;
+  res.end = function (...args: any[]) {
+    release();
+    return (end as Function).apply(this, args);
+  } as typeof res.end;
+  req.once('aborted', release);
+  next();
+});
+
+app.get('/api/recovery', (_req, res) => res.json({ job: localRecovery.status(), busy: localRecovery.busy }));
+app.post('/api/recovery/apply', async (req, res) => {
+  try {
+    await localRecovery.apply(req.body?.id);
+    networkStatus.state = 'stopped';
+    broadcastStatus();
+    res.json({ job: localRecovery.status() });
+  } catch (e: any) { res.status(409).json({ error: e.message, job: localRecovery.status() }); }
+});
+app.post('/api/recovery/abandon', async (req, res) => {
+  try {
+    await localRecovery.abandon(req.body?.id);
+    res.json({ job: localRecovery.status() });
+  } catch (e: any) { res.status(409).json({ error: e.message, job: localRecovery.status() }); }
+});
 
 // =============================================================================
 // Node health polling (GET /node/health on the local Symbol REST gateway)
@@ -7621,16 +7664,54 @@ app.post('/api/share/import', (req, res) => {
 // =============================================================================
 
 /** GET /api/backup — download a ZIP containing node identity files */
-app.get('/api/backup', (req, res) => {
+app.get('/api/backup', (_req, res) => {
+  res.status(410).json({ error: 'Create a saved backup with POST /api/backups, then download it.' });
+});
+
+app.get('/api/backups', (_req, res) => {
+  res.json({ backups: backupFiles.list(), nodeState: networkStatus.state });
+});
+
+app.get('/api/backups/:id/download', (req, res) => {
+  const job = backupFiles.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Backup not found' });
+  if (job.state !== 'ready') return res.status(409).json({ error: 'Backup is not ready' });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.download(backupFiles.filePath(job.id), job.filename, (err: any) => {
+    if (err && !res.headersSent) res.status(err.statusCode || err.status || 500).end();
+    else if (err) res.destroy();
+  });
+});
+
+app.delete('/api/backups/:id', (req, res) => {
+  const job = backupFiles.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Backup not found' });
+  if (job.state === 'creating') return res.status(409).json({ error: 'Backup is being created' });
+  try { backupFiles.remove(job.id); res.json({ success: true }); }
+  catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/backups', (req, res) => {
   try {
     // ?full=1 → include block data + MongoDB.  Essential for custom networks
     // where this node's block store IS the chain (no peers to resync from).
-    const full = String(req.query.full ?? '') === '1' || String(req.query.full ?? '') === 'true';
+    const full = req.body?.full === true;
+    if (backupFiles.busy || pendingMutations > 0 || activeProcess || isStartSequenceInFlight) {
+      return res.status(409).json({ error: 'Another operation is in progress.' });
+    }
     if (full && networkStatus.state !== 'stopped' && networkStatus.state !== 'error') {
       return res.status(409).json({
         error: 'NODE_RUNNING',
         message: 'Full backup (block data) requires the node to be stopped for consistency.',
       });
+    }
+
+    if (full) {
+      // Fail closed if Docker is unavailable; cached UI state alone is insufficient.
+      const names = execSync('docker ps --format "{{.Names}}"', { encoding: 'utf8', timeout: 10000 }).trim().split(/\r?\n/);
+      if (names.some(name => NODE_CONTAINER_NAMES.includes(name) || /api-node|peer-node|rest-gateway/.test(name))) {
+        return res.status(409).json({ error: 'Stop all node containers before creating a full backup.' });
+      }
     }
 
     broadcastLog(`[Backup] Creating ${full ? 'FULL' : 'identity'} node backup ZIP...\n`);
@@ -7743,42 +7824,8 @@ app.get('/api/backup', (req, res) => {
       files: [...filesToBackup.map((f) => f.zipPath), ...dirsToBackup.map((d) => `${d.zipPath}/`)],
     };
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `node-${full ? 'full-' : ''}backup-${timestamp}.zip`;
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Transfer-Encoding', 'chunked');
-
-    const archive = archiver('zip', { zlib: { level: 6 } });
-    archive.on('error', (err: Error) => {
-      broadcastLog(`[Backup] ❌ Error: ${err.message}\n`);
-      if (!res.headersSent) res.status(500).end();
-    });
-    archive.pipe(res);
-
-    // Add metadata
-    archive.append(JSON.stringify(backupMeta, null, 2), { name: 'backup-meta.json' });
-
-    // Add all files
-    for (const f of filesToBackup) {
-      archive.file(f.diskPath, { name: f.zipPath });
-    }
-
-    // Add block data / database directories (full backup only).
-    // Exclude runtime debris that must not survive a restore.
-    for (const d of dirsToBackup) {
-      archive.directory(d.diskPath, d.zipPath, (entry) => {
-        const n = entry.name;
-        if (n.endsWith('.lock') || n.endsWith('server-recovery.started') || n.endsWith('mongod.lock')) {
-          return false;
-        }
-        return entry;
-      });
-    }
-
-    archive.finalize();
-    broadcastLog(`[Backup] ✅ Exporting backup: ${filename} (${filesToBackup.length} files${full ? ` + ${dirsToBackup.length} data dirs` : ''})\n`);
+    const job = backupFiles.start(full, filesToBackup, dirsToBackup, backupMeta);
+    res.status(202).json(job);
   } catch (err: any) {
     broadcastLog(`[Backup] ❌ Failed: ${err.message}\n`);
     if (!res.headersSent) res.status(500).json({ error: err.message });
@@ -8205,9 +8252,8 @@ app.post('/api/commands/start', async (req, res) => {
       //   A hard power-off can leave 0-byte block/state files that make
       //   catapult crash-loop on boot ("couldn't read from file" /
       //   "cache height is inconsistent with storage height").  Detect
-      //   that before starting; when a verified resync source exists,
-      //   automatically reset data to seed (certs / voting keys / voting
-      //   status preserved) so this Start proceeds into a clean resync.
+      //   that before starting and require explicit recovery. Starting must
+      //   never discard the only complete local chain automatically.
       // =================================================================
       {
         const crashDiag = diagnoseCrashDamage(TARGET_DIR);
@@ -8216,19 +8262,7 @@ app.post('/api/commands/start', async (req, res) => {
           for (const f of [...crashDiag.corruptBlockFiles, ...crashDiag.corruptStateFiles, ...crashDiag.corruptSpoolIndexes].slice(0, 10)) {
             broadcastLog(`[Recovery]   - ${f}\n`);
           }
-          const resyncSource = await checkResyncSource(TARGET_DIR);
-          if (!resyncSource.ok) {
-            broadcastLog(`[Recovery] ❌ Auto-reset blocked: ${resyncSource.reason}\n`);
-            throw new Error(
-              'Crash damage detected, but an automatic seed reset is not verifiably safe '
-              + `(${resyncSource.reason}). Run クラッシュ診断・復旧 from the Operations page, or restore a backup.`,
-            );
-          }
-          broadcastLog(`[Recovery] Resync source verified: ${resyncSource.url} (height ${resyncSource.remoteHeight}) — resetting data to seed...\n`);
-          stopNodeContainersForRecovery(broadcastLog);
-          cleanCrashLeftovers(TARGET_DIR, crashDiag, broadcastLog);
-          const recovery = await performCrashRecovery(TARGET_DIR, broadcastLog);
-          broadcastLog(`[Recovery] ✅ Data reset complete (backup: ${path.relative(TARGET_DIR, recovery.backupDir)}). The node will resync from the network.\n`);
+          throw new Error('Crash damage detected. Run local recovery from Operations. Automatic seed reset is disabled.');
         } else if (crashDiag.orphanBlockFiles.length || crashDiag.orphanSpoolFiles.length) {
           // Harmless 0-byte leftovers — delete them so they cannot confuse
           // the index.dat height fix below.
@@ -9661,6 +9695,11 @@ app.post('/api/commands/clearLocks', async (_req, res) => {
       }
     }
 
+    const damage = diagnoseCrashDamage(TARGET_DIR);
+    if (damage.verdict === 'reset-required') {
+      return res.status(409).json({ error: 'Data damage requires local recovery, not lock removal.', diagnosis: damage });
+    }
+
     // Delete *.lock files with post-deletion verification
     let lockCount = 0;
     let lockFailed = 0;
@@ -9822,12 +9861,12 @@ function diagnoseCrashDamage(targetDir: string): CrashDiagnosis {
       chainHeight = fs.readFileSync(path.join(dataDir, 'index.dat')).readBigUInt64LE(0);
     } catch { /* no chain yet */ }
 
-    // Block storage group dirs (00000, 00001, …) — fileHeight = groupIndex * 65536 + fileNum
+    // FileBlockStorage uses decimal groups of 10000 heights.
     for (const entry of fs.readdirSync(dataDir)) {
       if (!/^\d{5}$/.test(entry)) continue;
       const groupDir = path.join(dataDir, entry);
       if (!fs.statSync(groupDir).isDirectory()) continue;
-      const groupBase = BigInt(parseInt(entry, 10)) * 65536n;
+      const groupBase = BigInt(parseInt(entry, 10)) * 10000n;
       for (const f of fs.readdirSync(groupDir)) {
         const m = f.match(/^(\d{5})\.(dat|stmt)$/);
         if (!m) continue;
@@ -9856,6 +9895,8 @@ function diagnoseCrashDamage(targetDir: string): CrashDiagnosis {
         d.corruptStateFiles.push(rel(path.join(stateDir, 'supplemental.dat')) + ' (missing)');
       }
     }
+
+    d.corruptSpoolIndexes.push(...queueProblems(dataDir).map(problem => `${rel(dataDir)}/spool/${problem}`));
 
     // Spool: 0-byte message files ahead of the write index are harmless
     // orphans; a 0-byte index file means the queue itself is broken.
@@ -10037,6 +10078,12 @@ app.post('/api/commands/crashDiagnose', async (_req, res) => {
 app.post('/api/commands/crashRecovery', async (req, res) => {
   try {
     const { force, resetData } = (req.body ?? {}) as { force?: boolean; resetData?: boolean };
+    if (!resetData) {
+      if (backupFiles.busy || pendingMutations > 1 || activeProcess || isStartSequenceInFlight) {
+        return res.status(409).json({ error: 'Another operation is in progress.' });
+      }
+      return res.status(202).json({ success: true, action: 'rebuild', job: localRecovery.start() });
+    }
     broadcastLog('\n[Recovery] ========== Crash Auto-Recovery ==========\n');
 
     stopNodeContainersForRecovery(broadcastLog);

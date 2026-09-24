@@ -5,6 +5,27 @@ const API_BASE =
 
 export { API_BASE };
 
+export interface BackupFile {
+  id: string;
+  filename: string;
+  full: boolean;
+  createdAt: string;
+  state: 'creating' | 'ready' | 'failed';
+  bytes: number;
+  processedFiles: number;
+  error?: string;
+}
+
+export interface RecoveryJob {
+  id: string;
+  state: 'running' | 'ready' | 'applying' | 'complete' | 'failed' | 'interrupted' | 'manual' | 'abandoned';
+  phase: string;
+  work: string;
+  height?: string;
+  detail?: string;
+  error?: string;
+}
+
 // =============================================================================
 // Auth token management
 // =============================================================================
@@ -53,6 +74,18 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
 }
 
 export const api = {
+  getRecovery: async (): Promise<{ job: RecoveryJob | null; busy: boolean }> => {
+    const res = await authFetch(`${API_BASE}/recovery`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+  recoveryAction: async (action: 'apply' | 'abandon', id: string): Promise<void> => {
+    const res = await authFetch(`${API_BASE}/recovery/${action}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  },
   // ── Auth ────────────────────────────────────────────────────────────────
 
   /** Check if authentication is required. */
@@ -504,13 +537,32 @@ export const api = {
     }
   },
 
-  getBackupDownloadUrl: (full = false) => {
+  listBackups: async (): Promise<{ backups: BackupFile[]; nodeState: string }> => {
+    const res = await authFetch(`${API_BASE}/backups`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  createBackup: async (full: boolean): Promise<BackupFile> => {
+    const res = await authFetch(`${API_BASE}/backups`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ full }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
+    return data;
+  },
+
+  deleteBackup: async (id: string): Promise<void> => {
+    const res = await authFetch(`${API_BASE}/backups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) { const data = await res.json(); throw new Error(data.error || `HTTP ${res.status}`); }
+  },
+
+  getBackupDownloadUrl: (id: string) => {
     const t = getAuthToken();
     const params = new URLSearchParams();
-    if (full) params.set('full', '1');
     if (t) params.set('_token', t);
     const qs = params.toString();
-    return `${API_BASE}/backup${qs ? `?${qs}` : ''}`;
+    return `${API_BASE}/backups/${encodeURIComponent(id)}/download${qs ? `?${qs}` : ''}`;
   },
 
   uploadRestore: async (
