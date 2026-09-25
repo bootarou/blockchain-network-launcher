@@ -183,10 +183,7 @@ export function HelpPage() {
         <div className="space-y-4 mt-2">
           <Step n={1}>
             <strong>{t('help.quickStartStep1')}</strong>
-            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
-              docker compose up -d --build
-            </div>
-            <p className="mt-1 text-zinc-500">{t('help.quickStartStep2')}</p>
+            <p className="mt-1 text-zinc-500">{t('help.quickStartStep1Desc')}</p>
           </Step>
 
           <Step n={2}>
@@ -198,7 +195,6 @@ export function HelpPage() {
           <Step n={3}>
             <strong>{t('help.quickStartStep4')}</strong>
             <p className="text-zinc-500">{t('help.quickStartStep4Desc')}</p>
-            <p className="text-zinc-500">{t('help.quickStartStep4Alt')}</p>
           </Step>
 
           <Step n={4}>
@@ -211,6 +207,7 @@ export function HelpPage() {
             <p className="text-zinc-500">{t('help.quickStartStep6Desc')}</p>
           </Step>
         </div>
+        <p className="border-l-2 border-amber-600 pl-3 text-amber-300">{t('help.networkSwitchSafety')}</p>
       </Section>
 
       <Section id="create-network" title={t('help.createTitle')} icon={Hammer}>
@@ -219,9 +216,6 @@ export function HelpPage() {
         <div className="space-y-4 mt-3">
           <Step n={1}>
             <strong>{t('help.createStep1')}</strong>
-            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
-              docker compose up -d --build
-            </div>
             <p className="mt-1 text-zinc-500">{t('help.createStep1Desc')}</p>
           </Step>
 
@@ -236,6 +230,7 @@ export function HelpPage() {
               <li>{t('help.createStep2Item5')}</li>
               <li>{t('help.createStep2Item6')}</li>
               <li>{t('help.createStep2Item7')}</li>
+              <li>{t('help.localNodeSettings')}</li>
             </ul>
           </Step>
 
@@ -328,9 +323,7 @@ export function HelpPage() {
         <div className="space-y-3">
           <Step n={1}>
             <strong>{t('help.shareImportStep1')}</strong>
-            <div className="mt-1 bg-zinc-900 rounded-lg px-4 py-2 font-mono text-xs text-zinc-400">
-              docker compose up -d --build
-            </div>
+            <p className="text-zinc-500">{t('help.networkSwitchSafety')}</p>
           </Step>
           <Step n={2}>
             <strong>{t('help.shareImportStep2')}</strong>
@@ -449,6 +442,14 @@ export function HelpPage() {
       </Section>
 
       <Section id="join" title={t('help.joinDetailTitle')} icon={Globe}>
+        <p>{t('help.joinIntro')}</p>
+        <div className="space-y-3">
+          <Step n={1}>{t('help.joinStep1')}</Step>
+          <Step n={2}>{t('help.joinStep2')}</Step>
+          <Step n={3}>{t('help.joinStep3')}</Step>
+          <Step n={4}>{t('help.localNodeSettings')}</Step>
+          <Step n={5}>{t('help.shareImportStep5Desc')}</Step>
+        </div>
         <p className="border-l-2 border-amber-600 pl-3 text-amber-300">{t('help.joinSchedules')}</p>
         <h4 className="font-semibold text-zinc-100 mb-2">{t('help.seedFilesTitle')}</h4>
         <Table

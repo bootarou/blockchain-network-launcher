@@ -52,6 +52,22 @@ for (const [lang, dict] of [['ja', ja], ['en', en]]) {
       return require(name);
     });
     const html = renderToStaticMarkup(React.createElement(HelpPage));
+    const quickStart = html.split('id="quickstart"')[1].split('</details>')[0];
+    assert.match(quickStart, /open=""/);
+    assert.ok(!html.includes('docker compose up'));
+    let previous = -1;
+    for (const key of ['quickStartStep1', 'quickStartStep3Title', 'quickStartStep4', 'quickStartStep5', 'quickStartStep6']) {
+      const position = quickStart.indexOf(dict['help.' + key]);
+      assert.ok(position > previous, 'Missing or unordered quick-start step: ' + key);
+      previous = position;
+    }
+    assert.match(quickStart, /mainnet/);
+    assert.match(quickStart, /testnet/);
+    assert.match(quickStart, /Base Preset/);
+    assert.match(quickStart, /Host/);
+    assert.match(quickStart, /Friendly Name/);
+    assert.ok(html.includes(dict['help.localNodeSettings']));
+    assert.ok(html.includes(dict['help.networkSwitchSafety']));
     for (const id of ['quickstart', 'create-network', 'share-network', 'screens', 'join', 'buttons',
       'reset', 'certificates', 'backups', 'recovery', 'security', 'trouble', 'tech']) {
       assert.ok(html.includes(`id="${id}"`), 'Missing section: ' + id);
