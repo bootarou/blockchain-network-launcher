@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   BookOpen,
   Rocket,
@@ -23,8 +23,13 @@ import {
   Upload,
   Shield,
   ArrowRight,
+  HardDrive,
+  Wrench,
+  Radio,
+  Cloud,
 } from 'lucide-react';
 import { useTranslation } from '../i18n';
+import { CATAPULT_VERSIONS } from '../constants';
 
 // ── Collapsible Section ──────────────────────────────────────────────────────
 
@@ -41,23 +46,18 @@ function Section({
   children: React.ReactNode;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
   return (
-    <section id={id} className="border border-zinc-800 rounded-xl overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-3 px-5 py-4 bg-zinc-900/50 hover:bg-zinc-900 transition-colors text-left"
+    <details id={id} open={defaultOpen} className="group border-b border-zinc-800 scroll-mt-24 min-w-0">
+      <summary
+        className="w-full flex items-center gap-3 px-3 py-4 hover:bg-zinc-900 transition-colors text-left cursor-pointer list-none"
       >
         <Icon className="w-5 h-5 text-indigo-400 shrink-0" />
         <span className="font-semibold text-zinc-100 flex-1">{title}</span>
-        {open ? (
-          <ChevronDown className="w-4 h-4 text-zinc-500" />
-        ) : (
-          <ChevronRight className="w-4 h-4 text-zinc-500" />
-        )}
-      </button>
-      {open && <div className="px-5 py-4 space-y-4 text-sm text-zinc-300 leading-relaxed">{children}</div>}
-    </section>
+        <ChevronDown className="w-4 h-4 shrink-0 text-zinc-500 hidden group-open:block" />
+        <ChevronRight className="w-4 h-4 shrink-0 text-zinc-500 group-open:hidden" />
+      </summary>
+      <div className="px-3 pb-5 space-y-4 text-sm text-zinc-300 leading-relaxed break-words">{children}</div>
+    </details>
   );
 }
 
@@ -65,7 +65,7 @@ function Section({
 
 function Table({ headers, rows }: { headers: string[]; rows: (string | React.ReactNode)[][] }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto max-w-full">
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr>
@@ -80,7 +80,7 @@ function Table({ headers, rows }: { headers: string[]; rows: (string | React.Rea
           {rows.map((row, ri) => (
             <tr key={ri} className="border-b border-zinc-800/50">
               {row.map((cell, ci) => (
-                <td key={ci} className="px-3 py-2">
+                <td key={ci} className="px-3 py-2 [overflow-wrap:anywhere]">
                   {cell}
                 </td>
               ))}
@@ -115,7 +115,7 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
       <span className="shrink-0 w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center">
         {n}
       </span>
-      <div className="pt-0.5">{children}</div>
+      <div className="pt-0.5 min-w-0">{children}</div>
     </div>
   );
 }
@@ -136,7 +136,7 @@ export function HelpPage() {
       </div>
 
       {/* Quick TOC */}
-      <nav className="bg-zinc-900/50 border border-zinc-800 rounded-xl px-5 py-4">
+      <nav aria-label={t('help.toc')} className="border-y border-zinc-800 py-4">
         <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">{t('help.toc')}</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
           {[
@@ -148,17 +148,27 @@ export function HelpPage() {
             { label: t('help.tocButtons'), href: '#buttons', icon: LayoutDashboard },
             { label: t('help.tocResetDiff'), href: '#reset', icon: RefreshCw },
             { label: t('help.tocTroubleshoot'), href: '#trouble', icon: AlertTriangle },
+            { label: t('help.certTitle'), href: '#certificates', icon: Shield },
+            { label: t('help.backupTitle'), href: '#backups', icon: HardDrive },
+            { label: t('help.recoveryTitle'), href: '#recovery', icon: Wrench },
+            { label: t('help.securityTitle'), href: '#security', icon: Shield },
+            { label: t('help.techTitle'), href: '#tech', icon: Server },
           ].map(({ label, href, icon: I }) => (
             <a
               key={href}
               href={href}
               onClick={(e) => {
                 e.preventDefault();
-                document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' });
+                const section = document.querySelector<HTMLDetailsElement>(href);
+                if (section) {
+                  section.open = true;
+                  section.querySelector('summary')?.focus({ preventScroll: true });
+                  section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
               }}
               className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-zinc-200"
             >
-              <I className="w-4 h-4" />
+              <I className="w-4 h-4 shrink-0" />
               {label}
             </a>
           ))}
@@ -188,6 +198,7 @@ export function HelpPage() {
           <Step n={3}>
             <strong>{t('help.quickStartStep4')}</strong>
             <p className="text-zinc-500">{t('help.quickStartStep4Desc')}</p>
+            <p className="text-zinc-500">{t('help.quickStartStep4Alt')}</p>
           </Step>
 
           <Step n={4}>
@@ -264,6 +275,7 @@ export function HelpPage() {
 
       <Section id="share-network" title={t('help.shareTitle')} icon={Share2}>
         <p>{t('help.shareIntro')}</p>
+        <p className="border-l-2 border-amber-600 pl-3 text-amber-300">{t('help.shareGenesis')}</p>
 
         <h4 className="font-semibold text-zinc-100 mt-4 mb-2 flex items-center gap-2">
           <Package className="w-4 h-4 text-sky-400" />
@@ -378,6 +390,22 @@ export function HelpPage() {
 
       <Section id="screens" title={t('help.screensTitle')} icon={Monitor}>
         <div className="space-y-4">
+          {[
+            ['help.screenOperations', 'help.screenOperationsDesc', Play],
+            ['help.screenManagement', 'help.screenManagementDesc', Settings],
+            ['tabs.backup', 'help.screenBackupDesc', HardDrive],
+            ['help.screenExplorer', 'help.screenExplorerDesc', Globe],
+            ['help.screenPublish', 'help.screenPublishDesc', Cloud],
+            ['tabs.beacon', 'help.screenBeaconDesc', Radio],
+          ].map(([title, description, Icon]) => {
+            const ScreenIcon = Icon as React.ElementType;
+            return <div key={title as string}>
+              <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
+                <ScreenIcon className="w-4 h-4 text-sky-400" />{t(title as string)}
+              </h4>
+              <p>{t(description as string)}</p>
+            </div>;
+          })}
           <div>
             <h4 className="font-semibold text-zinc-100 flex items-center gap-2 mb-1">
               <Globe className="w-4 h-4 text-emerald-400" />
@@ -421,6 +449,7 @@ export function HelpPage() {
       </Section>
 
       <Section id="join" title={t('help.joinDetailTitle')} icon={Globe}>
+        <p className="border-l-2 border-amber-600 pl-3 text-amber-300">{t('help.joinSchedules')}</p>
         <h4 className="font-semibold text-zinc-100 mb-2">{t('help.seedFilesTitle')}</h4>
         <Table
           headers={[t('help.seedFileName'), t('help.seedRequired'), t('help.seedContent')]}
@@ -439,9 +468,9 @@ export function HelpPage() {
         <Table
           headers={[t('help.catapultColVersion'), t('help.catapultColImage'), t('help.catapultColNote')]}
           rows={[
-            ['v2', 'gcc-1.0.3.6', t('help.catapultV2Note')],
-            ['v37', 'gcc-1.0.3.7', t('help.catapultV37Note')],
-            ['v3', 'gcc-1.0.3.9', t('help.catapultV3Note')],
+            ...CATAPULT_VERSIONS.map(version => [version.id, version.symbolServerImage,
+              t(version.id === 'v2' ? 'help.catapultV2Note' : version.id === 'v37' ? 'help.catapultV37Note'
+                : version.id === 'v3' ? 'help.catapultV3Note' : 'help.customImageNote')]),
           ]}
         />
       </Section>
@@ -471,11 +500,16 @@ export function HelpPage() {
               <span className="flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5 text-red-400" /> {t('help.resetFull')}</span>,
               t('help.btnFullResetDesc'),
             ],
+            [t('help.fullApplyLabel'), t('help.fullApplyDesc')],
+            [t('help.unlockLabel'), t('help.unlockDesc')],
+            [t('help.recoveryTitle'), t('help.recoveryIntro')],
           ]}
         />
       </Section>
 
       <Section id="reset" title={t('help.resetDiffTitle')} icon={RefreshCw}>
+        <p className="border-l-2 border-red-600 pl-3 text-red-300">{t('help.resetSafety')}</p>
+        <p>{t('help.headerReset')}</p>
         <Table
           headers={[t('help.resetColOperation'), t('help.resetColConfig'), t('help.resetColBlock'), t('help.resetColCert'), t('help.resetColSeed'), t('help.resetColUse')]}
           rows={[
@@ -505,6 +539,48 @@ export function HelpPage() {
             ],
           ]}
         />
+      </Section>
+
+      <Section id="certificates" title={t('help.certTitle')} icon={Shield}>
+        <p>{t('help.certIntro')}</p>
+        <Table headers={[t('help.buttonsCol'), t('help.buttonsDescCol')]} rows={[
+          [t('cert.modeNode'), t('help.certNode')],
+          [t('cert.modeCa'), t('help.certCa')],
+          [t('cert.restNodeCert'), t('help.certRest')],
+        ]} />
+        {[1, 2, 3, 4].map(n => <Step key={n} n={n}>{t(`help.certStep${n}`)}</Step>)}
+        <p>{t('help.certIdentity')}</p>
+        <p>{t('help.certScope')}</p>
+        <p className="border-l-2 border-amber-600 pl-3 text-amber-300">{t('help.certManual')}</p>
+      </Section>
+
+      <Section id="backups" title={t('help.backupTitle')} icon={HardDrive}>
+        <p>{t('help.backupIntro')}</p>
+        <Table headers={[t('help.shareCompareMethod'), t('help.shareCompareContents')]} rows={[
+          [t('help.backupIdentityLabel'), t('help.backupIdentity')],
+          [t('backup.full.label'), t('help.backupFull')],
+          [t('help.shareCompareZip'), t('help.backupShare')],
+        ]} />
+        {[1, 2, 3, 4].map(n => <Step key={n} n={n}>{t(`help.backupStep${n}`)}</Step>)}
+        <p>{t('help.backupLarge')}</p>
+        <h4 className="font-semibold text-zinc-100">{t('backup.section.restore')}</h4>
+        <p>{t('help.backupRestore')}</p>
+        <p className="border-l-2 border-amber-600 pl-3 text-amber-300">{t('help.backupSafety')}</p>
+      </Section>
+
+      <Section id="recovery" title={t('help.recoveryTitle')} icon={Wrench}>
+        <p>{t('help.recoveryIntro')}</p>
+        {[1, 2, 3, 4, 5].map(n => <Step key={n} n={n}>{t(`help.recoveryStep${n}`)}</Step>)}
+        <p>{t('help.recoveryLimits')}</p>
+        <p>{t('help.recoveryInterrupted')}</p>
+        <p className="border-l-2 border-red-600 pl-3 text-red-300">{t('help.recoveryManual')}</p>
+      </Section>
+
+      <Section id="security" title={t('help.securityTitle')} icon={Shield}>
+        <p>{t('help.securityAccess')}</p>
+        <p>{t('help.securityPasswords')}</p>
+        <p>{t('help.securityKeys')}</p>
+        <p>{t('help.securityShutdown')}</p>
       </Section>
 
       <Section id="trouble" title={t('help.troubleTitle')} icon={AlertTriangle}>
@@ -556,12 +632,11 @@ export function HelpPage() {
           rows={[
             ['Frontend', 'React 19 + Vite + Tailwind CSS v4 + TypeScript'],
             ['Backend', 'Node.js + Express 5 + WebSocket'],
-            ['Bootstrap', 'symbol-bootstrap 1.1.10'],
-            ['Server V2', 'symbolplatform/symbol-server:gcc-1.0.3.6'],
-            ['Server V3', 'symbolplatform/symbol-server:gcc-1.0.3.9'],
-            ['REST', 'symbolplatform/symbol-rest:2.4.2'],
+            ['Bootstrap', 'symbol-bootstrap (bootarou fork)'],
+            ...CATAPULT_VERSIONS.map(version => [`Server (${version.id})`, version.symbolServerImage]),
+            ['REST', [...new Set(CATAPULT_VERSIONS.map(version => version.symbolRestImage))].join(' / ')],
             ['Database', 'MongoDB 5.0.15'],
-            ['Container', 'Docker-in-Docker (DinD)'],
+            ['Container', t('help.techDocker')],
           ]}
         />
 
@@ -570,6 +645,7 @@ export function HelpPage() {
           headers={[t('help.techColPort'), t('help.techColUse')]}
           rows={[
             ['4000', t('help.techPort4000')],
+            ['5173', t('help.techPort5173')],
             ['7900', t('help.techPort7900')],
             ['3000', t('help.techPort3000')],
             ['27017', t('help.techPort27017')],
@@ -577,16 +653,17 @@ export function HelpPage() {
           ]}
         />
 
+        <p>{t('help.techPortNote')}</p>
         <h4 className="font-semibold text-zinc-100 mt-4 mb-2">{t('help.techArchTitle')}</h4>
         <div className="bg-zinc-900 rounded-lg p-4 font-mono text-xs text-zinc-400 whitespace-pre overflow-x-auto">{`Host (Windows/macOS/Linux)
-└─ symbol-manager (Docker Container)
-   ├─ Frontend (React + Vite)     ← port 4000
-   ├─ Backend  (Express + WS)     ← port 4000
-   └─ V2 Containers (DinD)
-      ├─ api-node-0               ← port 7900
-      ├─ broker
-      ├─ rest-gateway             ← port 3000
-      └─ db (MongoDB)`}</div>
+└─ Docker Engine
+   ├─ symbol-manager (Docker socket)
+   │  ├─ Frontend (Vite)         :5173
+   │  └─ Backend (API / WS)      :4000
+   ├─ api-node-0                :7900
+   ├─ broker
+   ├─ rest-gateway              :3000
+   └─ db (MongoDB)`}</div>
       </Section>
     </div>
   );
