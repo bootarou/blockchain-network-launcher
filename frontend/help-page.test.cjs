@@ -66,7 +66,11 @@ for (const [lang, dict] of [['ja', ja], ['en', en]]) {
     assert.match(quickStart, /Base Preset/);
     assert.match(quickStart, /Host/);
     assert.match(quickStart, /Friendly Name/);
-    assert.ok(html.includes(dict['help.localNodeSettings']));
+    assert.ok(html.includes(renderToStaticMarkup(React.createElement(React.Fragment, null, dict['help.localNodeSettings']))));
+    assert.match(quickStart, /192\.168\.0\.27/);
+    assert.match(quickStart, /node\.example\.com/);
+    assert.match(quickStart, /NAT/);
+    assert.match(quickStart, /7900/);
     assert.ok(html.includes(dict['help.networkSwitchSafety']));
     for (const id of ['quickstart', 'create-network', 'share-network', 'screens', 'join', 'buttons',
       'reset', 'certificates', 'backups', 'recovery', 'security', 'trouble', 'tech']) {

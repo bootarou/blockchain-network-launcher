@@ -203,7 +203,7 @@ export const ja: TranslationDict = {
   'config.gatewayApiNodeNameHint': 'Nodes セクションのノード名と自動連動します。ノード名を変更するとこちらも自動更新されます。',
   'config.gatewayNoNodes': '— ノードが未設定—',
   'config.gatewayNodeMissing': '存在しないノード',
-  'config.nodeHostRequired': 'Host が未設定です。他ノードから到達できるIPアドレスまたはFQDNを入力してください',
+  'config.nodeHostRequired': "Hostが未設定です。自分のノードのIP/FQDNを入力してください（公開: グローバルIP/FQDN、非公開: ローカルIP）。",
   'config.publicNetworkNotice': 'ℹ️ 公開ネットワーク (testnet / mainnet)',
   'config.publicNetworkInflation': 'インフレスケジュールはネットワーク標準値が自動適用されるため、カスタム設定は無効です。',
   'config.officialNetworkNotice': 'ℹ️ 公式ネットワーク (testnet / mainnet) 参加モード',
@@ -567,7 +567,7 @@ export const ja: TranslationDict = {
   // ===========================================================================
   'help.title': 'ヘルプ・マニュアル',
   'help.networkSwitchSafety': "既存のノードデータがある場合は、Base Presetの変更やインポートだけで別ネットワークに切り替えないでください。Stopとバックアップを先に行い、「リセットの違い」を確認してください。",
-  'help.localNodeSettings': "NodesのHostには自分の到達可能なIP/FQDNを、Friendly Nameには任意の表示名を設定します。配布元のHostをそのまま使わないでください。",
+  'help.localNodeSettings': "NodesのHostには自分のアドレスを設定します。公開運用はグローバルIP/FQDN、LAN内・NAT配下の非公開運用はローカルIP（例: 192.168.0.27）です。Friendly Nameは任意の表示名です。配布元のHostをそのまま使わないでください。",
   'help.joinIntro': "管理者から共有ZIPを受け取れる場合は「共有パッケージ」の手順を使います。ここではJoin Networkで手動設定する場合を説明します。公式mainnet/testnetへの参加はクイックスタートを参照してください。",
   'help.joinStep1': "Join Networkで参加先のREST URLを入力して設定を取得します。自分のHostではなく、稼働中の接続先（例: http://192.168.0.33:3000）です。",
   'help.joinStep2': "管理者から受け取った、そのネットワークのNemesis Seedをインポートします。別ネットワークのSeedや稼働後のdata全体を流用しないでください。",
@@ -652,8 +652,8 @@ export const ja: TranslationDict = {
   'help.quickStartStep1Desc': "mainnet または testnet を選びます。公式ネットワークのパラメータが反映されます。bootstrapはカスタムネットワーク用です。",
   'help.quickStartStep2': "起動ログに表示されるURLへアクセスします。標準Composeの開発画面は http://127.0.0.1:5173、ビルド済み画面を配信する場合はポート4000です。",
   'help.quickStartStep3Title': "NodesのHostに自分のノードのIPアドレスを入力",
-  'help.quickStartStep3Desc': "他ノードから到達できる自分のIPアドレスまたはFQDNを指定します。インターネット越しに参加する場合は、外部から到達できるアドレスとP2Pポートの転送・ファイアウォール設定を確認してください。",
-  'help.quickStartStep3Note': "接続先ノードのIPや0.0.0.0ではありません。GatewaysのHostはDocker内部の接続先で、NodesのHostとは別項目です。",
+  'help.quickStartStep3Desc': "自分のノードのアドレスを、http://やポート番号を付けずに入力します。公開運用はグローバルIPまたはFQDN（例: node.example.com）を設定し、P2Pポート（通常7900/TCP）の転送・ファイアウォール設定も確認します。LAN内・NAT配下の非公開運用は自分のローカルIP（例: 192.168.0.27）を設定します。",
+  'help.quickStartStep3Note': "外部から新規接続を受け付けなくても、外向きのP2P接続が確立・維持されれば同期や有効な生成ブロックの送信は可能です。送信とネットワークでの採用は別です。Hostは接続先ノードのIPや任意の値、0.0.0.0ではありません。GatewaysのHostはDocker内部の接続先なので変更しません。",
   'help.quickStartStep4': "Friendly Nameに任意の表示名を設定",
   'help.quickStartStep4Desc': "NodesのFriendly Nameに、自分のノードの表示名を入力します。",
   'help.quickStartStep4Alt': '代替: Share タブで .symbol-network.zip パッケージを受け取った場合は、ZIP をドロップするだけで設定＆Seed が一括インポートされます。',
@@ -724,7 +724,7 @@ export const ja: TranslationDict = {
   'help.shareImportStep3': 'インポート内容を確認',
   'help.shareImportStep3Desc': 'ネットワーク名、Catapult バージョン、Generation Hash、Seed ファイル数が表示されます。内容が正しいことを確認してください。',
   'help.shareImportStep4': '「Configuration に反映」をクリック',
-  'help.shareImportStep4Desc': "Configurationに切り替わったら、NodesのHostを自分の到達可能なIP/FQDNに、Friendly Nameを任意の表示名に設定します。取り込んだチェーン設定を公式mainnet/testnetのプリセットで上書きしないでください。",
+  'help.shareImportStep4Desc': "NodesのHostには自分のアドレスを設定します。公開運用はグローバルIP/FQDN、LAN内・NAT配下の非公開運用はローカルIP（例: 192.168.0.27）です。Friendly Nameは任意の表示名です。配布元のHostをそのまま使わないでください。 取り込んだチェーン設定を公式mainnet/testnetのプリセットで上書きしないでください。",
   'help.shareImportStep5': "「操作」ページでStart",
   'help.shareImportStep5Desc': "暗号化パスワードを入力してStartし、Dashboardで接続と同期を確認します。参加完了はHealth Checkだけでなく、ブロック高とファイナライズも確認してください。",
 
@@ -1007,7 +1007,7 @@ export const ja: TranslationDict = {
 
   // Node fields
   'field.node.name.desc': 'ノード識別子',
-  'field.node.host.desc': 'ホスト名/IP',
+  'field.node.host.desc': "自分のノードのアドレスを、http://やポート番号を付けずに入力します。公開運用はグローバルIPまたはFQDN（例: node.example.com）を設定し、P2Pポート（通常7900/TCP）の転送・ファイアウォール設定も確認します。LAN内・NAT配下の非公開運用は自分のローカルIP（例: 192.168.0.27）を設定します。",
   'field.node.friendlyName.desc': '表示名',
   'field.node.roles.desc': 'ロール',
   'field.node.harvesting.desc': 'ハーベスト有効',

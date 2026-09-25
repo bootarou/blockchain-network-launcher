@@ -617,7 +617,7 @@ export const CATEGORIES: CategoryMeta[] = [
 
 export const NODE_FIELDS: FieldMeta[] = [
   { key: 'name', label: 'Node Name', type: 'text', description: 'ノード識別子' },
-  { key: 'host', label: 'Host', type: 'text', description: '他ノードから到達できるIPアドレスまたはFQDN（必須）。0.0.0.0 は無効。LAN内なら 192.168.x.x、インターネット公開ならグローバルIPまたはドメイン名', placeholder: '192.168.0.x or example.com' },
+  { key: 'host', label: 'Host', type: 'text', description: '自分のノードのアドレス（必須）。公開運用はグローバルIP/FQDNとP2Pポートの到達性を確保。LAN内・NAT配下の非公開運用はローカルIP（例: 192.168.0.27）。http://やポート番号、接続先ノードのIP、0.0.0.0は指定しません', placeholder: '192.168.0.27 or node.example.com' },
   { key: 'peerNodeUrls', label: 'Peer Node URLs', type: 'textarea', description: '接続先ピアのREST URL(改行 or カンマ区切り, 例: http://192.168.1.10:3000)' },
   { key: 'friendlyName', label: 'Friendly Name', type: 'text', description: '表示名' },
   { key: 'roles', label: 'Roles', type: 'select', description: 'ロール', options: [{ value: 'Peer', label: 'Peer' }, { value: 'Api', label: 'Api' }, { value: 'Peer,Api', label: 'Peer + Api' }, { value: 'Peer,Voting', label: 'Peer + Voting' }, { value: 'Peer,Api,Voting', label: 'Peer + Api + Voting' }] },

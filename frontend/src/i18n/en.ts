@@ -203,7 +203,7 @@ export const en: TranslationDict = {
   'config.gatewayApiNodeNameHint': 'Automatically linked to the node name in the Nodes section. Renaming a node also updates this field.',
   'config.gatewayNoNodes': '— no nodes configured —',
   'config.gatewayNodeMissing': 'node not found',
-  'config.nodeHostRequired': 'Host is not set. Enter the IP address or FQDN reachable from other nodes',
+  'config.nodeHostRequired': "Host is not set. Enter your own node address (public node: public IP/FQDN; private node: local IP).",
   'config.publicNetworkNotice': 'ℹ️ Public Network (testnet / mainnet)',
   'config.publicNetworkInflation': 'Inflation schedule uses standard network values and cannot be customized.',
   'config.officialNetworkNotice': 'ℹ️ Official network (testnet / mainnet) join mode',
@@ -567,7 +567,7 @@ export const en: TranslationDict = {
   // ===========================================================================
   'help.title': 'Help & Manual',
   'help.networkSwitchSafety': "If node data already exists, do not switch networks merely by changing Base Preset or importing settings. Stop and back up first, then review the reset options.",
-  'help.localNodeSettings': "Set Nodes → Host to your own reachable IP/FQDN and Friendly Name to your chosen display name. Do not reuse the distributor’s Host.",
+  'help.localNodeSettings': "Set Nodes → Host to your own address: a public IP/FQDN for a public node, or a local IP (e.g. 192.168.0.27) for a private LAN/NAT node. Friendly Name is your chosen display name. Do not reuse the distributor's Host.",
   'help.joinIntro': "Use the Share package instructions when the administrator provides a ZIP. The steps below cover manual joining with Join Network. For official mainnet/testnet, use Quick Start.",
   'help.joinStep1': "In Join Network, fetch settings from a running peer’s REST URL, such as http://192.168.0.33:3000. This is the peer address, not your own Host.",
   'help.joinStep2': "Import that network’s Nemesis Seed supplied by its administrator. Do not use another network’s Seed or a running node’s entire data directory.",
@@ -652,8 +652,8 @@ export const en: TranslationDict = {
   'help.quickStartStep1Desc': "Choose mainnet or testnet to apply official network parameters. bootstrap is for custom networks.",
   'help.quickStartStep2': "Open the URL shown by the launcher. Standard Compose development UI uses http://127.0.0.1:5173; a built frontend can be served on port 4000.",
   'help.quickStartStep3Title': "Enter your own node address in Nodes → Host",
-  'help.quickStartStep3Desc': "Specify your own IP address or FQDN reachable by other nodes. For Internet connectivity, check the externally reachable address, P2P port forwarding and firewall settings.",
-  'help.quickStartStep3Note': "Do not enter a peer address or 0.0.0.0. Gateways → Host is an internal Docker destination, separate from Nodes → Host.",
+  'help.quickStartStep3Desc': "Enter your own node address without http:// or a port number. For a public node, use its public IP or FQDN (e.g. node.example.com) and configure forwarding/firewall access for P2P (normally TCP 7900). For a private node on a LAN or behind NAT, use its own local IP (e.g. 192.168.0.27).",
+  'help.quickStartStep3Note': "Without accepting new inbound connections, an established and maintained outbound P2P connection can still support synchronization and sending valid locally generated blocks. Sending does not guarantee network acceptance. Host is not a peer address, an arbitrary value or 0.0.0.0. Leave Gateways → Host unchanged: it names an internal Docker destination.",
   'help.quickStartStep4': "Set a display name in Friendly Name",
   'help.quickStartStep4Desc': "Enter a display name for your node under Nodes → Friendly Name.",
   'help.quickStartStep4Alt': 'Alternative: If you received a .symbol-network.zip package from the Share tab, just drop the ZIP to bulk-import settings & seed.',
@@ -724,7 +724,7 @@ export const en: TranslationDict = {
   'help.shareImportStep3': 'Verify import contents',
   'help.shareImportStep3Desc': 'Network name, Catapult version, Generation Hash, and seed file count are displayed. Verify the contents are correct.',
   'help.shareImportStep4': 'Click "Apply to Configuration"',
-  'help.shareImportStep4Desc': "In Configuration, set Nodes → Host to your own reachable IP/FQDN and Friendly Name to a display name. Do not overwrite the imported chain settings with an official mainnet/testnet preset.",
+  'help.shareImportStep4Desc': "Set Nodes → Host to your own address: a public IP/FQDN for a public node, or a local IP (e.g. 192.168.0.27) for a private LAN/NAT node. Friendly Name is your chosen display name. Do not reuse the distributor's Host. Do not overwrite the imported chain settings with an official mainnet/testnet preset.",
   'help.shareImportStep5': "Select Start on Operations",
   'help.shareImportStep5Desc': "Enter the encryption password and Start, then check connectivity and synchronization on Dashboard, including block height and finalization.",
 
@@ -1007,7 +1007,7 @@ export const en: TranslationDict = {
 
   // Node fields
   'field.node.name.desc': 'Node identifier',
-  'field.node.host.desc': 'Hostname / IP',
+  'field.node.host.desc': "Enter your own node address without http:// or a port number. For a public node, use its public IP or FQDN (e.g. node.example.com) and configure forwarding/firewall access for P2P (normally TCP 7900). For a private node on a LAN or behind NAT, use its own local IP (e.g. 192.168.0.27).",
   'field.node.friendlyName.desc': 'Display name',
   'field.node.roles.desc': 'Roles',
   'field.node.harvesting.desc': 'Harvesting enabled',
