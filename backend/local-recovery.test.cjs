@@ -254,6 +254,7 @@ test('real API middleware blocks mutations during recovery but allows status and
   const program = ts.transpileModule(`let pendingMutations = 0;\n${middleware.getText(tree)}\n${routes.map(n => n.getText(tree)).join('\n')}`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   vm.runInNewContext(program, { app, localRecovery, backupFiles, certificateRenewal: { busy: false }, activeProcess: null, isStartSequenceInFlight: false,
+    backupPreparing: false, fastSync: { busy: false, pending: false },
     networkStatus: {}, broadcastStatus() {}, broadcastLog() {} });
   for (const endpoint of ['/commands/start', '/commands/resetData', '/commands/fullReset', '/commands/clearLocks', '/backups', '/restore']) {
     app.post(`/api${endpoint}`, (_req, res) => res.json({ success: true }));

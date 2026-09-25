@@ -556,6 +556,14 @@ export function HelpPage() {
       </Section>
 
       <Section id="backups" title={t('help.backupTitle')} icon={HardDrive}>
+        <h4 className="font-semibold">{t('fastSync.title')}</h4>
+        <p>{t('fastSync.exportDesc')}</p>
+        <p>{t('fastSync.distributionNote')}</p>
+        <p>{t('fastSync.description')}</p>
+        <p>{t('fastSync.scope')}</p>
+        <p>{t('fastSync.prepare')}</p>
+        <p>{t('fastSync.trust')}</p>
+        <p>{t('fastSync.readyNext')}</p>
         <p>{t('help.backupIntro')}</p>
         <Table headers={[t('help.shareCompareMethod'), t('help.shareCompareContents')]} rows={[
           [t('help.backupIdentityLabel'), t('help.backupIdentity')],

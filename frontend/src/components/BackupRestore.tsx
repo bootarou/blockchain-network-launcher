@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Download, Upload, ShieldCheck, AlertTriangle, CheckCircle2, XCircle, FileArchive, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from '../i18n';
 import { api, type BackupFile } from '../lib/api';
+import { FastSyncPanel } from './FastSyncPanel';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,8 @@ export function BackupRestore() {
   const [listLoaded, setListLoaded] = useState(false);
   const creating = backups.some(backup => backup.state === 'creating');
   const backupBusy = creating || submitting;
-  const [fullBackup, setFullBackup] = useState(false);
+  const [exportKind, setExportKind] = useState<'identity' | 'full' | 'fast-sync'>('identity');
+  const fullBackup = exportKind !== 'identity';
 
   // ── Restore state ──
   const [dragOver, setDragOver] = useState(false);
@@ -103,7 +105,7 @@ export function BackupRestore() {
     setSubmitting(true);
     setBackupError(null);
     try {
-      const job = await api.createBackup(fullBackup);
+      const job = await api.createBackup(fullBackup, exportKind === 'fast-sync' ? 'fast-sync' : 'backup');
       setBackups(previous => [job, ...previous.filter(item => item.id !== job.id)]);
     } catch (error) {
       setBackupError(error instanceof Error ? error.message : String(error));
@@ -191,6 +193,8 @@ export function BackupRestore() {
         </p>
       </div>
 
+      <FastSyncPanel />
+
       {/* ══════════════════════════════════════════════════════════════════════
           BACKUP SECTION
           ══════════════════════════════════════════════════════════════════════ */}
@@ -222,7 +226,7 @@ export function BackupRestore() {
           )}
 
           {/* File status table */}
-          {status && (
+          {status && exportKind !== 'fast-sync' && (
             <div>
               <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">
                 {t('backup.files.title')}
@@ -260,40 +264,23 @@ export function BackupRestore() {
           <div className="flex items-start gap-2 px-4 py-3 rounded-lg bg-amber-950/30 border border-amber-800/30">
             <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
             <p className="text-xs text-amber-300/80 leading-relaxed">
-              {t('backup.note')}
+              {t(exportKind === 'fast-sync' ? 'fastSync.distributionNote' : 'backup.note')}
             </p>
           </div>
 
-          {/* Full backup toggle (block data + MongoDB) */}
-          {status?.fullBackup?.available && (
-            <label className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-colors ${
-              fullBackup
-                ? 'bg-teal-950/30 border-teal-700/50'
-                : 'bg-zinc-800/50 border-zinc-700/50'
-            } ${isStopped ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}>
-              <input
-                type="checkbox"
-                checked={fullBackup}
-                disabled={!isStopped || backupBusy || restoring}
-                onChange={(e) => setFullBackup(e.target.checked)}
-                className="mt-0.5 w-4 h-4 rounded border-zinc-600 bg-zinc-900 text-teal-500 focus:ring-teal-500/30"
-              />
-              <div className="min-w-0">
-                <div className="text-sm text-zinc-200 font-medium">
-                  {t('backup.full.label')}
-                  <span className="ml-2 text-xs text-zinc-500 font-mono">
-                    (+{formatBytes(status.fullBackup.bytes)})
-                  </span>
-                </div>
-                <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
-                  {t('backup.full.desc')}
-                </p>
-                {!isStopped && (
-                  <p className="text-xs text-amber-400 mt-1">{t('backup.full.requireStop')}</p>
-                )}
-              </div>
-            </label>
-          )}
+          <div className="space-y-2">
+            <label htmlFor="backup-kind" className="block text-sm">{t('fastSync.exportKind')}</label>
+            <select id="backup-kind" value={exportKind} disabled={backupBusy || restoring}
+              onChange={e => setExportKind(e.target.value as typeof exportKind)}
+              className="w-full min-w-0 rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm">
+              <option value="identity">{t('help.backupIdentityLabel')}</option>
+              <option value="full" disabled={!status?.fullBackup?.available}>{t('backup.full.label')}</option>
+              <option value="fast-sync" disabled={!status?.fullBackup?.available}>{t('fastSync.package')}</option>
+            </select>
+            {fullBackup && <p className="text-xs text-zinc-400">{t(exportKind === 'fast-sync' ? 'fastSync.exportDesc' : 'backup.full.desc')}</p>}
+            {fullBackup && status?.fullBackup && <p className="text-xs text-zinc-500">{t('fastSync.sourceSize')} {formatBytes(status.fullBackup.bytes)}</p>}
+            {fullBackup && !isStopped && <p className="text-xs text-amber-400">{t('backup.full.requireStop')}</p>}
+          </div>
 
           {/* Download button */}
           <button
@@ -308,7 +295,7 @@ export function BackupRestore() {
             ) : (
               <FileArchive className="w-4 h-4" />
             )}
-            {backupBusy ? t('backup.saved.creating') : t('backup.saved.create')}
+            {backupBusy ? t('backup.saved.creating') : t(exportKind === 'fast-sync' ? 'fastSync.export' : 'backup.saved.create')}
           </button>
           {(backupError || listError) && <p role="alert" className="text-sm text-red-300 break-words">{backupError || t('backup.saved.loadError')}</p>}
           <div className="border-t border-zinc-800 pt-4">
@@ -320,11 +307,16 @@ export function BackupRestore() {
                 <li key={job.id} className="py-3 flex flex-wrap items-center gap-3">
                   <div className="min-w-0 flex-1 basis-52">
                     <p className="text-sm text-zinc-200 break-all">{job.filename}</p>
+                    {job.kind === 'fast-sync' && <p className="text-xs text-teal-400 mt-1">{t('fastSync.package')}</p>}
                     <p className={`text-xs mt-1 ${job.state === 'failed' ? 'text-red-300' : 'text-zinc-400'}`}>
                       {t(`backup.saved.${job.state}`)} · {formatBytes(job.bytes)}
                       {job.state === 'creating' && ` · ${t('backup.saved.files', { count: String(job.processedFiles) })}`}
                     </p>
                     {job.error && <p className="text-xs text-red-300 mt-1 break-words">{job.error}</p>}
+                    {job.full && job.state === 'ready' && <p className="text-xs text-zinc-400 mt-1 break-words">
+                      {t(job.fastSyncEligible ? 'fastSync.eligible' : 'fastSync.ineligible')}
+                      {job.fastSyncUnavailable ? `: ${job.fastSyncUnavailable}` : ''}
+                    </p>}
                   </div>
                   {job.state === 'ready' && (
                     <a href={api.getBackupDownloadUrl(job.id)} download title={t('backup.download')} aria-label={t('backup.download')}

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:help": "node --test help-page.test.cjs"
+    "test:help": "node --test help-page.test.cjs",
+    "test:fast-sync": "node --test fast-sync.test.cjs"
   },
   "keywords": [],
   "author": "",

@@ -8,11 +8,14 @@ export interface BackupFile {
   id: string;
   filename: string;
   full: boolean;
+  kind?: 'backup' | 'fast-sync';
   createdAt: string;
   state: 'creating' | 'ready' | 'failed';
   bytes: number;
   processedFiles: number;
   error?: string;
+  fastSyncEligible?: boolean;
+  fastSyncUnavailable?: string;
 }
 
 interface Source { diskPath: string; zipPath: string }
@@ -64,21 +67,28 @@ export class BackupFiles {
     fs.renameSync(file + '.tmp', file);
   }
 
-  start(full: boolean, files: Source[], directories: Source[], metadata: unknown): BackupFile {
+  start(full: boolean, files: Source[], directories: Source[], metadata: unknown, select?: (name: string) => boolean): BackupFile {
     if (this.active) throw new Error('A backup is already being created.');
+    const fastSync = (metadata as { type?: string })?.type === 'node-fast-sync';
+    if (fastSync && (!select || files.length > 0)) throw new Error('Fast Sync export requires filtered directories, without identity files.');
     const createdAt = new Date().toISOString();
     const job: BackupFile = {
       id: crypto.randomUUID(), full, createdAt, state: 'creating', bytes: 0, processedFiles: 0,
-      filename: `node-${full ? 'full-' : ''}backup-${createdAt.replace(/[:.]/g, '-').slice(0, 19)}.zip`,
+      kind: fastSync ? 'fast-sync' : 'backup',
+      filename: `node-${fastSync ? 'fast-sync' : full ? 'full-backup' : 'backup'}-${createdAt.replace(/[:.]/g, '-').slice(0, 19)}.zip`,
+      ...(full ? {
+        fastSyncEligible: !!(metadata as { fastSync?: unknown })?.fastSync,
+        fastSyncUnavailable: (metadata as { fastSyncUnavailable?: string })?.fastSyncUnavailable,
+      } : {}),
     };
     this.save(job);
     this.jobs.set(job.id, job);
     this.active = true;
-    void this.create(job, files, directories, metadata);
+    void this.create(job, files, directories, metadata, select);
     return { ...job };
   }
 
-  private async create(job: BackupFile, files: Source[], directories: Source[], metadata: unknown) {
+  private async create(job: BackupFile, files: Source[], directories: Source[], metadata: unknown, select?: (name: string) => boolean) {
     const partial = this.filePath(job.id) + '.part';
     const archive = archiver('zip', { forceZip64: true, zlib: { level: 6 } });
     this.archive = archive;
@@ -96,6 +106,39 @@ export class BackupFiles {
       archive.append(JSON.stringify(metadata, null, 2), { name: 'backup-meta.json' });
       for (const file of files) archive.file(file.diskPath, { name: file.zipPath });
       for (const dir of directories) {
+        if (select) {
+          // Walk lazily and wait for each archived entry: large snapshots must not queue millions of paths.
+          const walk = async (diskPath: string, zipPath: string): Promise<void> => {
+            if (archive.destroyed) throw new Error('Archive output was closed.');
+            const stat = await fs.promises.lstat(diskPath);
+            if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()) || (stat.isFile() && stat.nlink > 1)) {
+              throw new Error('Links and special files are not allowed in Fast Sync exports.');
+            }
+            if (stat.isDirectory()) {
+              const items = await fs.promises.opendir(diskPath);
+              for await (const item of items) await walk(path.join(diskPath, item.name), `${zipPath}/${item.name}`);
+              return;
+            }
+            if (!select(zipPath) || zipPath.endsWith('.lock') || zipPath.endsWith('server-recovery.started')) return;
+            const handle = await fs.promises.open(diskPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+            try {
+              const actual = await handle.stat();
+              if (!actual.isFile() || actual.nlink > 1 || actual.ino !== stat.ino || actual.dev !== stat.dev) throw new Error('Export source changed during creation.');
+              if (archive.destroyed) throw new Error('Archive output was closed.');
+              const input = handle.createReadStream({ autoClose: false });
+              input.once('error', error => archive.destroy(error));
+              await new Promise<void>((resolve, reject) => {
+                const cleanup = () => { archive.removeListener('entry', done); archive.removeListener('error', fail); };
+                const done = (entry: { name: string }) => { if (entry.name === zipPath) { cleanup(); resolve(); } };
+                const fail = (error: Error) => { cleanup(); reject(error); };
+                archive.on('entry', done); archive.once('error', fail);
+                archive.append(input, { name: zipPath, mode: 0o600 });
+              }).finally(() => input.destroy());
+            } finally { await handle.close(); }
+          };
+          await walk(dir.diskPath, dir.zipPath);
+          continue;
+        }
         archive.directory(dir.diskPath, dir.zipPath, entry => {
           const name = entry.name;
           return name.endsWith('.lock') || name.endsWith('server-recovery.started') ? false : entry;

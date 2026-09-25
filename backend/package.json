@@ -4,7 +4,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch server.ts",
-    "test": "vitest run && node --test nemesis-seed.test.cjs backup-files.test.cjs local-recovery.test.cjs certificate-renewal.test.cjs",
+    "test": "vitest run && node --test nemesis-seed.test.cjs backup-files.test.cjs local-recovery.test.cjs certificate-renewal.test.cjs fast-sync.test.cjs",
+    "test:fast-sync": "node --test fast-sync.test.cjs",
     "test:certificates": "node --test certificate-renewal.test.cjs",
     "test:recovery": "node --test local-recovery.test.cjs",
     "test:seed": "node --test nemesis-seed.test.cjs",
@@ -18,19 +19,23 @@
     "@nftdrive/beacon-sdk": "github:bootarou/beacon#v1.0.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
+    "buffer-crc32": "^1.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "js-yaml": "^4.1.1",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.7",
     "@types/archiver": "^6.0.3",
+    "@types/buffer-crc32": "^0.2.4",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.3.0",
     "@types/ws": "^8.18.1",
+    "@types/yauzl": "^3.4.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"

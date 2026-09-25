@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import yaml from 'js-yaml';
 import archiver from 'archiver';
 import { BackupFiles } from './backup-files.js';
+import { FastSync, createSnapshot, selectedPath, type Snapshot } from './fast-sync.js';
 import { LocalRecovery, queueProblems } from './local-recovery.js';
 import { CertificateRenewal, CertificateError, redactBootstrapArgs, secretLogFilter } from './certificate-renewal.js';
 import AdmZip from 'adm-zip';
@@ -162,6 +163,8 @@ app.use('/api', (req, res, next) => {
 });
 
 const server = http.createServer(app);
+// Full snapshot uploads can exceed Node's five-minute default request deadline.
+server.requestTimeout = 24 * 60 * 60 * 1000;
 const wss = new WebSocketServer({ noServer: true });
 
 // Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
@@ -272,10 +275,18 @@ let activeProcess: ChildProcess | null = null;
 let isStartSequenceInFlight = false;
 
 const backupFiles = new BackupFiles(path.join(SHARED_DIR, 'backups'));
+const fastSync = new FastSync(TARGET_DIR, path.join(SHARED_DIR, 'fast-sync.json'), broadcastLog);
+let backupPreparing = false;
 const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog);
 const certificateRenewal = new CertificateRenewal(TARGET_DIR, PRESET_PATH, path.join(SHARED_DIR, 'certificate-renewal.json'), broadcastLog);
 let pendingMutations = 0;
 app.use('/api', (req, res, next) => {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (backupPreparing || fastSync.busy || (fastSync.pending && isStartSequenceInFlight)) return res.status(409).json({ error: 'BACKUP_OR_FAST_SYNC_ACTIVE' });
+    if (fastSync.pending && !['/fast-sync', '/preset', '/commands/start'].includes(req.path)) {
+      return res.status(409).json({ error: 'FAST_SYNC_PENDING: finish or discard the import in Backup first.' });
+    }
+  }
   if (certificateRenewal.busy && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     return res.status(409).json({ error: 'CERTIFICATE_RENEWAL_ACTIVE', renewal: certificateRenewal.status() });
   }
@@ -298,6 +309,27 @@ app.use('/api', (req, res, next) => {
   } as typeof res.end;
   req.once('aborted', release);
   next();
+});
+
+app.get('/api/fast-sync', (_req, res) => res.json({ ...fastSync.eligibility(), job: fastSync.status() }));
+app.post('/api/fast-sync', async (req, res) => {
+  try {
+    if (req.headers['x-fast-sync-trusted'] !== 'yes') return res.status(400).json({ error: 'Confirm that you trust the backup source.' });
+    if (!req.is('application/octet-stream')) return res.status(415).json({ error: 'Expected a binary ZIP upload.' });
+    req.setTimeout(120000, () => req.destroy(new Error('Upload idle timeout.')));
+    if (networkStatus.state !== 'stopped' || pendingMutations > 1 || activeProcess || isStartSequenceInFlight) {
+      return res.status(409).json({ error: 'Stop other operations before importing.' });
+    }
+    const job = await fastSync.receive(req);
+    res.status(202).json({ job });
+  } catch (e: any) { if (!res.destroyed) res.status(409).json({ error: e.message }); }
+});
+app.delete('/api/fast-sync', async (_req, res) => {
+  try {
+    if (pendingMutations > 1 || activeProcess || isStartSequenceInFlight) throw new Error('Another operation is active.');
+    await fastSync.discard();
+    res.json({ success: true });
+  } catch (e: any) { res.status(409).json({ error: e.message }); }
 });
 
 app.get('/api/recovery', (_req, res) => res.json({ job: localRecovery.status(), busy: localRecovery.busy }));
@@ -7230,11 +7262,15 @@ app.delete('/api/backups/:id', (req, res) => {
   catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/backups', (req, res) => {
+app.post('/api/backups', async (req, res) => {
   try {
     // ?full=1 → include block data + MongoDB.  Essential for custom networks
     // where this node's block store IS the chain (no peers to resync from).
-    const full = req.body?.full === true;
+    const distribution = req.body?.kind === 'fast-sync';
+    if (req.body?.kind !== undefined && !['backup', 'fast-sync'].includes(req.body.kind)) {
+      return res.status(400).json({ error: 'Unknown backup kind.' });
+    }
+    const full = distribution || req.body?.full === true;
     if (backupFiles.busy || pendingMutations > 0 || activeProcess || isStartSequenceInFlight) {
       return res.status(409).json({ error: 'Another operation is in progress.' });
     }
@@ -7253,6 +7289,27 @@ app.post('/api/backups', (req, res) => {
       }
     }
 
+    backupPreparing = true;
+    let snapshot: Snapshot | undefined;
+    let fastSyncUnavailable: string | undefined;
+    if (full) {
+      try { snapshot = await createSnapshot(TARGET_DIR); }
+      catch (e: any) {
+        if (distribution) return res.status(409).json({ error: `Fast Sync export unavailable: ${e.message}` });
+        fastSyncUnavailable = e.message;
+        broadcastLog(`[Backup] Fast Sync unavailable for this backup: ${e.message}\n`);
+      }
+    }
+    if (distribution) {
+      if (!snapshot) throw new Error('Fast Sync metadata is required.');
+      const node = snapshot.node;
+      const job = backupFiles.start(true, [], [
+        { diskPath: path.join(TARGET_DIR, 'nodes', node, 'data'), zipPath: `blockdata/${node}` },
+        { diskPath: path.join(TARGET_DIR, 'databases', 'db'), zipPath: 'databases/db' },
+      ], { formatVersion: 1, type: 'node-fast-sync', full: false, createdAt: new Date().toISOString(), fastSync: snapshot },
+      name => selectedPath(name, node) !== null);
+      return res.status(202).json(job);
+    }
     broadcastLog(`[Backup] Creating ${full ? 'FULL' : 'identity'} node backup ZIP...\n`);
 
     // Collect files to backup
@@ -7359,6 +7416,8 @@ app.post('/api/backups', (req, res) => {
       formatVersion: 1,
       type: full ? 'node-full-backup' : 'node-backup',
       full,
+      fastSync: snapshot,
+      fastSyncUnavailable,
       createdAt: new Date().toISOString(),
       files: [...filesToBackup.map((f) => f.zipPath), ...dirsToBackup.map((d) => `${d.zipPath}/`)],
     };
@@ -7368,7 +7427,7 @@ app.post('/api/backups', (req, res) => {
   } catch (err: any) {
     broadcastLog(`[Backup] ❌ Failed: ${err.message}\n`);
     if (!res.headersSent) res.status(500).json({ error: err.message });
-  }
+  } finally { backupPreparing = false; }
 });
 
 /** GET /api/backup/status — check which backup files are available */
@@ -7498,7 +7557,13 @@ app.post('/api/restore', (req, res) => {
       // Validate: must contain custom-preset.yml
       if (!extractedFiles.includes('custom-preset.yml')) {
         cleanupStaging();
-        return res.status(400).json({ error: 'Invalid backup: custom-preset.yml not found.' });
+        return res.status(400).json({ error: 'Not a restorable backup: custom-preset.yml not found. Use Fast Sync for a Fast Sync package.' });
+      }
+
+      const restoreMeta = zip.getEntry('backup-meta.json');
+      if (restoreMeta && JSON.parse(restoreMeta.getData().toString('utf8')).type === 'node-fast-sync') {
+        cleanupStaging();
+        return res.status(400).json({ error: 'Fast Sync packages cannot be used for identity restore. Use Fast Sync instead.' });
       }
 
       // ── Step 0: Clean existing runtime data ──────────────────────────
@@ -7708,6 +7773,7 @@ app.post('/api/restore', (req, res) => {
 
 app.post('/api/commands/start', async (req, res) => {
   try {
+    fastSync.assertStart();
     const { password, mode: requestedMode } = req.body as { password?: string; mode?: string };
     if (!password) {
       return res.status(400).json({ error: 'Network encryption password is required.' });
@@ -7781,6 +7847,7 @@ app.post('/api/commands/start', async (req, res) => {
       startMode = (dataExists && generatedPresetExists && composeExists) ? 'restart' : 'full';
     }
 
+    if (fastSync.pending) startMode = 'full';
     broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
     broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists})\n`);
     const startSequence = async () => {
@@ -8200,7 +8267,7 @@ app.post('/api/commands/start', async (req, res) => {
         // Staging dirs stay in place: symbol-bootstrap config only checks
         // target/preset.yml (verified in ConfigService), and .pending-restore
         // can hold gigabytes of block data that must not be copied to /tmp.
-        const STASH_SKIP = new Set(['.pending-restore', '.pending-harvesters', '.restore-extract', '.restore-upload.zip']);
+        const STASH_SKIP = new Set(['.pending-restore', '.pending-harvesters', '.restore-extract', '.restore-upload.zip', '.fast-sync']);
         const items = fs.readdirSync(TARGET_DIR).filter((i) => !STASH_SKIP.has(i));
         for (const item of items) {
           const src = path.join(TARGET_DIR, item);
@@ -8801,6 +8868,8 @@ app.post('/api/commands/start', async (req, res) => {
       //   restore.  Runs after the nemesis seed steps (4d/4e) so nothing
       //   overwrites the restored chain files afterwards.
       await installPendingRestoreData(TARGET_DIR);
+
+      await fastSync.install();
 
       // Step 4g: Stop existing node containers, then remove stale lock files
       //   before running.  This is a safety net for the full mode.

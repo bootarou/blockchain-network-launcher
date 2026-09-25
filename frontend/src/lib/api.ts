@@ -9,11 +9,14 @@ export interface BackupFile {
   id: string;
   filename: string;
   full: boolean;
+  kind?: 'backup' | 'fast-sync';
   createdAt: string;
   state: 'creating' | 'ready' | 'failed';
   bytes: number;
   processedFiles: number;
   error?: string;
+  fastSyncEligible?: boolean;
+  fastSyncUnavailable?: string;
 }
 
 export interface RecoveryJob {
@@ -528,6 +531,38 @@ export const api = {
 
   // ── Backup / Restore ───────────────────────────────────────────────────
 
+  getFastSync: async (): Promise<{
+    available: boolean; reason: string;
+    job: null | { state: 'uploading' | 'extracting' | 'ready' | 'installing' | 'complete' | 'failed' | 'manual'; bytes: number; files: number; height?: string; error?: string };
+  }> => {
+    const res = await authFetch(`${API_BASE}/fast-sync`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+  discardFastSync: async () => {
+    const res = await authFetch(`${API_BASE}/fast-sync`, { method: 'DELETE' });
+    if (!res.ok) { const data = await res.json(); throw new Error(data.error || `HTTP ${res.status}`); }
+  },
+  uploadFastSync: (file: File, onProgress: (percent: number) => void): Promise<void> => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/fast-sync`);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Fast-Sync-Trusted', 'yes');
+    const token = getAuthToken();
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100)); };
+    xhr.onload = () => {
+      try {
+        const result = JSON.parse(xhr.responseText);
+        if (xhr.status === 202) resolve();
+        else reject(new Error(result.error || `HTTP ${xhr.status}`));
+      } catch { reject(new Error(`HTTP ${xhr.status}`)); }
+    };
+    xhr.onerror = () => reject(new Error('Network error. Check Fast Sync status before retrying.'));
+    xhr.onabort = () => reject(new Error('Upload interrupted.'));
+    xhr.send(file);
+  }),
+
   getBackupStatus: async () => {
     try {
       const res = await authFetch(`${API_BASE}/backup/status`);
@@ -543,9 +578,9 @@ export const api = {
     return res.json();
   },
 
-  createBackup: async (full: boolean): Promise<BackupFile> => {
+  createBackup: async (full: boolean, kind: 'backup' | 'fast-sync' = 'backup'): Promise<BackupFile> => {
     const res = await authFetch(`${API_BASE}/backups`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ full }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ full, kind }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
