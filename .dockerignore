@@ -7,4 +7,5 @@
 **/npm-debug.log*
 **/yarn-debug.log*
 **/yarn-error.log*
-shared/target
+# Runtime data (backups, keys, presets and journals) must never enter the image.
+shared

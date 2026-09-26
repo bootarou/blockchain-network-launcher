@@ -94,13 +94,17 @@ WORKDIR /app
 COPY backend/package.json backend/package-lock.json* ./backend/
 COPY frontend/package.json frontend/package-lock.json* ./frontend/
 
-# Install dependencies
-RUN cd backend && npm install && cd ../frontend && npm install
+# Use the same dependency fingerprint at build time and container startup.
+COPY install-dependencies.sh /install-dependencies.sh
+RUN sed -i 's/\r$//' /install-dependencies.sh && chmod +x /install-dependencies.sh \
+    && /install-dependencies.sh /app/backend \
+    && /install-dependencies.sh /app/frontend
 
 # Copy source code
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
-COPY shared/ ./shared/
+# Runtime configuration and backups are supplied by the shared bind mount.
+RUN mkdir -p /app/shared
 
 # Copy and prepare start script (normalize line endings for cross-platform compatibility)
 COPY start.sh /start.sh

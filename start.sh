@@ -20,17 +20,9 @@ mkdir -p "${TARGET_DIR:-/opt/symbol-target}"
 # dynamically by the backend API (server.ts → ensurePatchedImage)
 # based on the catapult version selected in the UI.
 
-# Install backend dependencies if needed
-if [ ! -d /app/backend/node_modules ]; then
-  echo "[Setup] Installing backend dependencies..."
-  cd /app/backend && npm install
-fi
-
-# Install frontend dependencies if needed
-if [ ! -d /app/frontend/node_modules ]; then
-  echo "[Setup] Installing frontend dependencies..."
-  cd /app/frontend && npm install
-fi
+# Bind-mounted sources can have older dependencies than the rebuilt image.
+/install-dependencies.sh /app/backend
+/install-dependencies.sh /app/frontend
 
 # Start Backend API (background)
 echo "[Start] Backend API on port 4000..."

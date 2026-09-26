@@ -362,7 +362,8 @@ log "Waiting for BNL backend"
 ready=0
 last_http="000"
 last_state="unknown"
-for _ in {1..90}; do
+# Existing bind mounts may need a dependency refresh before the API starts.
+for _ in {1..300}; do
   container_id="$(docker compose ps -q symbol-manager 2>/dev/null || true)"
 
   if [[ -n "$container_id" ]]; then
