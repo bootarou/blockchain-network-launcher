@@ -11,6 +11,7 @@ import archiver from 'archiver';
 import { BackupFiles } from './backup-files.js';
 import { FastSync, createSnapshot, selectedPath, type Snapshot } from './fast-sync.js';
 import { LocalRecovery, queueProblems } from './local-recovery.js';
+import { NodeRuntime } from './node-runtime.js';
 import { CertificateRenewal, CertificateError, redactBootstrapArgs, secretLogFilter } from './certificate-renewal.js';
 import AdmZip from 'adm-zip';
 import { buildNemesisSeedState } from './nemesis-seed.js';
@@ -277,7 +278,8 @@ let isStartSequenceInFlight = false;
 const backupFiles = new BackupFiles(path.join(SHARED_DIR, 'backups'));
 const fastSync = new FastSync(TARGET_DIR, path.join(SHARED_DIR, 'fast-sync.json'), broadcastLog);
 let backupPreparing = false;
-const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog);
+const nodeRuntime = new NodeRuntime(TARGET_DIR, path.join(SHARED_DIR, 'node-runtime.json'));
+const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog, undefined, () => nodeRuntime.settings().nofile);
 const certificateRenewal = new CertificateRenewal(TARGET_DIR, PRESET_PATH, path.join(SHARED_DIR, 'certificate-renewal.json'), broadcastLog);
 let pendingMutations = 0;
 app.use('/api', (req, res, next) => {
@@ -330,6 +332,18 @@ app.delete('/api/fast-sync', async (_req, res) => {
     await fastSync.discard();
     res.json({ success: true });
   } catch (e: any) { res.status(409).json({ error: e.message }); }
+});
+
+app.get('/api/node-runtime', async (_req, res) => {
+  try { res.json(await nodeRuntime.status()); }
+  catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/node-runtime', (req, res) => {
+  if (activeProcess || isStartSequenceInFlight || pendingMutations > 1) {
+    return res.status(409).json({ error: 'Wait for the current operation to finish.' });
+  }
+  try { res.json({ settings: nodeRuntime.save(req.body), pendingRestart: true }); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.get('/api/recovery', (_req, res) => res.json({ job: localRecovery.status(), busy: localRecovery.busy }));
@@ -6132,6 +6146,21 @@ function runBootstrapCommand(
       return;
     }
     const bootstrapArgs = [...invocation.prefixArgs, command, ...resolvedArgs];
+
+    // Both quick and full starts reach this point after configuration generation.
+    // Bootstrap RunService reads this compose file for `up`; do not wait until
+    // after startup to fix limits, because automatic recovery runs immediately.
+    if (command === 'run') {
+      try {
+        nodeRuntime.apply();
+        broadcastLog(`[Runtime] Catapult nofile=${nodeRuntime.settings().nofile}; logging settings applied before startup.\n`);
+      } catch (e: any) {
+        networkStatus.state = 'error';
+        broadcastStatus();
+        reject(new Error(`Runtime settings could not be applied: ${e.message}`));
+        return;
+      }
+    }
 
     // CWD must be '/' because symbol-bootstrap internally does
     //   path.join(process.cwd(), target)  — in ComposeService

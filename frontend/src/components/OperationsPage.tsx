@@ -20,6 +20,7 @@ import { configToYaml, yamlToConfig } from '../lib/utils';
 import type { PresetConfig } from '../constants';
 import { TerminalLogs } from './TerminalLogs';
 import { LocalRecoveryStatus } from './LocalRecoveryStatus';
+import { NodeRuntimeSettings } from './NodeRuntimeSettings';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -272,6 +273,7 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
       </div>
 
       <LocalRecoveryStatus onBusy={setRecoveryBusy} />
+      <NodeRuntimeSettings disabled={recoveryBusy || activeModal !== null} />
       <fieldset disabled={recoveryBusy} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-5 text-zinc-100 min-w-0 disabled:opacity-60">
         <h3 className="text-xl font-bold flex items-center gap-2">
           <Activity className="w-5 h-5 text-indigo-400" />

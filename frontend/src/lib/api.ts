@@ -77,6 +77,20 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
 }
 
 export const api = {
+  getNodeRuntime: async () => {
+    const res = await authFetch(`${API_BASE}/node-runtime`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    return body;
+  },
+  saveNodeRuntime: async (settings: { debug: boolean; nofile: number }) => {
+    const res = await authFetch(`${API_BASE}/node-runtime`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    return body;
+  },
   getRecovery: async (): Promise<{ job: RecoveryJob | null; busy: boolean }> => {
     const res = await authFetch(`${API_BASE}/recovery`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

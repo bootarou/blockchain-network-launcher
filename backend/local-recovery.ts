@@ -141,7 +141,7 @@ export class LocalRecovery {
   private job: RecoveryJob | null = null;
   private executing = false;
   constructor(private target: string, private journal: string, private log: (s: string) => void,
-    private run: Docker = docker) {
+    private run: Docker = docker, private nofile: () => number = () => 65536) {
     if (fs.existsSync(journal)) {
       try {
         this.job = JSON.parse(fs.readFileSync(journal, 'utf8'));
@@ -248,9 +248,12 @@ export class LocalRecovery {
   }
   private async launch(role: string, args: string[]) {
     const name = `${this.job!.id}-${role}`;
+    const limit = this.nofile();
+    if (!Number.isSafeInteger(limit) || limit < 65536 || limit > 1048576) throw new Error('Invalid recovery nofile limit');
+    const limits = ['import', 'broker'].includes(role) ? ['--ulimit', `nofile=${limit}:${limit}`] : [];
     this.job!.containers.push(name); this.save();
     await this.run(['run', '-d', '--pull', 'never', '--restart', 'no', '--name', name,
-      '--label', `bnl.local-recovery=${this.job!.id}`, '--log-opt', 'max-size=20m', '--log-opt', 'max-file=3', ...args]);
+      '--label', `bnl.local-recovery=${this.job!.id}`, '--log-opt', 'max-size=20m', '--log-opt', 'max-file=3', ...limits, ...args]);
     return name;
   }
   private async wait(name: string) {

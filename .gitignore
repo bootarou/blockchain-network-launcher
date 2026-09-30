@@ -44,6 +44,8 @@ shared/parse_with_catbuffer.js
 # User-specific preset & runtime data
 shared/custom-preset.yml
 shared/.ui-meta.json
+shared/node-runtime.json
+shared/node-runtime.json.tmp
 
 # Distribution ZIPs (large binaries — rebuild with draft/build-zips.ps1)
 draft/windows.zip
