@@ -7,7 +7,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import yauzl from 'yauzl';
 import crc32 from 'buffer-crc32';
-import { blockHash, readIndex, queuesDrained, switchDirectories } from './local-recovery.js';
+import { blockHash, readIndex, queuesDrained, switchDirectories, validateBatchSize } from './local-recovery.js';
 
 const exec = promisify(execFile);
 const run = async (args: string[]) => (await exec('docker', args, { timeout: 120000, maxBuffer: 8 * 1024 * 1024 })).stdout;
@@ -16,7 +16,8 @@ const hash = (value: string | Buffer) => crypto.createHash('sha256').update(valu
 const reserve = 1024 * 1024 * 1024;
 
 export interface Snapshot {
-  version: 1;
+  version: 1 | 2;
+  fileDatabaseBatchSize?: number;
   node: string;
   height: string;
   genesis: string;
@@ -32,6 +33,7 @@ export interface FastSyncJob {
   files: number;
   height?: string;
   error?: string;
+  storageFormatReleased?: boolean;
 }
 
 function assert(ok: unknown, message: string): asserts ok {
@@ -78,7 +80,8 @@ export async function runtimeProfile(target: string, docker = run) {
   directory(nodeDir);
   const compose = JSON.parse(await docker(['compose', '-f', path.join(target, 'docker/docker-compose.yml'), 'config', '--format', 'json']));
   const services: any[] = Object.values(compose.services);
-  const servers = services.filter(s => s.volumes?.some((v: any) => v.type === 'bind' && v.source === nodeDir && v.target === '/symbol-workdir'));
+  const servers = services.filter(s => /symbol-server|catapult-server/.test(String(s.image))
+    && s.volumes?.some((v: any) => v.type === 'bind' && v.source === nodeDir && v.target === '/symbol-workdir'));
   assert(servers.length === 2 && servers[0].image === servers[1].image, 'Expected a matching node/broker pair.');
   assert(servers.every(s => ['0', '0:0', 'root', 'root:root'].includes(String(s.user))), 'Fast Sync currently requires root-run node/broker containers.');
   imageFamily(servers[0].image);
@@ -86,6 +89,7 @@ export async function runtimeProfile(target: string, docker = run) {
   const command: string[] = Array.isArray(db?.command) ? db.command : String(db?.command || '').split(/\s+/);
   assert(db?.image === 'mongo:5.0.15' && (command.includes('--dbpath=/dbdata') || command[command.indexOf('--dbpath') + 1] === '/dbdata'), 'Expected mongo:5.0.15 with /dbdata storage.');
   const configuration: Record<string, string> = {};
+  let fileDatabaseBatchSize: number | undefined;
   for (const role of ['server', 'broker']) {
     const resources = path.join(nodeDir, role + '-config/resources');
     for (const name of ['network', 'inflation']) {
@@ -93,16 +97,29 @@ export async function runtimeProfile(target: string, docker = run) {
       configuration[role + '/' + name] = hash(JSON.stringify(Object.entries(props).sort(([a], [b]) => a.localeCompare(b))));
     }
     for (const [file, key, expected] of [
-      ['user', 'dataDirectory', './data'], ['node', 'fileDatabaseBatchSize', '1'],
+      ['user', 'dataDirectory', './data'],
       ['node', 'enableCacheDatabaseStorage', 'true'], ['network', 'enableVerifiableState', 'true'],
     ]) assert(property(path.join(resources, `config-${file}.properties`), key) === expected, `Unsupported storage setting: ${key}`);
+    const rawBatch = property(path.join(resources, 'config-node.properties'), 'fileDatabaseBatchSize');
+    assert(/^[0-9]+(?:'[0-9]+)*$/.test(rawBatch), 'Invalid fileDatabaseBatchSize.');
+    const batch = validateBatchSize(Number(rawBatch.replace(/'/g, '')));
+    assert(fileDatabaseBatchSize === undefined || batch === fileDatabaseBatchSize, 'Node/broker fileDatabaseBatchSize mismatch.');
+    fileDatabaseBatchSize = batch;
   }
   assert(property(path.join(nodeDir, 'broker-config/resources/config-database.properties'), 'databaseName') === 'catapult', 'Expected catapult database.');
-  return { node, serverImage: servers[0].image as string, mongoImage: db.image as string, configuration,
+  return { node, fileDatabaseBatchSize: fileDatabaseBatchSize!, serverImage: servers[0].image as string, mongoImage: db.image as string, configuration,
     identities: ['ca.cert.pem', 'node.crt.pem'].map(name => fingerprint(path.join(nodeDir, 'cert', name))) };
 }
 
-export function validateChain(data: string, snapshot?: Snapshot) {
+export function snapshotBatchSize(snapshot: Snapshot): number {
+  if (snapshot.version === 1) {
+    assert(snapshot.fileDatabaseBatchSize === undefined || snapshot.fileDatabaseBatchSize === 1, 'Version 1 snapshots only support batch size 1.');
+    return 1;
+  }
+  return validateBatchSize(snapshot.fileDatabaseBatchSize);
+}
+
+export function validateChain(data: string, snapshot?: Snapshot, batchSize = snapshot ? snapshotBatchSize(snapshot) : 1) {
   const height = readIndex(path.join(data, 'index.dat'));
   assert(height > 1n, 'At least two blocks are required.');
   assert(queuesDrained(data), 'Broker queues must be fully consumed. Stop cleanly and create a new backup.');
@@ -114,7 +131,7 @@ export function validateChain(data: string, snapshot?: Snapshot) {
     directory(path.join(data, name));
     assert(fs.readdirSync(path.join(data, name)).length > 0, `Missing ${name} contents.`);
   }
-  const genesis = blockHash(data, 1n), tip = blockHash(data, height);
+  const genesis = blockHash(data, 1n, batchSize), tip = blockHash(data, height, batchSize);
   if (snapshot) assert(snapshot.height === height.toString() && snapshot.genesis === genesis && snapshot.tip === tip, 'Snapshot block height/hash mismatch.');
   return { height: height.toString(), genesis, tip };
 }
@@ -126,11 +143,12 @@ export async function createSnapshot(target: string, docker = run): Promise<Snap
   assert(fs.statSync(path.join(target, 'databases/db/WiredTiger')).size > 0, 'MongoDB snapshot is missing.');
   const mongoLock = path.join(target, 'databases/db/mongod.lock');
   assert(!fs.existsSync(mongoLock) || fs.statSync(mongoLock).size === 0, 'MongoDB did not stop cleanly.');
-  return { version: 1, ...profile, ...validateChain(data) };
+  return { version: 2, ...profile, ...validateChain(data, undefined, profile.fileDatabaseBatchSize) };
 }
 
 export function validateSnapshot(value: any): asserts value is Snapshot {
-  assert(value?.version === 1 && /^[a-zA-Z0-9_-]+$/.test(value.node), 'No supported Fast Sync metadata. Create a new Fast Sync package or compatible full backup.');
+  assert([1, 2].includes(value?.version) && /^[a-zA-Z0-9_-]+$/.test(value.node), 'No supported Fast Sync metadata. Create a new Fast Sync package or compatible full backup.');
+  snapshotBatchSize(value);
   assert(typeof value.height === 'string' && /^[1-9][0-9]{0,19}$/.test(value.height), 'Invalid snapshot height.');
   for (const key of ['genesis', 'tip']) assert(typeof value[key] === 'string' && /^[A-F0-9]{64}$/.test(value[key]), 'Invalid snapshot hash.');
   imageFamily(value.serverImage);
@@ -357,7 +375,7 @@ export class FastSync {
     assert(profile.identities.every(id => !snapshot.identities.includes(id)), 'Source identity reused. Fast Sync requires new CA and transport keys.');
     const data = path.join(this.target, 'nodes', profile.node, 'data');
     assert(readIndex(path.join(data, 'index.dat')) <= 1n, 'Destination has already synchronized blocks.');
-    assert(blockHash(data, 1n) === snapshot.genesis, 'Nemesis mismatch. Refusing to mix networks.');
+    assert(blockHash(data, 1n, profile.fileDatabaseBatchSize) === snapshot.genesis, 'Nemesis mismatch. Refusing to mix networks.');
     validateChain(path.join(this.work, 'data'), snapshot);
     const database = path.join(this.target, 'databases/db');
     fs.mkdirSync(database, { recursive: true });
@@ -367,10 +385,44 @@ export class FastSync {
     try {
       this.switchData([[data, path.join(this.work, 'data'), path.join(this.work, 'original-data')],
         [database, path.join(this.work, 'mongo'), path.join(this.work, 'original-mongo')]]);
+      this.writeBatchConfiguration(profile.node, snapshotBatchSize(snapshot));
       this.job!.state = 'complete'; this.save();
       this.log(`[Fast Sync] Installed height ${snapshot.height}; remaining blocks will synchronize from peers.\n`);
     } catch (e: any) {
       this.job!.state = 'manual'; this.job!.error = e.message; this.save(); throw e;
     }
+  }
+
+  private writeBatchConfiguration(node: string, batch: number) {
+    validateBatchSize(batch);
+    const edits = ['server', 'broker'].map(role => {
+      const file = path.join(this.target, 'nodes', node, role + '-config/resources/config-node.properties');
+      property(file, 'fileDatabaseBatchSize'); // reject missing/ambiguous entries before any writes
+      const text = fs.readFileSync(file, 'utf8').replace(/^(\s*fileDatabaseBatchSize\s*=)[^\r\n]*/m, `$1 ${batch}`);
+      return { file, text };
+    });
+    for (const { file, text } of edits) fs.writeFileSync(file, text);
+  }
+
+  // Bootstrap can regenerate configuration on later full starts. Retain the
+  // imported storage format, but only after checking the actual installed data.
+  preserveInstalledStorage() {
+    if (this.job?.state !== 'complete' || this.job.storageFormatReleased) return;
+    const snapshot: Snapshot = JSON.parse(fs.readFileSync(path.join(this.work, 'snapshot.json'), 'utf8'));
+    validateSnapshot(snapshot);
+    const nodes = fs.readdirSync(path.join(this.target, 'nodes'));
+    assert(nodes.length === 1 && /^[a-zA-Z0-9_-]+$/.test(nodes[0]), 'Expected one Fast Sync destination node.');
+    const data = path.join(this.target, 'nodes', nodes[0], 'data');
+    const height = readIndex(path.join(data, 'index.dat'));
+    // An explicit data reset starts a new chain; do not override its new format.
+    if (height <= 1n) {
+      this.job.storageFormatReleased = true;
+      this.save();
+      return;
+    }
+    const batch = snapshotBatchSize(snapshot);
+    assert(blockHash(data, 1n, batch) === snapshot.genesis, 'Installed Fast Sync genesis mismatch.');
+    blockHash(data, height, batch);
+    this.writeBatchConfiguration(nodes[0], batch);
   }
 }

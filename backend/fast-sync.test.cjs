@@ -19,12 +19,41 @@ function load(name) {
     require: id => id === './local-recovery.js' ? load('local-recovery') : require(id) });
   return result;
 }
-const { FastSync, selectedPath, safeEntry, validateSnapshot, validateChain, assertFresh, runtimeProfile, createSnapshot } = load('fast-sync');
-const { blockPath, blockHash } = load('local-recovery');
+const { FastSync, selectedPath, safeEntry, validateSnapshot, validateChain, assertFresh, runtimeProfile, createSnapshot, snapshotBatchSize } = load('fast-sync');
+const { blockPath, blockHash, validateBatchSize } = load('local-recovery');
 const { BackupFiles } = load('backup-files');
 function put(file, contents) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents); }
 function index(n) { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; }
 function block(h) { const b = Buffer.alloc(408); b.writeUInt32LE(376); b.writeBigUInt64LE(BigInt(h), 112); b.fill(h, 376); return b; }
+// Fixture encoder follows Catapult FileDatabase::outputStream: a uint64 offset
+// table followed by payloads. Group the global id before splitting directories.
+function batchedFiles(batch, heights) {
+  const groups = new Map();
+  for (const h of heights) {
+    const group = Math.floor(h / batch) * batch;
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(h);
+  }
+  const result = {};
+  for (const [group, values] of groups) {
+    const header = batch === 1 ? Buffer.alloc(0) : Buffer.alloc(batch * 8);
+    const chunks = [header]; let position = header.length;
+    for (const h of values.sort((a, b) => a - b)) {
+      if (batch !== 1) header.writeBigUInt64LE(BigInt(position), (h % batch) * 8);
+      const payload = block(h); chunks.push(payload); position += payload.length;
+    }
+    result[`${String(Math.floor(group / 10000)).padStart(5, '0')}/${String(group % 10000).padStart(5, '0')}.dat`] = Buffer.concat(chunks);
+  }
+  return result;
+}
+function batchEntries(batch) {
+  const meta = { ...metadata(), version: 2, fileDatabaseBatchSize: batch };
+  const files = entries(meta);
+  delete files['blockdata/api-node-0/00000/00001.dat'];
+  delete files['blockdata/api-node-0/00000/00002.dat'];
+  for (const [name, data] of Object.entries(batchedFiles(batch, [1, 2]))) files['blockdata/api-node-0/' + name] = data;
+  return files;
+}
 function fixture(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-fast-sync-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -356,4 +385,95 @@ test('dedicated export API fails closed on incompatible snapshots instead of fal
   const rejectPosition = text.indexOf("Fast Sync packages cannot be used for identity restore");
   const cleanupPosition = text.indexOf('// ── Step 0: Clean existing runtime data');
   assert.ok(rejectPosition > 0 && rejectPosition < cleanupPosition);
+});
+
+test('batch reader handles one-file, partial batch, batch boundary and decimal directory boundary', t => {
+  const f = fixture(t);
+  for (const batch of [1, 2, 3, 100, 10001]) {
+    const dir = path.join(f.root, `batch-${batch}`);
+    const heights = [...new Set([1, 2, batch - 1, batch, batch + 1, 9999, 10000, 10001].filter(h => h > 0))];
+    for (const [name, bytes] of Object.entries(batchedFiles(batch, heights))) put(path.join(dir, name), bytes);
+    for (const h of heights) assert.equal(blockHash(dir, BigInt(h), batch), block(h).subarray(376).toString('hex').toUpperCase());
+  }
+  assert.equal(blockPath('data', 10000n, 3), path.join('data', '00000', '09999.dat'));
+});
+
+test('batch reader rejects missing, out-of-bounds and reversed offsets, truncated slices and wrong heights', t => {
+  const f = fixture(t), dir = path.join(f.root, 'bad-batch');
+  const original = Object.values(batchedFiles(100, [1, 2]))[0];
+  for (const mutate of [
+    b => { b.writeBigUInt64LE(0n, 8); },
+    b => { b.writeBigUInt64LE(8n, 8); },
+    b => { b.writeBigUInt64LE(2n ** 63n, 8); },
+    b => { b.writeBigUInt64LE(799n, 16); },
+    b => { b.writeBigUInt64LE(BigInt(b.length + 1), 16); },
+    b => { b.writeBigUInt64LE(850n, 16); },
+    b => { b.writeUInt32LE(1000, 800); },
+    b => { b.writeBigUInt64LE(9n, 800 + 112); },
+  ]) {
+    const bytes = Buffer.from(original); mutate(bytes);
+    put(path.join(dir, '00000/00000.dat'), bytes);
+    assert.throws(() => blockHash(dir, 1n, 100));
+  }
+  put(path.join(dir, '00000/00000.dat'), original.subarray(0, 799));
+  assert.throws(() => blockHash(dir, 1n, 100), /Truncated/);
+});
+
+test('metadata keeps legacy size 1 and rejects missing/invalid v2 sizes and disguised v1 batches', () => {
+  assert.equal(snapshotBatchSize(metadata()), 1);
+  for (const batch of [0, -1, 1.5, '100', null, undefined, 4294967296]) {
+    assert.throws(() => validateSnapshot({ ...metadata(), version: 2, fileDatabaseBatchSize: batch }));
+  }
+  assert.throws(() => validateSnapshot({ ...metadata(), fileDatabaseBatchSize: 100 }));
+  assert.equal(validateBatchSize(4294967295), 4294967295);
+});
+
+test('batch-100 export/import installs without conversion and survives regenerated destination configuration', async t => {
+  const f = fixture(t);
+  assert.equal((await imported(f, batchEntries(100))).state, 'ready');
+  const node = generated(f); // independently generated identity and batch-1 nemesis
+  const profile = await runtimeProfile(f.target, f.docker);
+  const snapshot = { ...metadata(), version: 2, fileDatabaseBatchSize: 100, configuration: profile.configuration };
+  put(path.join(f.target, '.fast-sync/snapshot.json'), JSON.stringify(snapshot));
+  await f.sync.install();
+  assert.equal(f.sync.status().state, 'complete');
+  assert.equal(blockHash(path.join(node, 'data'), 2n, 100), snapshot.tip);
+  for (const role of ['server', 'broker']) assert.match(fs.readFileSync(path.join(node, `${role}-config/resources/config-node.properties`), 'utf8'), /fileDatabaseBatchSize = 100/);
+  const exported = await createSnapshot(f.target, f.docker);
+  assert.equal(exported.version, 2); assert.equal(exported.fileDatabaseBatchSize, 100);
+  // Later full config generation must not revert the on-disk format to 1.
+  for (const role of ['server', 'broker']) put(path.join(node, `${role}-config/resources/config-node.properties`), '[node]\nfileDatabaseBatchSize = 1\nenableCacheDatabaseStorage = true\n');
+  f.service().preserveInstalledStorage();
+  assert.equal((await runtimeProfile(f.target, f.docker)).fileDatabaseBatchSize, 100);
+  const files = entries(exported);
+  for (const key of Object.keys(files)) if (/00000\/0000[12]\.dat$/.test(key)) delete files[key];
+  files['blockdata/api-node-0/00000/00000.dat'] = fs.readFileSync(path.join(node, 'data/00000/00000.dat'));
+  const second = fixture(t);
+  assert.equal((await imported(second, files)).state, 'ready');
+});
+
+test('legacy batch-1 snapshot can replace a fresh batch-100 nemesis after verifying it in its own format', async t => {
+  const f = await readyGenerated(t);
+  for (const role of ['server', 'broker']) put(path.join(f.node, `${role}-config/resources/config-node.properties`), '[node]\nfileDatabaseBatchSize = 100\nenableCacheDatabaseStorage = true\n');
+  fs.rmSync(blockPath(path.join(f.node, 'data'), 1n));
+  for (const [name, bytes] of Object.entries(batchedFiles(100, [1]))) put(path.join(f.node, 'data', name), bytes);
+  await f.sync.install();
+  assert.equal((await runtimeProfile(f.target, f.docker)).fileDatabaseBatchSize, 1);
+  assert.equal(blockHash(path.join(f.node, 'data'), 2n), f.snapshot.tip);
+});
+
+test('storage format maintenance rejects wrong data and releases its override after an explicit fresh reset', async t => {
+  const f = await readyGenerated(t);
+  await f.sync.install();
+  const tipPath = blockPath(path.join(f.node, 'data'), 2n);
+  put(tipPath, block(3));
+  assert.throws(() => f.sync.preserveInstalledStorage(), /Invalid block header/);
+  put(tipPath, block(2));
+  put(path.join(f.node, 'data/index.dat'), index(1));
+  f.sync.preserveInstalledStorage();
+  assert.equal(f.sync.status().storageFormatReleased, true);
+  // Following a reset, future starts must not inherit the previous import's format.
+  put(path.join(f.node, 'data/index.dat'), index(2));
+  put(tipPath, block(3));
+  assert.doesNotThrow(() => f.service().preserveInstalledStorage());
 });

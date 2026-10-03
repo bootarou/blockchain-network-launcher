@@ -6152,6 +6152,7 @@ function runBootstrapCommand(
     // after startup to fix limits, because automatic recovery runs immediately.
     if (command === 'run') {
       try {
+        fastSync.preserveInstalledStorage();
         nodeRuntime.apply();
         broadcastLog(`[Runtime] Catapult nofile=${nodeRuntime.settings().nofile}; logging settings applied before startup.\n`);
       } catch (e: any) {

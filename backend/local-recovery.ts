@@ -18,22 +18,50 @@ export function readIndex(file: string): bigint {
   return bytes.readBigUInt64LE();
 }
 
-export function blockPath(data: string, height: bigint): string {
-  return path.join(data, (height / 10000n).toString().padStart(5, '0'),
-    `${(height % 10000n).toString().padStart(5, '0')}.dat`);
+export function validateBatchSize(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 0xFFFFFFFF) {
+    throw new Error('fileDatabaseBatchSize must be a positive uint32 integer.');
+  }
+  return value;
 }
 
-export function blockHash(data: string, height: bigint): string {
-  const file = blockPath(data, height);
+export function blockPath(data: string, height: bigint, batchSize = 1): string {
+  const batch = BigInt(validateBatchSize(batchSize));
+  const group = height / batch * batch;
+  return path.join(data, (group / 10000n).toString().padStart(5, '0'),
+    `${(group % 10000n).toString().padStart(5, '0')}.dat`);
+}
+
+export function blockHash(data: string, height: bigint, batchSize = 1): string {
+  const file = blockPath(data, height, batchSize);
   const fd = fs.openSync(file, 'r');
   try {
+    const fileSize = fs.fstatSync(fd).size;
+    if (!Number.isSafeInteger(fileSize)) throw new Error('Block file is too large.');
+    let start = 0, end = fileSize;
+    if (batchSize !== 1) {
+      // Catapult FileDatabase: uint64 offsets, indexed by id % BatchSize.
+      // The following zero offset (or final slot) means the payload ends at EOF.
+      const headerSize = batchSize * 8;
+      if (fileSize < headerSize) throw new Error('Truncated batch offset table.');
+      const slot = Number(height % BigInt(batchSize));
+      const offsets = Buffer.alloc(slot === batchSize - 1 ? 8 : 16);
+      if (fs.readSync(fd, offsets, 0, offsets.length, slot * 8) !== offsets.length) throw new Error('Truncated batch offsets.');
+      const first = offsets.readBigUInt64LE();
+      const next = offsets.length === 16 ? offsets.readBigUInt64LE(8) : 0n;
+      const last = next === 0n ? BigInt(fileSize) : next;
+      if (first < BigInt(headerSize) || first >= last || last > BigInt(fileSize)) {
+        throw new Error(`Invalid or missing batch payload at height ${height}`);
+      }
+      start = Number(first); end = Number(last);
+    }
     const header = Buffer.alloc(120);
-    if (fs.readSync(fd, header, 0, 120, 0) !== 120 || header.readBigUInt64LE(112) !== height) {
+    if (end - start < 120 || fs.readSync(fd, header, 0, 120, start) !== 120 || header.readBigUInt64LE(112) !== height) {
       throw new Error(`Invalid block header at height ${height}`);
     }
     const size = header.readUInt32LE();
     const hash = Buffer.alloc(32);
-    if (size < 120 || fs.fstatSync(fd).size < size + 32 || fs.readSync(fd, hash, 0, 32, size) !== 32) {
+    if (size < 120 || end - start < size + 32 || fs.readSync(fd, hash, 0, 32, start + size) !== 32) {
       throw new Error(`Truncated block at height ${height}`);
     }
     return hash.toString('hex').toUpperCase();
