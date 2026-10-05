@@ -374,8 +374,27 @@ export class FastSync {
     assert(Object.keys(snapshot.configuration).every(k => profile.configuration[k] === snapshot.configuration[k]), 'Network/inflation configuration mismatch. Use the matching preset or Share package.');
     assert(profile.identities.every(id => !snapshot.identities.includes(id)), 'Source identity reused. Fast Sync requires new CA and transport keys.');
     const data = path.join(this.target, 'nodes', profile.node, 'data');
-    assert(readIndex(path.join(data, 'index.dat')) <= 1n, 'Destination has already synchronized blocks.');
-    assert(blockHash(data, 1n, profile.fileDatabaseBatchSize) === snapshot.genesis, 'Nemesis mismatch. Refusing to mix networks.');
+    directory(data);
+    if (fs.readdirSync(data).length === 0) {
+      // Before the first Catapult start, Bootstrap supplies seed but data is
+      // still empty. LocalNode imports the unbatched seed into the configured
+      // storage format on startup; do not interpret seed using that batch size.
+      const nodeDir = path.dirname(data);
+      for (const role of ['server', 'broker']) {
+        const seedSetting = property(path.join(nodeDir, role + '-config/resources/config-user.properties'), 'seedDirectory');
+        const seed = path.resolve(nodeDir, seedSetting);
+        const relative = path.relative(nodeDir, seed);
+        assert(relative && !path.isAbsolute(relative) && !relative.split(path.sep).includes('..'), 'Seed directory must be inside the node directory.');
+        let current = nodeDir;
+        for (const part of relative.split(path.sep)) { current = path.join(current, part); directory(current); }
+        assert(readIndex(path.join(seed, 'index.dat')) === 1n, 'Expected height-one Nemesis seed.');
+        assert(blockHash(seed, 1n, 1) === snapshot.genesis, 'Nemesis mismatch. Refusing to mix networks.');
+      }
+    } else {
+      // Never treat a partially initialized or damaged data directory as fresh.
+      assert(readIndex(path.join(data, 'index.dat')) <= 1n, 'Destination has already synchronized blocks.');
+      assert(blockHash(data, 1n, profile.fileDatabaseBatchSize) === snapshot.genesis, 'Nemesis mismatch. Refusing to mix networks.');
+    }
     validateChain(path.join(this.work, 'data'), snapshot);
     const database = path.join(this.target, 'databases/db');
     fs.mkdirSync(database, { recursive: true });

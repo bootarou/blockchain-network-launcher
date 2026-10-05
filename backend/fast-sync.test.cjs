@@ -255,6 +255,47 @@ test('network, Nemesis, source identity, storage and existing MongoDB mismatches
     assert.equal(fs.existsSync(path.join(f.target, '.fast-sync/data/index.dat')), true);
   }
 });
+test('first start accepts empty data and unbatched configured seed with batch size 100', async t => {
+  const f = await readyGenerated(t);
+  const data = path.join(f.node, 'data');
+  fs.renameSync(data, path.join(f.node, 'custom-seed'));
+  fs.mkdirSync(data);
+  for (const role of ['server', 'broker']) {
+    put(path.join(f.node, role + '-config/resources/config-user.properties'), '[storage]\ndataDirectory = ./data\nseedDirectory = ./custom-seed\n');
+    put(path.join(f.node, role + '-config/resources/config-node.properties'), '[node]\nfileDatabaseBatchSize = 100\nenableCacheDatabaseStorage = true\n');
+  }
+  await f.sync.install();
+  assert.equal(f.sync.status().state, 'complete');
+  assert.equal(blockHash(data, 2n), f.snapshot.tip);
+  assert.equal(fs.readFileSync(path.join(f.target, 'databases/db/WiredTiger'), 'utf8'), 'mongo-data');
+  assert.equal(fs.readFileSync(path.join(f.node, 'custom-seed/index.dat')).readBigUInt64LE(), 1n);
+});
+
+test('invalid seed and nonempty data without index preserve ready import for retry', async t => {
+  for (const kind of ['missing', 'height', 'hash', 'broker', 'outside', 'partial']) {
+    const f = await readyGenerated(t);
+    const data = path.join(f.node, 'data'), seed = path.join(f.node, 'seed');
+    fs.renameSync(data, seed); fs.mkdirSync(data);
+    for (const role of ['server', 'broker'])
+      put(path.join(f.node, role + '-config/resources/config-user.properties'), '[storage]\ndataDirectory = ./data\nseedDirectory = ./seed\n');
+    if (kind === 'missing') fs.unlinkSync(path.join(seed, 'index.dat'));
+    if (kind === 'height') put(path.join(seed, 'index.dat'), index(2));
+    if (kind === 'hash') { const b = block(1); b.fill(7, 376); put(blockPath(seed, 1n), b); }
+    if (kind === 'broker' || kind === 'outside')
+      put(path.join(f.node, 'broker-config/resources/config-user.properties'), `[storage]\ndataDirectory = ./data\nseedDirectory = ${kind === 'outside' ? '../seed' : './missing'}\n`);
+    if (kind === 'partial') put(path.join(data, 'unrecognized'), 'preserve');
+    await assert.rejects(f.sync.install(), undefined, kind);
+    assert.equal(f.sync.status().state, 'ready');
+    assert.equal(fs.existsSync(path.join(f.target, '.fast-sync/data/index.dat')), true);
+    // Repair only the rejected destination and retry the SAME staged import.
+    if (kind === 'partial') fs.unlinkSync(path.join(data, 'unrecognized'));
+    put(path.join(seed, 'index.dat'), index(1)); put(blockPath(seed, 1n), block(1));
+    put(path.join(f.node, 'broker-config/resources/config-user.properties'), '[storage]\ndataDirectory = ./data\nseedDirectory = ./seed\n');
+    await f.sync.install();
+    assert.equal(f.sync.status().state, 'complete');
+  }
+});
+
 test('installation failure is persistently blocked for manual inspection', async t => {
   const f = await readyGenerated(t, { swap: () => { throw new Error('disk failure'); } });
   await assert.rejects(f.sync.install(), /disk failure/);
