@@ -5842,7 +5842,7 @@ function serializeNemesisStatements(txStmts: any[], mosaicResolutions: any[]): B
  *       00001.proof        (optional)
  *       proof.heights.dat  (optional)
  */
-async function installImportedSeed(targetDir: string): Promise<void> {
+async function installImportedSeed(targetDir: string, seedOnly = false): Promise<void> {
   const seedSrc = path.join(SEED_DIR, '00000');
   const requiredFiles = ['00001.dat', '00001.stmt', 'hashes.dat'];
   for (const f of requiredFiles) {
@@ -5881,6 +5881,10 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   const proofIndexBuf = seedState.proofIndex;
   broadcastLog('[Nemesis] Starting synchronization from nemesis (epoch 1, height 1)\n');
   fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
+
+  // Fast Sync validates the seed before installing its staged chain. Writing
+  // raw genesis into data here would conflict with batched storage settings.
+  if (seedOnly) return;
 
   // --- Patch data/00000/ inside each node directory ---
   // Catapult block files are named by block height: 00001.dat = genesis block.
@@ -5941,7 +5945,7 @@ async function installImportedSeed(targetDir: string): Promise<void> {
  * Fetch the nemesis block (block 1) from the source node and rebuild the
  * nemesis seed directory so the local node starts with the correct genesis.
  */
-async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string): Promise<void> {
+async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string, seedOnly = false): Promise<void> {
   const base = sourceNodeUrl.replace(/\/+$/, '');
   const fj = async (ep: string) => {
     const r = await fetch(`${base}${ep}`);
@@ -6020,6 +6024,8 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   fs.writeFileSync(path.join(seedDir, '00001.stmt'), stmtPayload);
 
   broadcastLog(`[Nemesis] ✅ Seed rebuilt: 00001.dat=${elementBuf.length}B, hashes.dat=64B\n`);
+
+  if (seedOnly) return;
 
   // --- Also patch data/00000/ inside each node directory ---
   //   Catapult block files are named by block height: 00001.dat = block 1 (genesis).
@@ -8720,7 +8726,7 @@ app.post('/api/commands/start', async (req, res) => {
           if (hasImportedSeed) {
             try {
               broadcastLog('[System] Step 4d – Installing imported nemesis seed...\n');
-              await installImportedSeed(TARGET_DIR);
+              await installImportedSeed(TARGET_DIR, fastSync.pending);
             } catch (e: any) {
               broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
               broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
@@ -8729,7 +8735,7 @@ app.post('/api/commands/start', async (req, res) => {
           } else if (sourceUrl) {
             try {
               broadcastLog('[System] Step 4d – No imported seed found; attempting REST API reconstruction...\n');
-              await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl);
+              await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl, fastSync.pending);
             } catch (e: any) {
               broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
               broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
@@ -8783,7 +8789,7 @@ app.post('/api/commands/start', async (req, res) => {
             // Only copy into data populated during this fresh setup. A restart
             // or backup restore must retain its synchronized proofs and indexes.
             const dataHasBlocks = fs.existsSync(path.join(nodeDataDir00, '00001.dat'));
-            if (dataHasBlocks && !dataExists) {
+            if (dataHasBlocks && !dataExists && !fastSync.pending) {
               for (const f of seedFiles) {
                 // Skip overwriting hashes.dat if the existing one is larger —
                 // it contains hashes for blocks generated beyond genesis.

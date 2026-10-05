@@ -271,6 +271,44 @@ test('first start accepts empty data and unbatched configured seed with batch si
   assert.equal(fs.readFileSync(path.join(f.node, 'custom-seed/index.dat')).readBigUInt64LE(), 1n);
 });
 
+test('custom Share seed preparation followed by fast sync supports batch 1 and 100', async t => {
+  const source = fs.readFileSync(path.join(__dirname, 'server.ts'), 'utf8');
+  const tree = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+  const seedFunction = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'installImportedSeed');
+  const { buildNemesisSeedState } = load('nemesis-seed');
+  for (const batch of [1, 100]) {
+    const f = fixture(t);
+    await imported(f, batchEntries(batch));
+    const node = generated(f);
+    // Fresh Bootstrap node data is empty; the Share package is outside target.
+    fs.renameSync(path.join(node, 'data'), path.join(f.root, 'old-genesis'));
+    fs.mkdirSync(path.join(node, 'data'));
+    const seed = path.join(f.root, 'shared-seed');
+    put(path.join(seed, '00000/00001.dat'), Buffer.concat([block(1), Buffer.alloc(32, 2)]));
+    put(path.join(seed, '00000/00001.stmt'), Buffer.alloc(12));
+    put(path.join(seed, '00000/hashes.dat'), Buffer.alloc(64));
+    const exports = {};
+    vm.runInNewContext(ts.transpileModule('export ' + seedFunction.getText(tree), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText, { exports, fs, path, Buffer, SEED_DIR: seed, buildNemesisSeedState, broadcastLog() {} });
+    await exports.installImportedSeed(f.target, true);
+    assert.deepEqual(fs.readdirSync(path.join(node, 'data')), []);
+    // Step 4e copies the prepared seed into each node's seed directory.
+    fs.cpSync(path.join(f.target, 'nemesis/seed'), path.join(node, 'seed'), { recursive: true });
+    for (const role of ['server', 'broker']) {
+      put(path.join(node, role + '-config/resources/config-user.properties'), '[storage]\ndataDirectory = ./data\nseedDirectory = ./seed\n');
+      put(path.join(node, role + '-config/resources/config-node.properties'), `[node]\nfileDatabaseBatchSize = ${batch}\nenableCacheDatabaseStorage = true\n`);
+    }
+    const profile = await runtimeProfile(f.target, f.docker);
+    const snapshotPath = path.join(f.target, '.fast-sync/snapshot.json');
+    const snapshot = JSON.parse(fs.readFileSync(snapshotPath));
+    put(snapshotPath, JSON.stringify({ ...snapshot, configuration: profile.configuration }));
+    await f.sync.install();
+    assert.equal(f.sync.status().state, 'complete');
+    assert.equal(blockHash(path.join(node, 'data'), BigInt(snapshot.height), batch), snapshot.tip);
+  }
+});
+
 test('invalid seed and nonempty data without index preserve ready import for retry', async t => {
   for (const kind of ['missing', 'height', 'hash', 'broker', 'outside', 'partial']) {
     const f = await readyGenerated(t);
