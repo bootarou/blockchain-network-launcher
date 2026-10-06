@@ -178,7 +178,9 @@ log "Preparing BNL repository ($BNL_BRANCH)"
 
 if [[ -d "$BNL_DIR/.git" ]]; then
   cd "$BNL_DIR"
-  git fetch --prune origin
+  # Initial installs use --single-branch: explicitly fetch the selected branch.
+  git fetch --prune origin \
+    "+refs/heads/$BNL_BRANCH:refs/remotes/origin/$BNL_BRANCH"
 
   git show-ref --verify --quiet "refs/remotes/origin/$BNL_BRANCH" \
     || fail "Remote branch origin/$BNL_BRANCH was not found"
