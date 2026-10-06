@@ -178,6 +178,8 @@ log "Preparing BNL repository ($BNL_BRANCH)"
 
 if [[ -d "$BNL_DIR/.git" ]]; then
   cd "$BNL_DIR"
+  # Tracking setup also needs a configured fetch mapping, not just a fetched ref.
+  git remote set-branches --add origin "$BNL_BRANCH"
   # Initial installs use --single-branch: explicitly fetch the selected branch.
   git fetch --prune origin \
     "+refs/heads/$BNL_BRANCH:refs/remotes/origin/$BNL_BRANCH"
