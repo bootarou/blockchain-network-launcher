@@ -152,6 +152,7 @@ test('creation refuses running containers, Docker failures and competing mutatio
   assert.ok(middleware);
   const handlers = evaluate(`let pendingMutations = 0;\n${middleware.getText(tree)}\n${route('post', '/api/backups')}\nexport function pending() { return pendingMutations; }`, {
     app, backupFiles: store, localRecovery: { busy: false }, certificateRenewal: { busy: false }, activeProcess: null, isStartSequenceInFlight: false,
+    backupPreparing: false, fastSync: { busy: false, pending: false }, createSnapshot: async () => { throw new Error('Unsupported fixture'); },
     networkStatus: nodeState, broadcastLog() {}, fs, path,
     PRESET_PATH: input, UI_META_PATH: path.join(root, 'no-meta'), TARGET_DIR: path.join(root, 'target'),
     NODE_CONTAINER_NAMES: ['db', 'api-node-0'],

@@ -197,7 +197,8 @@ test('actual API middleware blocks start, reset and backup during certificate tr
   const app = express();
   const certificateRenewal = { busy: true, status: () => ({ state: 'manual' }) };
   vm.runInNewContext(ts.transpileModule('let pendingMutations=0;\n' + node.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
-    { app, certificateRenewal, localRecovery: { busy: false }, backupFiles: { busy: false } });
+    { app, certificateRenewal, localRecovery: { busy: false }, backupFiles: { busy: false },
+      backupPreparing: false, fastSync: { busy: false, pending: false }, isStartSequenceInFlight: false });
   app.use('/api', (_req, res) => res.json({ ok: true }));
   const server = app.listen(0, '127.0.0.1'); t.after(() => server.close());
   await new Promise(resolve => server.once('listening', resolve));

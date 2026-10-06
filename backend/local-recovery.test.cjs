@@ -137,7 +137,7 @@ async function wait(manager) {
   return manager.status();
 }
 
-function simulatedRecovery(t, failQuery = false) {
+function simulatedRecovery(t, failQuery = false, nofile) {
   const root = fixture(t), node = path.join(root, 'nodes/api-node-0');
   fs.mkdirSync(path.join(node, 'data/state'), { recursive: true });
   fs.mkdirSync(path.join(node, 'broker-config/resources'), { recursive: true });
@@ -182,7 +182,7 @@ function simulatedRecovery(t, failQuery = false) {
     }
     throw new Error(`unexpected command ${args}`);
   };
-  manager = new LocalRecovery(root, path.join(root, 'journal.json'), () => {}, run);
+  manager = new LocalRecovery(root, path.join(root, 'journal.json'), () => {}, run, nofile);
   manager.preflight = async () => ({ node, height: 2n, hash, imageId: 'server', mongoId: 'mongo', configHash: 'config' });
   return { root, node, manager, calls, containers };
 }
@@ -216,6 +216,19 @@ test('verification failure never changes original data and cannot be applied', a
   assert.equal(manager.busy, true);
   assert.equal(fs.readFileSync(path.join(node, 'data/state/original'), 'utf8'), 'retain');
   await assert.rejects(manager.apply(job.id), /not ready/);
+});
+
+test('importer and broker receive default or configured process FD limits', async t => {
+  for (const limit of [65536, 131072]) {
+    const { manager, calls } = simulatedRecovery(t, false, limit === 65536 ? undefined : () => limit);
+    manager.start();
+    assert.equal((await wait(manager)).state, 'ready');
+    for (const role of ['import', 'broker']) {
+      const command = calls.find(c => c[0] === 'run' && c[c.indexOf('--name') + 1]?.endsWith(`-${role}`));
+      assert.ok(command, role);
+      assert.equal(command[command.indexOf('--ulimit') + 1], `nofile=${limit}:${limit}`);
+    }
+  }
 });
 
 test('changed source tip refuses prepared cutover', async t => {
@@ -254,6 +267,7 @@ test('real API middleware blocks mutations during recovery but allows status and
   const program = ts.transpileModule(`let pendingMutations = 0;\n${middleware.getText(tree)}\n${routes.map(n => n.getText(tree)).join('\n')}`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   vm.runInNewContext(program, { app, localRecovery, backupFiles, certificateRenewal: { busy: false }, activeProcess: null, isStartSequenceInFlight: false,
+    backupPreparing: false, fastSync: { busy: false, pending: false },
     networkStatus: {}, broadcastStatus() {}, broadcastLog() {} });
   for (const endpoint of ['/commands/start', '/commands/resetData', '/commands/fullReset', '/commands/clearLocks', '/backups', '/restore']) {
     app.post(`/api${endpoint}`, (_req, res) => res.json({ success: true }));
