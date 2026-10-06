@@ -541,6 +541,25 @@ test('legacy batch-1 snapshot can replace a fresh batch-100 nemesis after verify
   assert.equal(blockHash(path.join(f.node, 'data'), 2n), f.snapshot.tip);
 });
 
+test('ordinary restore releases completed history even when reset removed snapshot metadata', async t => {
+  const f = await readyGenerated(t);
+  await f.sync.install();
+  fs.rmSync(path.join(f.target, '.fast-sync'), { recursive: true });
+  assert.throws(() => f.sync.preserveInstalledStorage(), /metadata is missing/);
+  const before = fs.readFileSync(blockPath(path.join(f.node, 'data'), 2n));
+  f.sync.releaseCompletedImport();
+  assert.equal(f.sync.status(), null);
+  assert.equal(f.service().status(), null);
+  assert.doesNotThrow(() => f.service().preserveInstalledStorage());
+  assert.deepEqual(fs.readFileSync(blockPath(path.join(f.node, 'data'), 2n)), before);
+});
+
+test('ordinary restore cannot release an unfinished import', async t => {
+  const f = await readyGenerated(t);
+  assert.throws(() => f.sync.releaseCompletedImport(), /unfinished/);
+  assert.equal(f.service().status().state, 'ready');
+});
+
 test('storage format maintenance rejects wrong data and releases its override after an explicit fresh reset', async t => {
   const f = await readyGenerated(t);
   await f.sync.install();

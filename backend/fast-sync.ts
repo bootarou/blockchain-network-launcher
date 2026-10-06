@@ -241,6 +241,13 @@ export class FastSync {
     }
   }
   status() { return this.job ? { ...this.job } : null; }
+  // Called only after an explicit full reset or successful ordinary restore.
+  // Never discard the journal of an unfinished data installation.
+  releaseCompletedImport() {
+    assert(!this.executing && (!this.job || this.job.state === 'complete'), 'Cannot release an unfinished Fast Sync import.');
+    fs.rmSync(this.journal, { force: true });
+    this.job = null;
+  }
   get busy() { return this.executing || !!this.job && !['complete', 'ready', 'failed'].includes(this.job.state); }
   get pending() { return !!this.job && this.job.state !== 'complete'; }
   private save() {
@@ -427,8 +434,6 @@ export class FastSync {
   // imported storage format, but only after checking the actual installed data.
   preserveInstalledStorage() {
     if (this.job?.state !== 'complete' || this.job.storageFormatReleased) return;
-    const snapshot: Snapshot = JSON.parse(fs.readFileSync(path.join(this.work, 'snapshot.json'), 'utf8'));
-    validateSnapshot(snapshot);
     const nodes = fs.readdirSync(path.join(this.target, 'nodes'));
     assert(nodes.length === 1 && /^[a-zA-Z0-9_-]+$/.test(nodes[0]), 'Expected one Fast Sync destination node.');
     const data = path.join(this.target, 'nodes', nodes[0], 'data');
@@ -439,6 +444,10 @@ export class FastSync {
       this.save();
       return;
     }
+    const snapshotFile = path.join(this.work, 'snapshot.json');
+    assert(fs.existsSync(snapshotFile), 'Fast Sync metadata is missing. Restore the full backup again to release the old import history; do not delete chain data.');
+    const snapshot: Snapshot = JSON.parse(fs.readFileSync(snapshotFile, 'utf8'));
+    validateSnapshot(snapshot);
     const batch = snapshotBatchSize(snapshot);
     assert(blockHash(data, 1n, batch) === snapshot.genesis, 'Installed Fast Sync genesis mismatch.');
     blockHash(data, height, batch);

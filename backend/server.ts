@@ -7784,6 +7784,7 @@ app.post('/api/restore', (req, res) => {
         broadcastLog('[Restore] 📦 Block data & databases staged — installed on next start (chain height preserved)\n');
       }
 
+      fastSync.releaseCompletedImport();
       cleanupStaging();
 
       broadcastLog(`[Restore] ✅ Restored ${restoredFiles.length} files successfully\n`);
@@ -9217,6 +9218,11 @@ app.post('/api/commands/fullReset', async (_req, res) => {
       }
       broadcastLog('[Reset] ✅ Target directory cleaned\n');
     }
+
+    // Only release import history after the target was actually emptied.
+    if (fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length)
+      throw new Error('Full reset did not empty the target directory. Fast Sync history was preserved.');
+    fastSync.releaseCompletedImport();
 
     // 4. Remove imported seed files
     if (fs.existsSync(SEED_DIR)) {
