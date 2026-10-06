@@ -26,43 +26,67 @@ RUN apt-get update && apt-get install -y \
 RUN printf '#!/bin/sh\nexec docker compose "$@"\n' > /usr/local/bin/docker-compose \
     && chmod +x /usr/local/bin/docker-compose
 
-# Install symbol-bootstrap globally
-# Default: install from bootarou fork (the original fbsobreira repo was deleted).
-# Override at build time:  docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=https://github.com/<you>/symbol-bootstrap.git
-ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
-RUN npm install -g ${SYMBOL_BOOTSTRAP_REPO}
-
-# Workaround: `npm install -g <git-url>` respects .npmignore / package.json
-# "files", which can omit config/node/resources/*.mustache templates.
-# These templates are required by nemgen during `symbol-bootstrap config`.
-# We pack the published package, extract the config/ tree, and restore it.
+# Install symbol-bootstrap.
+# Default: the bootarou fork (the original fbsobreira repo was deleted).
 #
-# The closing check is what makes this safe.  The previous version ended the
-# restore chain with `|| true`, so a failing `npm pack`/`tar`/`cp` still let the
-# RUN succeed - and, because `&&` and `||` bind equally and left to right, it
-# even printed the success message.  The image then shipped without templates
-# and the problem only surfaced much later, at a user's first node start, as
-# "property not found (cache_database, maxLogFiles)" from nemgen.  Fail here
-# instead, where it is one line of build output.
+# NOTE: installed via git clone, NOT `npm install -g <git-url>` — npm's
+# git-dependency packing (the package.json "files" whitelist, prepack scripts,
+# and an npm 10.8.x bug that symlinks the global package to its temporary cache
+# clone) produced broken and partial installs.  A partial install then had two
+# runtime consequences: the nemgen mustache templates were missing, and the
+# launcher silently fell back to `npx symbol-bootstrap@<version>` from the
+# public registry — a different package than the one built into this image.
+# Cloning to a fixed path removes both failure modes, and matches how the PQC
+# edition is installed.
+#
+# Override at build time:
+#   docker compose build --build-arg SYMBOL_BOOTSTRAP_REPO=... --build-arg SYMBOL_BOOTSTRAP_BRANCH=...
+ARG SYMBOL_BOOTSTRAP_REPO=https://github.com/bootarou/symbol-bootstrap.git
+ARG SYMBOL_BOOTSTRAP_BRANCH=main
+# Cache-bust: docker cannot see remote branch updates, so pin the clone layer to
+# the current branch tip.  When the branch moves, this ADD's content changes and
+# the layers below rebuild.  (Only meaningful for the default GitHub repo;
+# override builds can pass --no-cache instead.)
+ADD https://api.github.com/repos/bootarou/symbol-bootstrap/git/refs/heads/${SYMBOL_BOOTSTRAP_BRANCH} /tmp/symbol-bootstrap-ref.json
+#
+# The second npm install is not redundant: lib/service/VotingUtils.js does
+# `require('tweetnacl')` without symbol-bootstrap declaring tweetnacl anywhere.
+# It only ever resolved because npm happened to hoist the copy symbol-sdk depends
+# on to the top level. In this dependency tree npm nests it under
+# node_modules/symbol-sdk/node_modules instead, where `require('tweetnacl')` from
+# lib/ cannot see it, and `symbol-bootstrap config` dies with MODULE_NOT_FOUND.
+# Installing it explicitly makes the resolution independent of npm's hoisting.
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
+    && git clone --branch "${SYMBOL_BOOTSTRAP_BRANCH}" --depth 1 "${SYMBOL_BOOTSTRAP_REPO}" /opt/symbol-bootstrap \
+    && cd /opt/symbol-bootstrap \
+    && npm install --omit=dev --no-audit --no-fund \
+    && npm install --omit=dev --no-audit --no-fund tweetnacl@^1.0.3 \
+    && chmod +x /opt/symbol-bootstrap/bin/run \
+    && ln -s /opt/symbol-bootstrap/bin/run /usr/local/bin/symbol-bootstrap \
+    && symbol-bootstrap --version
+
+# Sanity checks — fail the build here, where it is one line of output, instead of
+# at a user's first node start:
+#  1. nemgen mustache templates must be present, or `symbol-bootstrap config`
+#     generates a config-node.properties without cache_database.maxLogFiles and
+#     nemgen dies with "property not found".
+#  2. the network presets must be present: the inflation and finalization
+#     schedules shown when configuring or joining a network are read from them,
+#     and a joining node that misses the inflation schedule diverges at the first
+#     height that pays a block reward.
+#  3. the config service must actually load. `symbol-bootstrap --version` only
+#     exercises oclif, so it passed while a missing transitive dependency made
+#     every `config` run fail with MODULE_NOT_FOUND. Loading the service pulls in
+#     the real require graph, which is what users hit at Step 1.
 RUN set -eu; \
-    SB_ROOT="$(npm root -g)/symbol-bootstrap"; \
-    TEMPLATE="$SB_ROOT/config/node/resources/config-node.properties.mustache"; \
-    if [ ! -f "$TEMPLATE" ]; then \
-      echo "Bootstrap templates missing - restoring from the published package"; \
-      cd /tmp; \
-      npm pack symbol-bootstrap --pack-destination /tmp; \
-      TARBALL="$(ls /tmp/symbol-bootstrap-*.tgz | head -1)"; \
-      tar xzf "$TARBALL"; \
-      mkdir -p "$SB_ROOT/config" "$SB_ROOT/presets"; \
-      cp -r /tmp/package/config/. "$SB_ROOT/config/"; \
-      if [ -d /tmp/package/presets ]; then cp -r /tmp/package/presets/. "$SB_ROOT/presets/"; fi; \
-      rm -rf /tmp/package /tmp/symbol-bootstrap-*.tgz; \
-    fi; \
-    if [ ! -f "$TEMPLATE" ]; then \
-      echo "ERROR: $TEMPLATE is still missing - nemgen would fail at runtime" >&2; \
-      exit 1; \
-    fi; \
-    echo "Bootstrap templates present: $TEMPLATE"
+    SB_ROOT=/opt/symbol-bootstrap; \
+    test -f "$SB_ROOT/config/node/resources/config-node.properties.mustache" \
+      || { echo "ERROR: bootstrap templates missing ($SB_ROOT/config)" >&2; exit 1; }; \
+    test -f "$SB_ROOT/presets/shared.yml" \
+      || { echo "ERROR: bootstrap presets missing ($SB_ROOT/presets)" >&2; exit 1; }; \
+    node -e "require('$SB_ROOT/lib/service/ConfigService.js')" \
+      || { echo "ERROR: symbol-bootstrap cannot load ConfigService - a dependency is missing" >&2; exit 1; }; \
+    echo "symbol-bootstrap verified: templates + presets + config service load"
 
 WORKDIR /app
 
@@ -70,13 +94,17 @@ WORKDIR /app
 COPY backend/package.json backend/package-lock.json* ./backend/
 COPY frontend/package.json frontend/package-lock.json* ./frontend/
 
-# Install dependencies
-RUN cd backend && npm install && cd ../frontend && npm install
+# Use the same dependency fingerprint at build time and container startup.
+COPY install-dependencies.sh /install-dependencies.sh
+RUN sed -i 's/\r$//' /install-dependencies.sh && chmod +x /install-dependencies.sh \
+    && /install-dependencies.sh /app/backend \
+    && /install-dependencies.sh /app/frontend
 
 # Copy source code
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
-COPY shared/ ./shared/
+# Runtime configuration and backups are supplied by the shared bind mount.
+RUN mkdir -p /app/shared
 
 # Copy and prepare start script (normalize line endings for cross-platform compatibility)
 COPY start.sh /start.sh

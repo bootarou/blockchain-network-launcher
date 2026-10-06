@@ -9,7 +9,9 @@ import crypto from 'crypto';
 import yaml from 'js-yaml';
 import archiver from 'archiver';
 import { BackupFiles } from './backup-files.js';
+import { FastSync, createSnapshot, selectedPath, type Snapshot } from './fast-sync.js';
 import { LocalRecovery, queueProblems } from './local-recovery.js';
+import { NodeRuntime } from './node-runtime.js';
 import { CertificateRenewal, CertificateError, redactBootstrapArgs, secretLogFilter } from './certificate-renewal.js';
 import AdmZip from 'adm-zip';
 import { buildNemesisSeedState } from './nemesis-seed.js';
@@ -162,6 +164,8 @@ app.use('/api', (req, res, next) => {
 });
 
 const server = http.createServer(app);
+// Full snapshot uploads can exceed Node's five-minute default request deadline.
+server.requestTimeout = 24 * 60 * 60 * 1000;
 const wss = new WebSocketServer({ noServer: true });
 
 // Route WebSocket upgrades: /ws → REST gateway proxy, everything else → our log WS
@@ -272,10 +276,19 @@ let activeProcess: ChildProcess | null = null;
 let isStartSequenceInFlight = false;
 
 const backupFiles = new BackupFiles(path.join(SHARED_DIR, 'backups'));
-const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog);
+const fastSync = new FastSync(TARGET_DIR, path.join(SHARED_DIR, 'fast-sync.json'), broadcastLog);
+let backupPreparing = false;
+const nodeRuntime = new NodeRuntime(TARGET_DIR, path.join(SHARED_DIR, 'node-runtime.json'));
+const localRecovery = new LocalRecovery(TARGET_DIR, path.join(SHARED_DIR, 'local-recovery.json'), broadcastLog, undefined, () => nodeRuntime.settings().nofile);
 const certificateRenewal = new CertificateRenewal(TARGET_DIR, PRESET_PATH, path.join(SHARED_DIR, 'certificate-renewal.json'), broadcastLog);
 let pendingMutations = 0;
 app.use('/api', (req, res, next) => {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (backupPreparing || fastSync.busy || (fastSync.pending && isStartSequenceInFlight)) return res.status(409).json({ error: 'BACKUP_OR_FAST_SYNC_ACTIVE' });
+    if (fastSync.pending && !['/fast-sync', '/preset', '/commands/start'].includes(req.path)) {
+      return res.status(409).json({ error: 'FAST_SYNC_PENDING: finish or discard the import in Backup first.' });
+    }
+  }
   if (certificateRenewal.busy && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     return res.status(409).json({ error: 'CERTIFICATE_RENEWAL_ACTIVE', renewal: certificateRenewal.status() });
   }
@@ -298,6 +311,39 @@ app.use('/api', (req, res, next) => {
   } as typeof res.end;
   req.once('aborted', release);
   next();
+});
+
+app.get('/api/fast-sync', (_req, res) => res.json({ ...fastSync.eligibility(), job: fastSync.status() }));
+app.post('/api/fast-sync', async (req, res) => {
+  try {
+    if (req.headers['x-fast-sync-trusted'] !== 'yes') return res.status(400).json({ error: 'Confirm that you trust the backup source.' });
+    if (!req.is('application/octet-stream')) return res.status(415).json({ error: 'Expected a binary ZIP upload.' });
+    req.setTimeout(120000, () => req.destroy(new Error('Upload idle timeout.')));
+    if (networkStatus.state !== 'stopped' || pendingMutations > 1 || activeProcess || isStartSequenceInFlight) {
+      return res.status(409).json({ error: 'Stop other operations before importing.' });
+    }
+    const job = await fastSync.receive(req);
+    res.status(202).json({ job });
+  } catch (e: any) { if (!res.destroyed) res.status(409).json({ error: e.message }); }
+});
+app.delete('/api/fast-sync', async (_req, res) => {
+  try {
+    if (pendingMutations > 1 || activeProcess || isStartSequenceInFlight) throw new Error('Another operation is active.');
+    await fastSync.discard();
+    res.json({ success: true });
+  } catch (e: any) { res.status(409).json({ error: e.message }); }
+});
+
+app.get('/api/node-runtime', async (_req, res) => {
+  try { res.json(await nodeRuntime.status()); }
+  catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/node-runtime', (req, res) => {
+  if (activeProcess || isStartSequenceInFlight || pendingMutations > 1) {
+    return res.status(409).json({ error: 'Wait for the current operation to finish.' });
+  }
+  try { res.json({ settings: nodeRuntime.save(req.body), pendingRestart: true }); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 
 app.get('/api/recovery', (_req, res) => res.json({ job: localRecovery.status(), busy: localRecovery.busy }));
@@ -2507,6 +2553,15 @@ function resolveBootstrapTemplateDirs(): string[] {
     broadcastLog(`[Pre-Patch] Template dir (${label}): ${real}\n`);
   };
 
+  // Strategy -1: the install location this image ships (Dockerfile: git clone →
+  // /opt/symbol-bootstrap). This is where runBootstrapCommand() executes from, so
+  // it is the authoritative template location; the strategies below only matter
+  // for images built before the switch to a fixed install path.
+  try {
+    const candidate = path.join(resolveBootstrapRoot(), 'config', 'node', 'resources');
+    if (fs.existsSync(candidate)) addDir(candidate, 'bootstrap install');
+  } catch { /* fall through */ }
+
   // Strategy 0: require.resolve
   try {
     const pkgJson = require.resolve('symbol-bootstrap/package.json');
@@ -2521,9 +2576,10 @@ function resolveBootstrapTemplateDirs(): string[] {
     if (fs.existsSync(candidate)) addDir(candidate, 'npm root -g');
   } catch { /* fall through */ }
 
-  // Strategy 1b: npx cache — runBootstrapCommand() uses `npx -y symbol-bootstrap`
-  //   so the ACTUAL templates used at runtime live in the npx cache, NOT the
-  //   global install dir.  This is the single most important location to patch.
+  // Strategy 1b: npx cache — left over from when runBootstrapCommand() could fall
+  //   back to `npx symbol-bootstrap`.  Nothing executes from here any more, but a
+  //   stale copy is still patched so that an image mid-upgrade cannot end up
+  //   running unpatched templates.
   try {
     const homeDir = process.env.HOME || '/root';
     const npxCacheDir = path.join(homeDir, '.npm', '_npx');
@@ -2570,16 +2626,10 @@ function resolveBootstrapTemplateDirs(): string[] {
   return dirs;
 }
 
-// ---------------------------------------------------------------------------
-// Patch symbol-bootstrap's cert template so the self-signed CA certificate
-// carries proper CA extensions (basicConstraints CA:true, keyCertSign).
-// OpenSSL ≥ 3.6 (e.g. inside newer locally-built server images) rejects a CA
-// cert without basicConstraints during `openssl verify`:
-//   error 79 at 1 depth lookup: invalid CA certificate
-// which makes createNodeCertificates.sh fail. Older OpenSSL accepts certs
-// WITH these extensions too, so patching unconditionally is safe (official
-// V2/V3 images keep working).
-// ---------------------------------------------------------------------------
+// Where the Dockerfile installs symbol-bootstrap (git clone → fixed path,
+// symlinked into /usr/local/bin). Everything that needs the package - the
+// binary, the nemgen mustache templates and the network presets - resolves from
+// here, so there is exactly one copy and it is the one the build verified.
 function patchCertCaTemplates() {
   const candidates = new Set<string>();
   try {
@@ -2623,101 +2673,36 @@ function patchCertCaTemplates() {
   }
 }
 
-// npx spec used to run symbol-bootstrap when no cached or global binary exists.
-// Shared with runBootstrapCommand() so priming can never fetch a different
-// version than the one that actually generates the configuration.
-const BOOTSTRAP_NPX_SPEC = 'symbol-bootstrap@1.1.10';
-const BOOTSTRAP_PRIME_TIMEOUT_MS = 180_000;
+const BOOTSTRAP_BIN = process.env.SYMBOL_BOOTSTRAP_BIN || '/usr/local/bin/symbol-bootstrap';
+
+/**
+ * Returns the root directory of the installed symbol-bootstrap package.
+ *
+ * Resolved from the binary rather than hardcoded, so that a SYMBOL_BOOTSTRAP_BIN
+ * override moves the templates and presets with it.
+ */
+function resolveBootstrapRoot(): string {
+  try {
+    if (fs.existsSync(BOOTSTRAP_BIN)) {
+      // <root>/bin/run, reached through the /usr/local/bin symlink.
+      return path.dirname(path.dirname(fs.realpathSync(BOOTSTRAP_BIN)));
+    }
+  } catch { /* fall through to the default */ }
+  return '/opt/symbol-bootstrap';
+}
 
 /**
  * Decides which symbol-bootstrap will actually run.
  *
- * There can be several copies on disk - a global install, and one per npx cache
- * entry - and the whole class of bug this guards against is "the copy we patch
- * is not the copy that runs".  Step 0c therefore asks this the same question
- * runBootstrapCommand() does, instead of guessing.
- *
- * Preference order: a cached npx binary, then a global binary, then npx (which
- * downloads the package on first use).
+ * There is deliberately no npx fallback.  Falling back to the public registry
+ * package meant the launcher could run a different symbol-bootstrap than the one
+ * built into the image - a different copy from the one whose templates had just
+ * been patched, and potentially a different version than the fork this image is
+ * built around.  Failing loudly is the safer outcome: a missing binary means the
+ * image is broken and rebuilding it is the fix.
  */
-function resolveBootstrapInvocation(): { cmd: string; prefixArgs: string[]; usesNpx: boolean } {
-  try {
-    const cached = execSync(
-      'find /root/.npm/_npx -type l -path "*/node_modules/.bin/symbol-bootstrap" 2>/dev/null | sort | tail -n 1',
-      { timeout: 5_000, stdio: 'pipe' },
-    ).toString().trim();
-    if (cached && fs.existsSync(cached)) {
-      return { cmd: cached, prefixArgs: [], usesNpx: false };
-    }
-  } catch { /* fall through */ }
-
-  try {
-    const globalBin = execSync('command -v symbol-bootstrap 2>/dev/null || true', {
-      timeout: 3_000,
-      stdio: 'pipe',
-    }).toString().trim();
-    // existsSync follows symlinks, so a global bin left dangling by npm is
-    // correctly rejected here rather than failing later at spawn time.
-    if (globalBin && fs.existsSync(globalBin)) {
-      return { cmd: globalBin, prefixArgs: [], usesNpx: false };
-    }
-  } catch { /* fall through */ }
-
-  return { cmd: 'npx', prefixArgs: ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC], usesNpx: true };
-}
-
-/**
- * Materialise symbol-bootstrap so that its mustache templates exist on disk.
- *
- * runBootstrapCommand() falls back to `npx <spec>`, which downloads the package
- * on first use.  Until that has happened once, there is nothing for
- * patchMustacheTemplates() to patch, so the first `symbol-bootstrap config` on a
- * clean machine generates a config-node.properties without the properties nemgen
- * requires and dies with "property not found (cache_database, maxLogFiles)".
- * The retry then succeeds only because the failed run left the package in the
- * npx cache.
- *
- * Priming deliberately does not run on every start - it can stall on a slow
- * network.  It runs only when nothing patchable was found, which is precisely
- * the state that would otherwise guarantee a failed start.  A timeout or a
- * non-zero exit is non-fatal: the start continues and may still succeed.
- */
-async function primeBootstrapTemplates(): Promise<void> {
-  broadcastLog(`[Pre-Patch] Priming ${BOOTSTRAP_NPX_SPEC} so its templates exist on disk...\n`);
-
-  await new Promise<void>((resolve) => {
-    const cp = spawn('npx', ['-y', '--prefer-offline', BOOTSTRAP_NPX_SPEC, '--version'], {
-      cwd: '/',
-      env: { ...process.env, FORCE_COLOR: '0' },
-      shell: false,
-    });
-
-    let settled = false;
-    const finish = (message: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      broadcastLog(message);
-      resolve();
-    };
-
-    const timer = setTimeout(() => {
-      try { cp.kill('SIGKILL'); } catch { /* already gone */ }
-      finish(`[Pre-Patch] ⚠️  Priming timed out after ${BOOTSTRAP_PRIME_TIMEOUT_MS / 1000}s — continuing\n`);
-    }, BOOTSTRAP_PRIME_TIMEOUT_MS);
-
-    // Drain both streams so the child cannot block on a full pipe. The output is
-    // npm install noise and is not worth showing.
-    cp.stdout?.on('data', () => {});
-    cp.stderr?.on('data', () => {});
-
-    cp.on('error', (e: Error) => finish(`[Pre-Patch] ⚠️  Priming failed: ${e.message} — continuing\n`));
-    cp.on('close', (code) => finish(
-      code === 0
-        ? '[Pre-Patch] Priming complete\n'
-        : `[Pre-Patch] ⚠️  Priming exited with code ${code} — continuing\n`,
-    ));
-  });
+function resolveBootstrapInvocation(): { cmd: string; prefixArgs: string[] } {
+  return { cmd: BOOTSTRAP_BIN, prefixArgs: [] };
 }
 
 /**
@@ -4449,6 +4434,14 @@ function readMosaicIdFromNemesisSeed(targetDir: string): string {
 // nemesis signer + nonce, and we need them in custom-preset.yml for export
 // and display in the UI.
 // ---------------------------------------------------------------------------
+// REST/Share IDs can be bare hex; Catapult properties require the 0x prefix.
+// Match bootstrap's grouping so existing Fast Sync configuration hashes remain valid.
+function mosaicIdProperty(value: string): string {
+  const hex = value.trim().replace(/^0x/i, '').replace(/'/g, '');
+  if (!/^[0-9a-fA-F]{1,16}$/.test(hex)) throw new Error('Invalid mosaic ID in network configuration');
+  return '0x' + hex.toUpperCase().padStart(16, '0').match(/.{4}/g)!.join("'");
+}
+
 function backfillMosaicIds(targetDir: string, basePreset?: string): void {
   const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
   if (isOfficialPreset) {
@@ -4510,8 +4503,8 @@ function backfillMosaicIds(targetDir: string, basePreset?: string): void {
       const patchMosaicFile = (cfgPath: string): void => {
         if (!fs.existsSync(cfgPath)) return;
         let c = fs.readFileSync(cfgPath, 'utf-8');
-        if (joinCurrency) c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m,  `$1${joinCurrency}`);
-        if (joinHarvest)  c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${joinHarvest}`);
+        if (joinCurrency) c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m,  `$1${mosaicIdProperty(joinCurrency)}`);
+        if (joinHarvest)  c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${mosaicIdProperty(joinHarvest)}`);
         fs.writeFileSync(cfgPath, c, 'utf-8');
         broadcastLog(`[MosaicID] Patched mosaic IDs in ${path.relative(targetDir, cfgPath)}\n`);
       };
@@ -6232,7 +6225,7 @@ function serializeNemesisStatements(txStmts: any[], mosaicResolutions: any[]): B
  *       00001.proof        (optional)
  *       proof.heights.dat  (optional)
  */
-async function installImportedSeed(targetDir: string): Promise<void> {
+async function installImportedSeed(targetDir: string, seedOnly = false): Promise<void> {
   const seedSrc = path.join(SEED_DIR, '00000');
   const requiredFiles = ['00001.dat', '00001.stmt', 'hashes.dat'];
   for (const f of requiredFiles) {
@@ -6271,6 +6264,10 @@ async function installImportedSeed(targetDir: string): Promise<void> {
   const proofIndexBuf = seedState.proofIndex;
   broadcastLog('[Nemesis] Starting synchronization from nemesis (epoch 1, height 1)\n');
   fs.writeFileSync(path.join(seedBase, 'proof.index.dat'), proofIndexBuf);
+
+  // Fast Sync validates the seed before installing its staged chain. Writing
+  // raw genesis into data here would conflict with batched storage settings.
+  if (seedOnly) return;
 
   // --- Patch data/00000/ inside each node directory ---
   // Catapult block files are named by block height: 00001.dat = genesis block.
@@ -6331,7 +6328,7 @@ async function installImportedSeed(targetDir: string): Promise<void> {
  * Fetch the nemesis block (block 1) from the source node and rebuild the
  * nemesis seed directory so the local node starts with the correct genesis.
  */
-async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string): Promise<void> {
+async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string, seedOnly = false): Promise<void> {
   const base = sourceNodeUrl.replace(/\/+$/, '');
   const fj = async (ep: string) => {
     const r = await fetch(`${base}${ep}`);
@@ -6410,6 +6407,8 @@ async function fetchAndBuildNemesisSeed(targetDir: string, sourceNodeUrl: string
   fs.writeFileSync(path.join(seedDir, '00001.stmt'), stmtPayload);
 
   broadcastLog(`[Nemesis] ✅ Seed rebuilt: 00001.dat=${elementBuf.length}B, hashes.dat=64B\n`);
+
+  if (seedOnly) return;
 
   // --- Also patch data/00000/ inside each node directory ---
   //   Catapult block files are named by block height: 00001.dat = block 1 (genesis).
@@ -6521,11 +6520,37 @@ function runBootstrapCommand(
       }
     }
 
-    // Prefer a cached symbol-bootstrap binary to avoid npx network stalls.
-    // Fallback to npx only when no cached/global binary exists.
+    // The binary is installed by the Dockerfile (git clone → /opt/symbol-bootstrap,
+    // symlinked into /usr/local/bin). If it is missing the image is broken; say so
+    // rather than silently downloading a different symbol-bootstrap from the
+    // registry and generating a network with it.
     const invocation = resolveBootstrapInvocation();
     const bootstrapCmd = invocation.cmd;
+    if (!fs.existsSync(bootstrapCmd)) {
+      const msg = `❌ symbol-bootstrap not found at ${bootstrapCmd} — rebuild the manager image`;
+      broadcastLog(`[CMD] ${msg}\n`);
+      networkStatus.state = 'error';
+      broadcastStatus();
+      reject(new Error(msg));
+      return;
+    }
     const bootstrapArgs = [...invocation.prefixArgs, command, ...resolvedArgs];
+
+    // Both quick and full starts reach this point after configuration generation.
+    // Bootstrap RunService reads this compose file for `up`; do not wait until
+    // after startup to fix limits, because automatic recovery runs immediately.
+    if (command === 'run') {
+      try {
+        fastSync.preserveInstalledStorage();
+        nodeRuntime.apply();
+        broadcastLog(`[Runtime] Catapult nofile=${nodeRuntime.settings().nofile}; logging settings applied before startup.\n`);
+      } catch (e: any) {
+        networkStatus.state = 'error';
+        broadcastStatus();
+        reject(new Error(`Runtime settings could not be applied: ${e.message}`));
+        return;
+      }
+    }
 
     // CWD must be '/' because symbol-bootstrap internally does
     //   path.join(process.cwd(), target)  — in ComposeService
@@ -7666,11 +7691,15 @@ app.delete('/api/backups/:id', (req, res) => {
   catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/backups', (req, res) => {
+app.post('/api/backups', async (req, res) => {
   try {
     // ?full=1 → include block data + MongoDB.  Essential for custom networks
     // where this node's block store IS the chain (no peers to resync from).
-    const full = req.body?.full === true;
+    const distribution = req.body?.kind === 'fast-sync';
+    if (req.body?.kind !== undefined && !['backup', 'fast-sync'].includes(req.body.kind)) {
+      return res.status(400).json({ error: 'Unknown backup kind.' });
+    }
+    const full = distribution || req.body?.full === true;
     if (backupFiles.busy || pendingMutations > 0 || activeProcess || isStartSequenceInFlight) {
       return res.status(409).json({ error: 'Another operation is in progress.' });
     }
@@ -7689,6 +7718,27 @@ app.post('/api/backups', (req, res) => {
       }
     }
 
+    backupPreparing = true;
+    let snapshot: Snapshot | undefined;
+    let fastSyncUnavailable: string | undefined;
+    if (full) {
+      try { snapshot = await createSnapshot(TARGET_DIR); }
+      catch (e: any) {
+        if (distribution) return res.status(409).json({ error: `Fast Sync export unavailable: ${e.message}` });
+        fastSyncUnavailable = e.message;
+        broadcastLog(`[Backup] Fast Sync unavailable for this backup: ${e.message}\n`);
+      }
+    }
+    if (distribution) {
+      if (!snapshot) throw new Error('Fast Sync metadata is required.');
+      const node = snapshot.node;
+      const job = backupFiles.start(true, [], [
+        { diskPath: path.join(TARGET_DIR, 'nodes', node, 'data'), zipPath: `blockdata/${node}` },
+        { diskPath: path.join(TARGET_DIR, 'databases', 'db'), zipPath: 'databases/db' },
+      ], { formatVersion: 1, type: 'node-fast-sync', full: false, createdAt: new Date().toISOString(), fastSync: snapshot },
+      name => selectedPath(name, node) !== null);
+      return res.status(202).json(job);
+    }
     broadcastLog(`[Backup] Creating ${full ? 'FULL' : 'identity'} node backup ZIP...\n`);
 
     // Collect files to backup
@@ -7795,6 +7845,8 @@ app.post('/api/backups', (req, res) => {
       formatVersion: 1,
       type: full ? 'node-full-backup' : 'node-backup',
       full,
+      fastSync: snapshot,
+      fastSyncUnavailable,
       createdAt: new Date().toISOString(),
       files: [...filesToBackup.map((f) => f.zipPath), ...dirsToBackup.map((d) => `${d.zipPath}/`)],
     };
@@ -7804,7 +7856,7 @@ app.post('/api/backups', (req, res) => {
   } catch (err: any) {
     broadcastLog(`[Backup] ❌ Failed: ${err.message}\n`);
     if (!res.headersSent) res.status(500).json({ error: err.message });
-  }
+  } finally { backupPreparing = false; }
 });
 
 /** GET /api/backup/status — check which backup files are available */
@@ -7934,7 +7986,13 @@ app.post('/api/restore', (req, res) => {
       // Validate: must contain custom-preset.yml
       if (!extractedFiles.includes('custom-preset.yml')) {
         cleanupStaging();
-        return res.status(400).json({ error: 'Invalid backup: custom-preset.yml not found.' });
+        return res.status(400).json({ error: 'Not a restorable backup: custom-preset.yml not found. Use Fast Sync for a Fast Sync package.' });
+      }
+
+      const restoreMeta = zip.getEntry('backup-meta.json');
+      if (restoreMeta && JSON.parse(restoreMeta.getData().toString('utf8')).type === 'node-fast-sync') {
+        cleanupStaging();
+        return res.status(400).json({ error: 'Fast Sync packages cannot be used for identity restore. Use Fast Sync instead.' });
       }
 
       // ── Step 0: Clean existing runtime data ──────────────────────────
@@ -8111,6 +8169,7 @@ app.post('/api/restore', (req, res) => {
         broadcastLog('[Restore] 📦 Block data & databases staged — installed on next start (chain height preserved)\n');
       }
 
+      fastSync.releaseCompletedImport();
       cleanupStaging();
 
       broadcastLog(`[Restore] ✅ Restored ${restoredFiles.length} files successfully\n`);
@@ -8144,6 +8203,7 @@ app.post('/api/restore', (req, res) => {
 
 app.post('/api/commands/start', async (req, res) => {
   try {
+    fastSync.assertStart();
     const { password, mode: requestedMode } = req.body as { password?: string; mode?: string };
     if (!password) {
       return res.status(400).json({ error: 'Network encryption password is required.' });
@@ -8217,6 +8277,7 @@ app.post('/api/commands/start', async (req, res) => {
       startMode = (dataExists && generatedPresetExists && composeExists) ? 'restart' : 'full';
     }
 
+    if (fastSync.pending) startMode = 'full';
     broadcastLog(`[System] TARGET_DIR = ${TARGET_DIR}\n`);
     broadcastLog(`[System] Start mode: ${startMode} (data=${dataExists}, preset=${generatedPresetExists}, compose=${composeExists})\n`);
     const startSequence = async () => {
@@ -8535,50 +8596,23 @@ app.post('/api/commands/start', async (req, res) => {
       broadcastLog('[System] Step 0/6 – Ensuring patched server image...\n');
       const patchedTag = await ensurePatchedImage(version);
 
-      // Step 0c: Pre-patch mustache templates so nemgen sees all required props
-      //   Priming is not done up front: it can hang on unstable networks and
-      //   block startup, and normally the templates are already on disk.  We
-      //   patch whatever copies are discoverable first.
+      // Step 0c: Pre-patch mustache templates so nemgen sees all required props.
+      //   The templates ship in the image at a fixed location and the build
+      //   verifies they are there, so the copy patched here is always the copy
+      //   the binary at Step 1 reads from.
       broadcastLog('[System] Step 0c – Pre-patching symbol-bootstrap templates...\n');
 
-      //   The copy that runs has to be the copy we patch.  When neither a cached
-      //   npx binary nor a usable global binary exists, `symbol-bootstrap config`
-      //   fetches its own copy through npx at Step 1 - after this patching - and
-      //   generates the configuration from those untouched templates, even though
-      //   another copy (a global install, which may be a symlink into npm's cache)
-      //   was patched here.  Materialise the npx copy first so that it is one of
-      //   the copies patched below.
-      if (version.configPatches.length > 0 && resolveBootstrapInvocation().usesNpx) {
-        broadcastLog('[Pre-Patch] symbol-bootstrap will run via npx and is not downloaded yet '
-          + '— priming so the copy that runs is the copy that gets patched\n');
-        await primeBootstrapTemplates();
-      }
-
-      let templatesFound = patchMustacheTemplates(version, basePreset);
-
-      //   ...but finding nothing is different from finding nothing to do.  On a
-      //   machine where symbol-bootstrap has never run, the package is not on
-      //   disk yet (runBootstrapCommand falls back to `npx`, which downloads it
-      //   at Step 1), so there is no template to patch and the generated config
-      //   is missing properties nemgen requires — the first start on a clean
-      //   machine always fails with "property not found (cache_database,
-      //   maxLogFiles)", and only succeeds on retry because the failed run
-      //   populated the npx cache.  Prime once here so the first start behaves
-      //   like the retry.  This costs nothing in the normal case, because it
-      //   only runs when nothing patchable exists.
-      if (templatesFound === 0 && version.configPatches.length > 0) {
-        broadcastLog('[Pre-Patch] No templates on disk — priming symbol-bootstrap once\n');
-        await primeBootstrapTemplates();
-        templatesFound = patchMustacheTemplates(version, basePreset);
-        if (templatesFound === 0) {
-          broadcastLog('[Pre-Patch] ⚠️  Still no templates after priming; '
-            + 'nemgen may reject the generated config\n');
-        }
-      }
-
-      // CA cert extensions (OpenSSL ≥3.6 strictness — see patchCertCaTemplates).
-      // Runs after any priming so that a freshly materialised copy is patched too.
+      const templatesFound = patchMustacheTemplates(version, basePreset);
       patchCertCaTemplates();
+
+      //   Finding none means the image is not what the build produced. nemgen
+      //   would then fail on a missing cache_database.maxLogFiles, so say what
+      //   is wrong while the message can still be connected to the cause.
+      if (templatesFound === 0 && version.configPatches.length > 0) {
+        broadcastLog('[Pre-Patch] ⚠️  No symbol-bootstrap templates found in '
+          + `${resolveBootstrapRoot()} — the manager image looks incomplete; `
+          + 'nemgen may reject the generated config\n');
+      }
 
       // Step 0c2: Emergency fallback — if the mustache template was not found
       // (e.g. different bootstrap install layout on join PC), directly patch
@@ -8664,7 +8698,7 @@ app.post('/api/commands/start', async (req, res) => {
         // Staging dirs stay in place: symbol-bootstrap config only checks
         // target/preset.yml (verified in ConfigService), and .pending-restore
         // can hold gigabytes of block data that must not be copied to /tmp.
-        const STASH_SKIP = new Set(['.pending-restore', '.pending-harvesters', '.restore-extract', '.restore-upload.zip']);
+        const STASH_SKIP = new Set(['.pending-restore', '.pending-harvesters', '.restore-extract', '.restore-upload.zip', '.fast-sync']);
         const items = fs.readdirSync(TARGET_DIR).filter((i) => !STASH_SKIP.has(i));
         for (const item of items) {
           const src = path.join(TARGET_DIR, item);
@@ -9090,7 +9124,7 @@ app.post('/api/commands/start', async (req, res) => {
           if (hasImportedSeed) {
             try {
               broadcastLog('[System] Step 4d – Installing imported nemesis seed...\n');
-              await installImportedSeed(TARGET_DIR);
+              await installImportedSeed(TARGET_DIR, fastSync.pending);
             } catch (e: any) {
               broadcastLog(`[Nemesis] ⚠️  Seed install failed: ${e.message}\n`);
               broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
@@ -9099,7 +9133,7 @@ app.post('/api/commands/start', async (req, res) => {
           } else if (sourceUrl) {
             try {
               broadcastLog('[System] Step 4d – No imported seed found; attempting REST API reconstruction...\n');
-              await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl);
+              await fetchAndBuildNemesisSeed(TARGET_DIR, sourceUrl, fastSync.pending);
             } catch (e: any) {
               broadcastLog(`[Nemesis] ⚠️  Nemesis rebuild failed: ${e.message}\n`);
               broadcastLog(`[Nemesis] ⚠️  Stack: ${e.stack}\n`);
@@ -9153,7 +9187,7 @@ app.post('/api/commands/start', async (req, res) => {
             // Only copy into data populated during this fresh setup. A restart
             // or backup restore must retain its synchronized proofs and indexes.
             const dataHasBlocks = fs.existsSync(path.join(nodeDataDir00, '00001.dat'));
-            if (dataHasBlocks && !dataExists) {
+            if (dataHasBlocks && !dataExists && !fastSync.pending) {
               for (const f of seedFiles) {
                 // Skip overwriting hashes.dat if the existing one is larger —
                 // it contains hashes for blocks generated beyond genesis.
@@ -9212,8 +9246,10 @@ app.post('/api/commands/start', async (req, res) => {
           // backfillMosaicIds (Step 1b) already patched nodes/ but gateways/ was not
           // yet created at that point.  Re-apply here now that gateways/ exists.
           const chainForStep4f = (npForHash?.chain as Record<string, unknown> | undefined) ?? {};
-          const currencyFor4f  = String(chainForStep4f.currencyMosaicId  ?? '').trim();
-          const harvestFor4f   = String(chainForStep4f.harvestingMosaicId ?? '').trim();
+          const currencyRaw4f = String(chainForStep4f.currencyMosaicId ?? '').trim();
+          const harvestRaw4f = String(chainForStep4f.harvestingMosaicId ?? '').trim();
+          const currencyFor4f = currencyRaw4f ? mosaicIdProperty(currencyRaw4f) : '';
+          const harvestFor4f = harvestRaw4f ? mosaicIdProperty(harvestRaw4f) : '';
           const patchCfg4f = (cfgPath: string): void => {
             if (!fs.existsSync(cfgPath)) return;
             let c = fs.readFileSync(cfgPath, 'utf-8');
@@ -9268,6 +9304,8 @@ app.post('/api/commands/start', async (req, res) => {
       //   restore.  Runs after the nemesis seed steps (4d/4e) so nothing
       //   overwrites the restored chain files afterwards.
       await installPendingRestoreData(TARGET_DIR);
+
+      await fastSync.install();
 
       // Step 4g: Stop existing node containers, then remove stale lock files
       //   before running.  This is a safety net for the full mode.
@@ -9491,7 +9529,10 @@ app.post('/api/commands/fullReset', async (_req, res) => {
 
     // 2. symbol-bootstrap stop (for V1 / any leftover)
     try {
-      execSync(`npx -y symbol-bootstrap stop -t "${TARGET_DIR}"`, {
+      // The installed binary, not npx: this ran an unpinned registry version,
+      // which could stop containers under a different project name than the one
+      // the launcher started.
+      execSync(`"${BOOTSTRAP_BIN}" stop -t "${TARGET_DIR}"`, {
         cwd: '/',
         timeout: 60_000,
         stdio: 'pipe',
@@ -9566,6 +9607,11 @@ app.post('/api/commands/fullReset', async (_req, res) => {
       }
       broadcastLog('[Reset] ✅ Target directory cleaned\n');
     }
+
+    // Only release import history after the target was actually emptied.
+    if (fs.existsSync(TARGET_DIR) && fs.readdirSync(TARGET_DIR).length)
+      throw new Error('Full reset did not empty the target directory. Fast Sync history was preserved.');
+    fastSync.releaseCompletedImport();
 
     // 4. Remove imported seed files
     if (fs.existsSync(SEED_DIR)) {
@@ -10138,7 +10184,16 @@ function resolveBootstrapPresetsDirs(): string[] {
   const add = (dir: string) => {
     if (fs.existsSync(dir) && !dirs.includes(dir)) dirs.push(dir);
   };
-  // The npx cache is what runBootstrapCommand() actually executes, so prefer it.
+
+  // The installed package is what runBootstrapCommand() executes, so its presets
+  // are the ones that match the network this launcher builds. Reading any other
+  // copy would hand the Config screen an inflation or finalization schedule from
+  // a different symbol-bootstrap, and a joining node that takes the wrong
+  // inflation schedule diverges at the first height that pays a block reward.
+  add(path.join(resolveBootstrapRoot(), 'presets'));
+
+  // Fallbacks for images built before the switch to a fixed install path.
+  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
   try {
     const npxCacheDir = path.join(process.env.HOME || '/root', '.npm', '_npx');
     if (fs.existsSync(npxCacheDir)) {
@@ -10146,8 +10201,8 @@ function resolveBootstrapPresetsDirs(): string[] {
         add(path.join(npxCacheDir, sub, 'node_modules', 'symbol-bootstrap', 'presets'));
       }
     }
-  } catch { /* fall through to the global install */ }
-  add('/usr/local/lib/node_modules/symbol-bootstrap/presets');
+  } catch { /* the entries above are enough */ }
+
   return dirs;
 }
 

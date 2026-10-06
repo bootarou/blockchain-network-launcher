@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { uploadTimeout } from './upload-timeout'
 
 export default defineConfig({
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), uploadTimeout()],
     server: {
         host: '0.0.0.0', // Bind to all interfaces in Docker
         port: 5173,      // Match the exposed port

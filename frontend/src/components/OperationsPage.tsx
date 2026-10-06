@@ -20,6 +20,7 @@ import { configToYaml, yamlToConfig } from '../lib/utils';
 import type { PresetConfig } from '../constants';
 import { TerminalLogs } from './TerminalLogs';
 import { LocalRecoveryStatus } from './LocalRecoveryStatus';
+import { NodeRuntimeSettings } from './NodeRuntimeSettings';
 
 type CommandStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -422,6 +423,7 @@ export function OperationsPage({ config, onConfigImport }: OperationsPageProps) 
         </div>
         <TerminalLogs />
       </div>
+      <NodeRuntimeSettings disabled={recoveryBusy || activeModal !== null} />
     </div>
   );
 }

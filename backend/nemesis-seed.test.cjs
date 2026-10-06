@@ -30,6 +30,46 @@ function fixture() {
   return Buffer.concat([block, Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x99)]);
 }
 
+test('Mosaic properties accept REST hex and reject invalid or oversized IDs', () => {
+  const { mosaicIdProperty } = evaluate('export ' + serverFunction('mosaicIdProperty'));
+  assert.equal(mosaicIdProperty('577e68efebec22a4'), "0x577E'68EF'EBEC'22A4");
+  assert.equal(mosaicIdProperty("0x347B'319C'695D'D93C"), "0x347B'319C'695D'D93C");
+  for (const value of ['', 'not-hex', '10000000000000000'])
+    assert.throws(() => mosaicIdProperty(value), /Invalid mosaic ID/);
+});
+
+test('join backfill preserves snapshot-compatible Mosaic properties in node and REST configs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-mosaic-test-'));
+  try {
+    const meta = path.join(root, 'meta.json');
+    const preset = path.join(root, 'preset.yml');
+    fs.writeFileSync(meta, '{}');
+    fs.writeFileSync(preset, '');
+    const configs = ['nodes/api-node-0/server-config/resources', 'nodes/api-node-0/broker-config/resources', 'gateways/rest-gateway/api-node-config']
+      .map(dir => path.join(root, dir, 'config-network.properties'));
+    const source = "[chain]\ncurrencyMosaicId = 0x577E'68EF'EBEC'22A4\nharvestingMosaicId = 0x347B'319C'695D'D93C\n";
+    for (const file of configs) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, source);
+    }
+    const { backfillMosaicIds } = evaluate(serverFunction('mosaicIdProperty') + '\nexport ' + serverFunction('backfillMosaicIds'), {
+      fs, path, UI_META_PATH: meta, PRESET_PATH: preset,
+      parseJsonFile: () => ({ sourceNodeUrl: 'http://source:3000' }),
+      yaml: { load: () => ({ networkProperties: { chain: {
+        currencyMosaicId: '577E68EFEBEC22A4', harvestingMosaicId: '347B319C695DD93C',
+      } } }) }, broadcastLog() {},
+    });
+    backfillMosaicIds(root);
+    for (const file of configs) assert.equal(fs.readFileSync(file, 'utf8'), source);
+    // Repair the bare-hex properties left by an earlier failed startup, too.
+    for (const file of configs) fs.writeFileSync(file, source.replace(/0x|'/g, ''));
+    backfillMosaicIds(root);
+    for (const file of configs) assert.equal(fs.readFileSync(file, 'utf8'), source);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('genesis statistics match the local height-one hash, avoiding the epoch-zero fallback', () => {
   const state = buildNemesisSeedState(fixture());
   assert.equal(state.index.readBigUInt64LE(), 1n);
