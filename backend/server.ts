@@ -4117,6 +4117,14 @@ function readMosaicIdFromNemesisSeed(targetDir: string): string {
 // nemesis signer + nonce, and we need them in custom-preset.yml for export
 // and display in the UI.
 // ---------------------------------------------------------------------------
+// REST/Share IDs can be bare hex; Catapult properties require the 0x prefix.
+// Match bootstrap's grouping so existing Fast Sync configuration hashes remain valid.
+function mosaicIdProperty(value: string): string {
+  const hex = value.trim().replace(/^0x/i, '').replace(/'/g, '');
+  if (!/^[0-9a-fA-F]{1,16}$/.test(hex)) throw new Error('Invalid mosaic ID in network configuration');
+  return '0x' + hex.toUpperCase().padStart(16, '0').match(/.{4}/g)!.join("'");
+}
+
 function backfillMosaicIds(targetDir: string, basePreset?: string): void {
   const isOfficialPreset = basePreset === 'testnet' || basePreset === 'mainnet';
   if (isOfficialPreset) {
@@ -4178,8 +4186,8 @@ function backfillMosaicIds(targetDir: string, basePreset?: string): void {
       const patchMosaicFile = (cfgPath: string): void => {
         if (!fs.existsSync(cfgPath)) return;
         let c = fs.readFileSync(cfgPath, 'utf-8');
-        if (joinCurrency) c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m,  `$1${joinCurrency}`);
-        if (joinHarvest)  c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${joinHarvest}`);
+        if (joinCurrency) c = c.replace(/^(currencyMosaicId\s*=\s*)\S+/m,  `$1${mosaicIdProperty(joinCurrency)}`);
+        if (joinHarvest)  c = c.replace(/^(harvestingMosaicId\s*=\s*)\S+/m, `$1${mosaicIdProperty(joinHarvest)}`);
         fs.writeFileSync(cfgPath, c, 'utf-8');
         broadcastLog(`[MosaicID] Patched mosaic IDs in ${path.relative(targetDir, cfgPath)}\n`);
       };
@@ -8848,8 +8856,10 @@ app.post('/api/commands/start', async (req, res) => {
           // backfillMosaicIds (Step 1b) already patched nodes/ but gateways/ was not
           // yet created at that point.  Re-apply here now that gateways/ exists.
           const chainForStep4f = (npForHash?.chain as Record<string, unknown> | undefined) ?? {};
-          const currencyFor4f  = String(chainForStep4f.currencyMosaicId  ?? '').trim();
-          const harvestFor4f   = String(chainForStep4f.harvestingMosaicId ?? '').trim();
+          const currencyRaw4f = String(chainForStep4f.currencyMosaicId ?? '').trim();
+          const harvestRaw4f = String(chainForStep4f.harvestingMosaicId ?? '').trim();
+          const currencyFor4f = currencyRaw4f ? mosaicIdProperty(currencyRaw4f) : '';
+          const harvestFor4f = harvestRaw4f ? mosaicIdProperty(harvestRaw4f) : '';
           const patchCfg4f = (cfgPath: string): void => {
             if (!fs.existsSync(cfgPath)) return;
             let c = fs.readFileSync(cfgPath, 'utf-8');
