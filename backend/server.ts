@@ -4773,6 +4773,33 @@ function backfillMosaicIds(targetDir: string, basePreset?: string): void {
 // discoverable from the network. Must run AFTER compose. Only postGenPatches
 // (custom keys) are injected — never the version's internal V3 defaults.
 // ---------------------------------------------------------------------------
+function applySavedCustomConfigValues(targetDir: string, version: CatapultVersionDef): void {
+  if (!version.postGenPatches?.length || !fs.existsSync(UI_META_PATH)) return;
+  const values = parseJsonFile(UI_META_PATH).customConfigValues ?? {};
+  const roots: string[] = [];
+  const nodes = path.join(targetDir, 'nodes');
+  if (fs.existsSync(nodes)) for (const name of fs.readdirSync(nodes))
+    for (const role of ['server', 'broker']) roots.push(path.join(nodes, name, `${role}-config/resources`));
+  const gateways = path.join(targetDir, 'gateways');
+  if (fs.existsSync(gateways)) for (const name of fs.readdirSync(gateways))
+    roots.push(path.join(gateways, name, 'api-node-config'));
+  for (const root of roots) for (const patch of version.postGenPatches) {
+    const file = path.join(root, patch.file);
+    if (!fs.existsSync(file)) continue;
+    let content = fs.readFileSync(file, 'utf8');
+    const original = content;
+    for (const key of Object.keys(patch.props)) {
+      const value = String(values[key] ?? '').trim();
+      if (!value) continue;
+      content = upsertIniSectionProperty(content, patch.section, key, value).content;
+    }
+    if (content !== original) {
+      fs.writeFileSync(file, content, 'utf8');
+      broadcastLog(`[CustomConfig] Applied saved settings to ${path.relative(targetDir, file)}\n`);
+    }
+  }
+}
+
 function patchGatewayCustomConfigs(targetDir: string, version: CatapultVersionDef) {
   const patches = (version.postGenPatches ?? []).filter(
     (p) => p.file === 'config-network.properties',
@@ -8459,6 +8486,7 @@ app.post('/api/commands/start', async (req, res) => {
 
         sanitizeGeneratedIniFiles(TARGET_DIR);
         const restartVersion = resolveVersion();
+        applySavedCustomConfigValues(TARGET_DIR, restartVersion);
         hardenGeneratedConfigs(TARGET_DIR, restartVersion);
         validateGeneratedConfigsOrThrow(TARGET_DIR, restartVersion);
 
@@ -9333,6 +9361,7 @@ app.post('/api/commands/start', async (req, res) => {
       //   overwrites the restored chain files afterwards.
       await installPendingRestoreData(TARGET_DIR);
 
+      applySavedCustomConfigValues(TARGET_DIR, version);
       await fastSync.install();
 
       // Step 4g: Stop existing node containers, then remove stale lock files

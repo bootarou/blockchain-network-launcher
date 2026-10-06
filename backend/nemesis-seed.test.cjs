@@ -30,6 +30,27 @@ function fixture() {
   return Buffer.concat([block, Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x99)]);
 }
 
+test('saved custom policy replaces heartbeat in both node roles and REST without changing fork defaults', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-policy-apply-'));
+  try {
+    const meta = path.join(root, 'meta.json');
+    fs.writeFileSync(meta, JSON.stringify({ customConfigValues: { emptyBlockPolicy: 'normal', uniqueAggregateTransactionHash: '0' } }));
+    const files = ['nodes/api-node-0/server-config/resources', 'nodes/api-node-0/broker-config/resources', 'gateways/rest-gateway/api-node-config']
+      .map(dir => path.join(root, dir, 'config-network.properties'));
+    const original = "[chain]\nemptyBlockPolicy = heartbeat\nemptyBlockHeartbeatInterval = 86400s\n[fork_heights]\nuniqueAggregateTransactionHash = 2'742'000\n";
+    for (const file of files) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, original); }
+    const { applySavedCustomConfigValues } = evaluate(serverFunction('upsertIniSectionProperty') + '\nexport ' + serverFunction('applySavedCustomConfigValues'), {
+      fs, path, UI_META_PATH: meta, parseJsonFile: f => JSON.parse(fs.readFileSync(f, 'utf8')), broadcastLog() {},
+    });
+    const version = { postGenPatches: [{ file: 'config-network.properties', section: '[chain]', props: { emptyBlockPolicy: 'normal', emptyBlockHeartbeatInterval: '86400s' } }] };
+    applySavedCustomConfigValues(root, version);
+    for (const file of files) assert.equal(fs.readFileSync(file, 'utf8'), original.replace('= heartbeat', '= normal'));
+    fs.writeFileSync(meta, JSON.stringify({ customConfigValues: {} }));
+    applySavedCustomConfigValues(root, version);
+    for (const file of files) assert.equal(fs.readFileSync(file, 'utf8'), original.replace('= heartbeat', '= normal'));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('empty block policy defaults to normal and preserves an existing chain policy', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-policy-'));
   try {
