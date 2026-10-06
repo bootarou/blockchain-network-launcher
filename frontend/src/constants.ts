@@ -676,7 +676,7 @@ const BNL_IMAGE_BUILTIN_PATCH_FIELDS: { pattern: RegExp; fields: CustomPatchFiel
     pattern: /bnl-catapult-server:\S*-ebp$/,
     fields: [
       { file: 'config-network.properties', section: '[chain]', key: 'chainFinalizationHeight', defaultValue: '0' },
-      { file: 'config-network.properties', section: '[chain]', key: 'emptyBlockPolicy', defaultValue: 'heartbeat' },
+      { file: 'config-network.properties', section: '[chain]', key: 'emptyBlockPolicy', defaultValue: 'normal' },
       { file: 'config-network.properties', section: '[chain]', key: 'emptyBlockHeartbeatInterval', defaultValue: '86400s' },
     ],
   },
@@ -728,9 +728,10 @@ if (CUSTOM_CONFIG_PATCH_FIELDS.length > 0) {
           type: 'select' as FieldType,
           description: `${f.file} ${f.section} に注入されます。空ブロック抑制ポリシー。未入力時は既定値（${f.defaultValue}）。`,
           options: [
+            { value: '', label: `既定値を使用 (${f.defaultValue})` },
             { value: 'normal', label: 'normal — 常に生成(従来)' },
             { value: 'suppress', label: 'suppress — 空ブロック生成しない' },
-            { value: 'heartbeat', label: 'heartbeat — 一定間隔のみ生成(推奨)' },
+            { value: 'heartbeat', label: 'heartbeat — 一定間隔のみ生成' },
           ],
         }
         : {

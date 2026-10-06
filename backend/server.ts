@@ -3118,7 +3118,7 @@ const BNL_IMAGE_BUILTIN_PATCHES: { pattern: RegExp; patches: PropertiesPatch[] }
       section: '[chain]',
       props: {
         chainFinalizationHeight: '0',
-        emptyBlockPolicy: 'heartbeat',
+        emptyBlockPolicy: 'normal',
         emptyBlockHeartbeatInterval: '86400s',
       },
     }],
@@ -3226,6 +3226,32 @@ const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
  * from the Configuration UI, persisted in ui-meta customConfigValues.
  * Empty / missing UI values fall back to the .env defaults.
  */
+function preserveExistingEmptyBlockPolicy(uiVals: Record<string, unknown>): void {
+  if (String(uiVals.emptyBlockPolicy ?? '').trim()) return;
+  const nodes = path.join(TARGET_DIR, 'nodes');
+  if (!fs.existsSync(nodes)) return;
+  const policies = new Set<string>();
+  for (const node of fs.readdirSync(nodes)) {
+    const index = path.join(nodes, node, 'data', 'index.dat');
+    if (!fs.existsSync(index)) continue;
+    const raw = fs.readFileSync(index);
+    if (raw.length !== 8 || raw.readBigUInt64LE() <= 1n) continue;
+    for (const role of ['server', 'broker']) {
+      const file = path.join(nodes, node, `${role}-config/resources/config-network.properties`);
+      if (!fs.existsSync(file)) continue;
+      const match = fs.readFileSync(file, 'utf8').match(/^emptyBlockPolicy\s*=\s*(\S+)/m);
+      if (match) policies.add(match[1]);
+    }
+  }
+  if (!policies.size) return;
+  if (policies.size !== 1 || !['normal', 'heartbeat', 'suppress'].includes([...policies][0]))
+    throw new Error('Existing emptyBlockPolicy settings disagree or are invalid. Select the network policy explicitly.');
+  uiVals.emptyBlockPolicy = [...policies][0];
+  const meta = fs.existsSync(UI_META_PATH) ? parseJsonFile(UI_META_PATH) : {};
+  meta.customConfigValues = { ...meta.customConfigValues, ...uiVals };
+  fs.writeFileSync(UI_META_PATH, JSON.stringify(meta, null, 2), 'utf8');
+}
+
 function applyCustomConfigValueOverrides(ver: CatapultVersionDef): void {
   if (!ver.postGenPatches?.length || CUSTOM_EXTRA_PATCH_DEFAULTS.length === 0) return;
   let uiVals: Record<string, unknown> = {};
@@ -3238,6 +3264,8 @@ function applyCustomConfigValueOverrides(ver: CatapultVersionDef): void {
     }
   } catch { /* fall back to env defaults */ }
 
+  if (ver.postGenPatches.some(p => 'emptyBlockPolicy' in p.props))
+    preserveExistingEmptyBlockPolicy(uiVals);
   for (const patch of ver.postGenPatches) {
     const defaults = CUSTOM_EXTRA_PATCH_DEFAULTS.find(
       (d) => d.file === patch.file && d.section === patch.section,

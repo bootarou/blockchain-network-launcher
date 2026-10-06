@@ -30,6 +30,38 @@ function fixture() {
   return Buffer.concat([block, Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x99)]);
 }
 
+test('empty block policy defaults to normal and preserves an existing chain policy', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-policy-'));
+  try {
+    const meta = path.join(root, '.ui-meta.json');
+    const defaults = [{ file: 'config-network.properties', section: '[chain]', props: { emptyBlockPolicy: 'normal' } }];
+    const { applyCustomConfigValueOverrides } = evaluate(
+      serverFunction('preserveExistingEmptyBlockPolicy') + '\nexport ' + serverFunction('applyCustomConfigValueOverrides'),
+      { fs, path, TARGET_DIR: root, UI_META_PATH: meta, CUSTOM_EXTRA_PATCH_DEFAULTS: defaults,
+        parseJsonFile: f => JSON.parse(fs.readFileSync(f, 'utf8')), broadcastLog() {} });
+    const version = () => ({ postGenPatches: JSON.parse(JSON.stringify(defaults)) });
+    let v = version(); applyCustomConfigValueOverrides(v);
+    assert.equal(v.postGenPatches[0].props.emptyBlockPolicy, 'normal');
+    const node = path.join(root, 'nodes/api-node-0');
+    fs.mkdirSync(path.join(node, 'data'), { recursive: true });
+    const height = Buffer.alloc(8); height.writeBigUInt64LE(2n);
+    fs.writeFileSync(path.join(node, 'data/index.dat'), height);
+    for (const role of ['server', 'broker']) {
+      const dir = path.join(node, role + '-config/resources');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'config-network.properties'), '[chain]\nemptyBlockPolicy = heartbeat\n');
+    }
+    v = version(); applyCustomConfigValueOverrides(v);
+    assert.equal(v.postGenPatches[0].props.emptyBlockPolicy, 'heartbeat');
+    assert.equal(JSON.parse(fs.readFileSync(meta)).customConfigValues.emptyBlockPolicy, 'heartbeat');
+    for (const policy of ['normal', 'suppress', 'heartbeat']) {
+      fs.writeFileSync(meta, JSON.stringify({ customConfigValues: { emptyBlockPolicy: policy } }));
+      v = version(); applyCustomConfigValueOverrides(v);
+      assert.equal(v.postGenPatches[0].props.emptyBlockPolicy, policy);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('Mosaic properties accept REST hex and reject invalid or oversized IDs', () => {
   const { mosaicIdProperty } = evaluate('export ' + serverFunction('mosaicIdProperty'));
   assert.equal(mosaicIdProperty('577e68efebec22a4'), "0x577E'68EF'EBEC'22A4");
