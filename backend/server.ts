@@ -1047,15 +1047,7 @@ app.get('/api/preset', (req, res) => {
       if (fs.existsSync(UI_META_PATH)) {
         try {
           const meta = parseJsonFile(UI_META_PATH);
-          flat = { ...meta, ...flat };
-          // Expose saved CUSTOM_CONFIG_PATCHES values as flat keys so the
-          // Configuration UI's custom fields populate (keys never collide
-          // with preset keys — they are custom-server-only properties).
-          if (meta.customConfigValues && typeof meta.customConfigValues === 'object') {
-            for (const [k, v] of Object.entries(meta.customConfigValues as Record<string, unknown>)) {
-              if (flat[k] === undefined) flat[k] = v;
-            }
-          }
+          flat = mergeCustomConfigMetadata(flat, meta);
         } catch { /* ignore corrupt meta */ }
       }
 
@@ -3226,6 +3218,18 @@ const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
  * from the Configuration UI, persisted in ui-meta customConfigValues.
  * Empty / missing UI values fall back to the .env defaults.
  */
+function mergeCustomConfigMetadata(config: Record<string, unknown>, meta: Record<string, unknown>): Record<string, unknown> {
+  const merged = { ...meta, ...config };
+  const values = meta.customConfigValues;
+  if (values && typeof values === 'object' && !Array.isArray(values)) {
+    for (const [key, value] of Object.entries(values)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      if (merged[key] === undefined) merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 function preserveExistingEmptyBlockPolicy(uiVals: Record<string, unknown>): void {
   if (String(uiVals.emptyBlockPolicy ?? '').trim()) return;
   const nodes = path.join(TARGET_DIR, 'nodes');
@@ -7690,7 +7694,7 @@ app.post('/api/share/import', (req, res) => {
           // Merge UI metadata
           if (fs.existsSync(UI_META_PATH)) {
             const meta = parseJsonFile(UI_META_PATH);
-            importedConfig = { ...meta, ...importedConfig };
+            importedConfig = mergeCustomConfigMetadata(importedConfig, meta);
           }
         } catch { /* ignore parse errors */ }
 

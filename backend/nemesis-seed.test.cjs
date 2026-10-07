@@ -30,6 +30,25 @@ function fixture() {
   return Buffer.concat([block, Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x99)]);
 }
 
+test('Share metadata exposes custom fields for UI and subsequent Start save without overriding preset fields', () => {
+  const { mergeCustomConfigMetadata } = evaluate('export ' + serverFunction('mergeCustomConfigMetadata'));
+  // ZIP ui-meta.json round trip. Start saves top-level form fields only.
+  const meta = JSON.parse(JSON.stringify({ catapultVersion: 'custom', customConfigValues: {
+    chainFinalizationHeight: '5000', emptyBlockPolicy: 'normal', emptyBlockHeartbeatInterval: '86400s',
+  } }));
+  const imported = mergeCustomConfigMetadata({ symbolServerImage: 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp' }, meta);
+  const saved = {};
+  for (const key of Object.keys(meta.customConfigValues)) saved[key] = String(imported[key]);
+  assert.deepEqual(saved, meta.customConfigValues);
+  assert.equal(imported.symbolServerImage, 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp');
+  assert.equal(mergeCustomConfigMetadata({ chainFinalizationHeight: '6000' }, meta).chainFinalizationHeight, '6000');
+  assert.equal(mergeCustomConfigMetadata({ host: 'local' }, {}).host, 'local');
+  for (const policy of ['heartbeat', 'suppress']) {
+    meta.customConfigValues.emptyBlockPolicy = policy;
+    assert.equal(mergeCustomConfigMetadata({}, meta).emptyBlockPolicy, policy);
+  }
+});
+
 test('saved custom policy replaces heartbeat in both node roles and REST without changing fork defaults', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-policy-apply-'));
   try {
