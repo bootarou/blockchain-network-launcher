@@ -30,6 +30,56 @@ function fixture() {
   return Buffer.concat([block, Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x99)]);
 }
 
+test('official networks accept only official or FPG images and isolate custom defaults', () => {
+  let image = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
+  const official = { id: 'v3', configPatches: [], removeProps: [{ file: 'config-network.properties', keys: ['emptyBlockPolicy', 'other'] }] };
+  const { officialNetworkVersion } = evaluate('export ' + serverFunction('officialNetworkVersion'), {
+    fs: { readFileSync: () => '' }, yaml: { load: () => ({ symbolServerImage: image }) },
+    PRESET_PATH: 'unused', CATAPULT_VERSIONS: [official], structuredClone,
+  });
+  for (const preset of ['mainnet', 'testnet']) {
+    const v = officialNetworkVersion(preset);
+    assert.equal(v.serverImage, image);
+    assert.equal(v.postGenPatches[0].props.chainFinalizationHeight, '0');
+    assert.equal(v.postGenPatches[0].props.emptyBlockPolicy, 'normal');
+    assert.deepEqual(Array.from(v.removeProps[0].keys), ['other']);
+  }
+  assert.equal(official.removeProps[0].keys.length, 2);
+  image = 'arbitrary/image:latest';
+  assert.throws(() => officialNetworkVersion('mainnet'), /Unsupported/);
+  assert.equal(officialNetworkVersion('bootstrap'), undefined);
+  image = 'symbolplatform/symbol-server:gcc-1.0.3.9';
+  assert.equal(officialNetworkVersion('mainnet').id, 'v3');
+});
+
+test('official to FPG and back updates generated preset and both Catapult containers', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bnl-public-image-'));
+  const yaml = require('js-yaml');
+  try {
+    const official = 'symbolplatform/symbol-server:gcc-1.0.3.9';
+    const fpg = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
+    fs.mkdirSync(path.join(root, 'docker'));
+    fs.writeFileSync(path.join(root, 'custom-preset.yml'), '{}');
+    fs.writeFileSync(path.join(root, 'preset.yml'), yaml.dump({ symbolServerImage: official, nodes: [{ serverImage: official, brokerImage: official }] }));
+    const compose = path.join(root, 'docker/docker-compose.yml');
+    fs.writeFileSync(compose, yaml.dump({ services: { node: { image: official }, broker: { image: official }, db: { image: 'mongo:5.0.15' } } }));
+    const funcs = evaluate('export ' + serverFunction('rewriteGeneratedPresetImages') + '\nexport ' + serverFunction('patchDockerComposeImages'), {
+      fs, path, yaml, SHARED_DIR: root, broadcastLog() {},
+    });
+    for (const image of [fpg, official]) {
+      funcs.rewriteGeneratedPresetImages(root, { serverImage: image }, image);
+      funcs.patchDockerComposeImages(root, { serverImage: image }, image);
+      const preset = yaml.load(fs.readFileSync(path.join(root, 'preset.yml'), 'utf8'));
+      const services = yaml.load(fs.readFileSync(compose, 'utf8')).services;
+      assert.equal(preset.symbolServerImage, image);
+      assert.equal(preset.nodes[0].brokerImage, image);
+      assert.equal(services.node.image, image);
+      assert.equal(services.broker.image, image);
+      assert.equal(services.db.image, 'mongo:5.0.15');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('Share metadata exposes custom fields for UI and subsequent Start save without overriding preset fields', () => {
   const { mergeCustomConfigMetadata } = evaluate('export ' + serverFunction('mergeCustomConfigMetadata'));
   // ZIP ui-meta.json round trip. Start saves top-level form fields only.
@@ -63,6 +113,9 @@ test('saved custom policy replaces heartbeat in both node roles and REST without
     });
     const version = { postGenPatches: [{ file: 'config-network.properties', section: '[chain]', props: { emptyBlockPolicy: 'normal', emptyBlockHeartbeatInterval: '86400s' } }] };
     applySavedCustomConfigValues(root, version);
+    for (const file of files) assert.equal(fs.readFileSync(file, 'utf8'), original.replace('= heartbeat', '= normal'));
+    fs.writeFileSync(meta, JSON.stringify({ customConfigValues: { emptyBlockPolicy: 'suppress', chainFinalizationHeight: '5000' } }));
+    applySavedCustomConfigValues(root, { ...version, id: 'custom-public-fpg' });
     for (const file of files) assert.equal(fs.readFileSync(file, 'utf8'), original.replace('= heartbeat', '= normal'));
     fs.writeFileSync(meta, JSON.stringify({ customConfigValues: {} }));
     applySavedCustomConfigValues(root, version);

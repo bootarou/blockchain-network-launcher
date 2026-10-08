@@ -297,7 +297,12 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
     : CATEGORIES
   ).filter((c) => !c.customOnly || isCustomVersion);
   const visibleFields = (fields: FieldMeta[]) =>
-    isPublicNet ? fields.filter((f) => f.editableOnPublicNetwork) : fields;
+    isPublicNet ? fields.filter((f) => f.editableOnPublicNetwork).map(f => f.key === 'symbolServerImage' ? {
+      ...f, type: 'select' as const, options: [
+        { value: 'symbolplatform/symbol-server:gcc-1.0.3.9', label: 'Official Catapult 1.0.3.9' },
+        { value: 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg', label: 'BNL Catapult 1.0.3.9 FPG' },
+      ],
+    } : f) : fields;
 
   // If the active tab disappears (switching to an official network, or
   // deselecting the custom version), fall back to General.
@@ -310,6 +315,12 @@ export function ConfigForm({ config, onChange }: ConfigFormProps) {
 
   // Scalar field change — with preset auto-switch & version auto-fill
   const handleFieldChange = (key: string, value: unknown) => {
+    // Public-network server choices also provide the matching Catapult tools.
+    // Persist both fields so the form agrees with the generated preset.
+    if (key === 'symbolServerImage' && isPublicNet) {
+      onChange({ ...config, symbolServerImage: String(value), symbolServerToolsImage: String(value) });
+      return;
+    }
     if (key === 'preset') {
       const overrides = PRESET_OVERRIDES[value as string];
       if (overrides) {

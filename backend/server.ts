@@ -3287,7 +3287,28 @@ function applyCustomConfigValueOverrides(ver: CatapultVersionDef): void {
 }
 
 /** Resolve which version def to use from the custom-preset YAML */
-function resolveVersion(): CatapultVersionDef {
+function officialNetworkVersion(basePreset: string): CatapultVersionDef | undefined {
+  if (basePreset !== 'mainnet' && basePreset !== 'testnet') return;
+  const doc = yaml.load(fs.readFileSync(PRESET_PATH, 'utf8')) as Record<string, unknown>;
+  const image = String(doc.symbolServerImage ?? 'symbolplatform/symbol-server:gcc-1.0.3.9');
+  const official = CATAPULT_VERSIONS.find(v => v.id === 'v3')!;
+  if (['symbolplatform/symbol-server:gcc-1.0.3.9', 'symbol-server-patched:gcc-1.0.3.9'].includes(image))
+    return structuredClone(official);
+  if (image !== 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg')
+    throw new Error('Unsupported mainnet/testnet server image. Select official V3 or BNL FPG.');
+  return {
+    ...structuredClone(official), id: 'custom-public-fpg', serverImage: image, needsOpenSslPatch: false,
+    removeProps: (official.removeProps ?? []).map(p => ({ ...p, keys: p.keys.filter(k =>
+      !['chainFinalizationHeight', 'emptyBlockPolicy', 'emptyBlockHeartbeatInterval'].includes(k)) })),
+    postGenPatches: [{ file: 'config-network.properties', section: '[chain]', props: {
+      chainFinalizationHeight: '0', emptyBlockPolicy: 'normal', emptyBlockHeartbeatInterval: '86400s',
+    } }],
+  };
+}
+
+function resolveVersion(basePreset = ''): CatapultVersionDef {
+  const publicVersion = officialNetworkVersion(basePreset);
+  if (publicVersion) return publicVersion;
   const ver = resolveVersionInner();
   applyCustomConfigValueOverrides(ver);
   return ver;
@@ -3364,6 +3385,7 @@ function resolveVersionInner(): CatapultVersionDef {
 // Called dynamically before config step; reads the actual server image tag.
 // ---------------------------------------------------------------------------
 async function ensurePatchedImage(version: CatapultVersionDef): Promise<string> {
+  if (version.id === 'custom-public-fpg') return version.serverImage;
   if (!version.needsOpenSslPatch) {
     broadcastLog(`[Setup] Version ${version.id}: OpenSSL patch not needed\n`);
     return '';
@@ -3487,7 +3509,7 @@ function rewriteGeneratedPresetImages(
     for (const key of ['symbolServerImage', 'symbolServerToolsImage']) {
       const cur = String(doc[key] ?? '');
       if (cur !== patchedTag && (
-        cur === baseImage ||
+        cur === baseImage || cur === 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg' ||
         cur.startsWith('symbolplatform/symbol-server:') ||
         cur.includes('-patched:')   // any previously-patched name (official or custom)
       )) {
@@ -3503,7 +3525,7 @@ function rewriteGeneratedPresetImages(
         for (const imgKey of ['serverImage', 'brokerImage']) {
           const cur = String(node[imgKey] ?? '');
           if (cur !== patchedTag && (
-            cur === baseImage ||
+            cur === baseImage || cur === 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg' ||
             cur.startsWith('symbolplatform/symbol-server:') ||
             cur.includes('-patched:')   // any previously-patched name (official or custom)
           )) {
@@ -3540,7 +3562,7 @@ function patchDockerComposeImages(
     // Replace ANY symbol-server image (patched or not) with the correct patched tag.
     // This catches both "symbolplatform/symbol-server:gcc-X.X.X.X"
     // and "symbol-server-patched:gcc-X.X.X.X" from previous runs.
-    const imageRegex = /image:\s*(symbolplatform\/symbol-server:[^\s]+|symbol-server-patched:[^\s]+)/g;
+    const imageRegex = /image:\s*(symbolplatform\/symbol-server:[^\s]+|symbol-server-patched:[^\s]+|nftdrive\/bnl-catapult-server:1\.0\.3\.9-cf1-ebp-fpg(?=\s|$))/g;
     const newContent = content.replace(imageRegex, (_match, oldImage: string) => {
       if (oldImage !== patchedTag) {
         broadcastLog(`[Patch] docker-compose.yml: ${oldImage} → ${patchedTag}\n`);
@@ -4778,8 +4800,10 @@ function backfillMosaicIds(targetDir: string, basePreset?: string): void {
 // (custom keys) are injected — never the version's internal V3 defaults.
 // ---------------------------------------------------------------------------
 function applySavedCustomConfigValues(targetDir: string, version: CatapultVersionDef): void {
-  if (!version.postGenPatches?.length || !fs.existsSync(UI_META_PATH)) return;
-  const values = parseJsonFile(UI_META_PATH).customConfigValues ?? {};
+  if (!version.postGenPatches?.length) return;
+  const values = version.id === 'custom-public-fpg'
+    ? { chainFinalizationHeight: '0', emptyBlockPolicy: 'normal', emptyBlockHeartbeatInterval: '86400s' }
+    : fs.existsSync(UI_META_PATH) ? parseJsonFile(UI_META_PATH).customConfigValues ?? {} : {};
   const roots: string[] = [];
   const nodes = path.join(targetDir, 'nodes');
   if (fs.existsSync(nodes)) for (const name of fs.readdirSync(nodes))
@@ -8489,7 +8513,7 @@ app.post('/api/commands/start', async (req, res) => {
         patchLocalNetworks(TARGET_DIR);
 
         sanitizeGeneratedIniFiles(TARGET_DIR);
-        const restartVersion = resolveVersion();
+        const restartVersion = resolveVersion(basePreset);
         applySavedCustomConfigValues(TARGET_DIR, restartVersion);
         hardenGeneratedConfigs(TARGET_DIR, restartVersion);
         validateGeneratedConfigsOrThrow(TARGET_DIR, restartVersion);
@@ -8511,6 +8535,7 @@ app.post('/api/commands/start', async (req, res) => {
         //     `docker image inspect`.
         const restartPatchedTag = await ensurePatchedImage(restartVersion);
         if (restartPatchedTag) {
+          rewriteGeneratedPresetImages(TARGET_DIR, restartVersion, restartPatchedTag);
           patchDockerComposeImages(TARGET_DIR, restartVersion, restartPatchedTag);
         }
 
@@ -8645,7 +8670,7 @@ app.post('/api/commands/start', async (req, res) => {
       }
 
       // Step 0: Resolve catapult version
-      const version = resolveVersion();
+      const version = resolveVersion(basePreset);
       broadcastLog(`[System] Catapult version: ${version.id} (${version.serverImage})\n`);
 
       // Step 0b: Build patched image BEFORE config
@@ -8862,6 +8887,7 @@ app.post('/api/commands/start', async (req, res) => {
           // cause version mismatches with the official chain.
           const IMAGE_KEYS = ['symbolServerImage', 'symbolRestImage', 'symbolServerToolsImage'] as const;
           for (const k of IMAGE_KEYS) {
+            if (k === 'symbolServerImage' && version.id === 'custom-public-fpg') continue;
             if (k in officialDoc) { delete (officialDoc as any)[k]; stripped = true; }
           }
 
