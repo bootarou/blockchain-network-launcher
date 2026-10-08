@@ -3104,7 +3104,7 @@ const BNL_IMAGE_BUILTIN_PATCHES: { pattern: RegExp; patches: PropertiesPatch[] }
   {
     // chainFinalization + emptyBlockPolicy edition
     // (custom-catapult-chainFinalizationHeight feat-empty-block-policy, e.g. 1.0.3.9-cf1-ebp)
-    pattern: /bnl-catapult-server:\S*-ebp$/,
+    pattern: /bnl-catapult-server:\S*-ebp(?:-fpg)?$/,
     patches: [{
       file: 'config-network.properties',
       section: '[chain]',
@@ -3152,7 +3152,7 @@ const CUSTOM_EXTRA_PATCH_DEFAULTS: PropertiesPatch[] = [];
 // is offered by default alongside the official v2/v3 images. Set
 // CUSTOM_SERVER_IMAGE to test other images instead (comma-separated), or set it
 // to "none" to hide the custom entry entirely. Must match VITE_CUSTOM_SERVER_IMAGE.
-const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
+const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp,nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
 
 {
   const v3 = CATAPULT_VERSIONS.find((v) => v.id === 'v3')!;

@@ -102,7 +102,7 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
 // NOTE: the backend must have CUSTOM_SERVER_IMAGE set to the same list
 // (both sides default to the BNL image when unset).
 // ---------------------------------------------------------------------------
-export const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
+export const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp,nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
 
 const _customServerImages = ((((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '').trim()) || DEFAULT_BNL_SERVER_IMAGE)
   .split(',')
@@ -111,7 +111,7 @@ const _customServerImages = ((((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as stri
 if (_customServerImages.length > 0) {
   const _v3 = CATAPULT_VERSIONS[0];
   _customServerImages.forEach((image, i) => {
-    const isBnl = /bnl-catapult-server:\S*-(ebp|cf\d*)$/.test(image);
+    const isBnl = /bnl-catapult-server:\S*-(ebp(?:-fpg)?|cf\d*)$/.test(image);
     CATAPULT_VERSIONS.push({
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
       label: isBnl ? `BNL — ${image}` : `Custom — ${image}`,
@@ -673,7 +673,7 @@ export interface CustomPatchField {
 const BNL_IMAGE_BUILTIN_PATCH_FIELDS: { pattern: RegExp; fields: CustomPatchField[] }[] = [
   {
     // chainFinalization + emptyBlockPolicy edition (e.g. nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp)
-    pattern: /bnl-catapult-server:\S*-ebp$/,
+    pattern: /bnl-catapult-server:\S*-ebp(?:-fpg)?$/,
     fields: [
       { file: 'config-network.properties', section: '[chain]', key: 'chainFinalizationHeight', defaultValue: '0' },
       { file: 'config-network.properties', section: '[chain]', key: 'emptyBlockPolicy', defaultValue: 'normal' },

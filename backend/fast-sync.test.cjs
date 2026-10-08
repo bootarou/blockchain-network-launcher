@@ -229,6 +229,18 @@ async function readyGenerated(t, overrides) {
   put(path.join(f.target, '.fast-sync/snapshot.json'), JSON.stringify(snapshot));
   return { ...f, node, profile, snapshot };
 }
+test('FPG image can install a snapshot from the original BNL image', async t => {
+  const f = await readyGenerated(t);
+  const snapshot = { ...f.snapshot, serverImage: 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp' };
+  put(path.join(f.target, '.fast-sync/snapshot.json'), JSON.stringify(snapshot));
+  const compose = JSON.parse(await f.docker(['compose']));
+  for (const service of ['server', 'broker']) compose.services[service].image = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
+  f.setCompose(compose);
+  await f.sync.install();
+  assert.equal(f.sync.status().state, 'complete');
+  assert.throws(() => validateSnapshot({ ...snapshot, serverImage: 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-unknown' }));
+});
+
 test('first start installs both datasets together and keeps independently generated keys', async t => {
   const f = await readyGenerated(t);
   const cert = fs.readFileSync(path.join(f.node, 'cert/ca.cert.pem'));

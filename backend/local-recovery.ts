@@ -222,7 +222,7 @@ export class LocalRecovery {
     const nodeServices = services.filter(s => s.volumes?.some((v: any) => v.type === 'bind' && v.source === node && v.target === '/symbol-workdir'));
     if (nodeServices.length !== 2 || nodeServices[0].image !== nodeServices[1].image) throw new Error('Expected matching server/broker images and bind mounts.');
     const image = nodeServices[0].image;
-    if (!/^(symbolplatform\/symbol-server:gcc-1\.0\.3\.9|symbol-server-patched:gcc-1\.0\.3\.9|nftdrive\/bnl-catapult-server:1\.0\.3\.9-cf1-ebp)$/.test(image)) {
+    if (!/^(symbolplatform\/symbol-server:gcc-1\.0\.3\.9|symbol-server-patched:gcc-1\.0\.3\.9|nftdrive\/bnl-catapult-server:1\.0\.3\.9-cf1-ebp(?:-fpg)?)$/.test(image)) {
       throw new Error(`Unsupported recovery image (PQC is excluded): ${image}`);
     }
     const db = services.find(s => s.volumes?.some((v: any) => v.type === 'bind' && v.source === path.join(this.target, 'databases/db') && v.target === '/dbdata'));

@@ -68,7 +68,7 @@ function fingerprint(file: string) {
 }
 function imageFamily(image: string) {
   if (['symbolplatform/symbol-server:gcc-1.0.3.9', 'symbol-server-patched:gcc-1.0.3.9'].includes(image)) return 'official-1.0.3.9';
-  if (image === 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp') return 'bnl-cf1-ebp';
+  if (['nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp', 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg'].includes(image)) return 'bnl-cf1-ebp';
   throw new Error('Fast Sync requires a supported non-PQC 1.0.3.9 image.');
 }
 
