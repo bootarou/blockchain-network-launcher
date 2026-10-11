@@ -102,7 +102,7 @@ export const CATAPULT_VERSIONS: CatapultVersionPreset[] = [
 // NOTE: the backend must have CUSTOM_SERVER_IMAGE set to the same list
 // (both sides default to the BNL image when unset).
 // ---------------------------------------------------------------------------
-export const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp,nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
+export const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
 
 const _customServerImages = ((((import.meta.env.VITE_CUSTOM_SERVER_IMAGE as string | undefined) ?? '').trim()) || DEFAULT_BNL_SERVER_IMAGE)
   .split(',')
@@ -116,7 +116,7 @@ if (_customServerImages.length > 0) {
       id: i === 0 ? 'custom' : `custom-${i + 1}`,
       label: isBnl ? `BNL — ${image}` : `Custom — ${image}`,
       description: isBnl
-        ? '公式 Symbol 互換の BNL 版（chainFinalizationHeight + emptyBlockPolicy）。必要な config プロパティは自動注入されます。'
+        ? `BNL 版（chainFinalizationHeight + emptyBlockPolicy${image.endsWith('-fpg') ? ' + ファイナライズ同期ガード（FPG）' : ''}）。必要な config プロパティは自動注入されます。`
         : 'ローカルビルドのサーバーイメージをテスト（VITE_CUSTOM_SERVER_IMAGE / backend CUSTOM_SERVER_IMAGE）。',
       symbolServerImage: image,
       symbolRestImage: (import.meta.env.VITE_CUSTOM_REST_IMAGE as string | undefined) || _v3.symbolRestImage,

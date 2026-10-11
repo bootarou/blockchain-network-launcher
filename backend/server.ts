@@ -3152,7 +3152,7 @@ const CUSTOM_EXTRA_PATCH_DEFAULTS: PropertiesPatch[] = [];
 // is offered by default alongside the official v2/v3 images. Set
 // CUSTOM_SERVER_IMAGE to test other images instead (comma-separated), or set it
 // to "none" to hide the custom entry entirely. Must match VITE_CUSTOM_SERVER_IMAGE.
-const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp,nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
+const DEFAULT_BNL_SERVER_IMAGE = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
 
 {
   const v3 = CATAPULT_VERSIONS.find((v) => v.id === 'v3')!;
@@ -3341,6 +3341,18 @@ function resolveVersionInner(): CatapultVersionDef {
       if (exact) {
         broadcastLog(`[resolveVersion] Matched from symbolServerImage (exact): ${exact.id}\n`);
         return exact;
+      }
+
+      // Keep existing non-FPG presets readable without offering them for new nodes.
+      const legacyImage = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
+      if (img === legacyImage || img === 'nftdrive-bnl-catapult-server-patched:1.0.3.9-cf1-ebp') {
+        const base = CATAPULT_VERSIONS.find(v => v.serverImage === DEFAULT_BNL_SERVER_IMAGE)
+          ?? CATAPULT_VERSIONS.find(v => v.id === 'v3')!;
+        return { ...structuredClone(base), id: 'custom-legacy-ebp', serverImage: legacyImage,
+          needsOpenSslPatch: false, postGenPatches: builtinPatchesForImage(legacyImage),
+          removeProps: (base.removeProps ?? []).map(p => ({ ...p, keys: p.keys.filter(k =>
+            !['chainFinalizationHeight', 'emptyBlockPolicy', 'emptyBlockHeartbeatInterval'].includes(k)) })),
+        };
       }
 
       for (const ver of CATAPULT_VERSIONS) {

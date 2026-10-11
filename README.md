@@ -291,7 +291,7 @@ Beacon Protocol の実装（正規化・ハッシュ・署名・ファイル形�
 |---|---|---|
 | `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 標準版。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
 | `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
-| `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp` | 非 PQC の BNL 統合イメージ版 |
+| `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` | 非 PQC の BNL 統合イメージ版 |
 | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
 | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
 
@@ -311,7 +311,7 @@ main
 
 ### feat-empty-block-policy-cf
 
-`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `1.0.3.9-cf1-ebp`（chainFinalizationHeight + 空ブロックポリシー）を既定で提供し、既知の BNL イメージには必要な config パッチを自動注入します。
+`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `1.0.3.9-cf1-ebp-fpg`（chainFinalizationHeight + 空ブロックポリシー）を既定で提供し、既知の BNL イメージには必要な config パッチを自動注入します。
 
 ### feat-PQC-custom-catapult
 

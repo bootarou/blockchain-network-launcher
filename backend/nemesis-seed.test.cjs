@@ -30,6 +30,24 @@ function fixture() {
   return Buffer.concat([block, Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x99)]);
 }
 
+test('FPG is the default while existing EBP presets retain their image and required properties', () => {
+  const fpg = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
+  const legacy = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp';
+  assert.ok(serverSource.includes(`const DEFAULT_BNL_SERVER_IMAGE = '${fpg}'`));
+  const frontend = fs.readFileSync(path.join(__dirname, '../frontend/src/constants.ts'), 'utf8');
+  assert.ok(frontend.includes(`const DEFAULT_BNL_SERVER_IMAGE = '${fpg}'`));
+  const { resolveVersionInner } = evaluate('export ' + serverFunction('resolveVersionInner'), {
+    fs: { existsSync: () => true, readFileSync: () => '' }, yaml: { load: () => ({ symbolServerImage: legacy }) },
+    PRESET_PATH: 'unused', DEFAULT_BNL_SERVER_IMAGE: fpg, structuredClone, broadcastLog() {},
+    CATAPULT_VERSIONS: [{ id: 'v3', serverImage: 'symbolplatform/symbol-server:gcc-1.0.3.9' }, { id: 'custom', serverImage: fpg }],
+    builtinPatchesForImage: () => [{ props: { emptyBlockPolicy: 'normal' } }],
+  });
+  const version = resolveVersionInner();
+  assert.equal(version.serverImage, legacy);
+  assert.equal(version.id, 'custom-legacy-ebp');
+  assert.equal(version.postGenPatches[0].props.emptyBlockPolicy, 'normal');
+});
+
 test('official networks accept only official or FPG images and isolate custom defaults', () => {
   let image = 'nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg';
   const official = { id: 'v3', configPatches: [], removeProps: [{ file: 'config-network.properties', keys: ['emptyBlockPolicy', 'other'] }] };
