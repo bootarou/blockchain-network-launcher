@@ -437,6 +437,7 @@ function Get-WindowsUpdateStatus {
         WuRebootRequired   = $null
         WuInstallerBusy    = $null
         ServicingProcesses = @()
+        TiWorker           = @()
     }
 
     $rebootKeys = @(
@@ -464,8 +465,16 @@ function Get-WindowsUpdateStatus {
     try { $status.WuRebootRequired = [bool](New-Object -ComObject 'Microsoft.Update.SystemInfo').RebootRequired } catch {}
     try { $status.WuInstallerBusy = [bool](New-Object -ComObject 'Microsoft.Update.Installer').IsBusy } catch {}
 
-    $status.ServicingProcesses = @(Get-Process -Name 'TiWorker', 'DismHost', 'dism' -ErrorAction SilentlyContinue |
+    # DismHost / dism mean another DISM operation is running (for example a
+    # feature enablement left over from an interrupted run).
+    $status.ServicingProcesses = @(Get-Process -Name 'DismHost', 'dism' -ErrorAction SilentlyContinue |
         ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" })
+
+    # TiWorker is informational only. The Get-WindowsOptionalFeature query
+    # this installer runs just before the check starts TiWorker itself, and it
+    # then idles for minutes, so its presence does not mean Windows is busy.
+    $status.TiWorker = @(Get-Process -Name 'TiWorker' -ErrorAction SilentlyContinue |
+        ForEach-Object { "TiWorker (PID $($_.Id))" })
 
     return [pscustomobject]$status
 }
@@ -478,19 +487,21 @@ function Test-WindowsUpdateReady {
     $status = Get-WindowsUpdateStatus
     $pendingText = if (@($status.PendingReboot).Count -gt 0) { @($status.PendingReboot) -join ', ' } else { 'none' }
     $processText = if (@($status.ServicingProcesses).Count -gt 0) { @($status.ServicingProcesses) -join ', ' } else { 'none' }
+    $tiWorkerText = if (@($status.TiWorker).Count -gt 0) { @($status.TiWorker) -join ', ' } else { 'none' }
     Write-Host "  Pending restart keys       : $pendingText" -ForegroundColor DarkGray
     Write-Host "  Windows Update restart req.: $($status.WuRebootRequired)" -ForegroundColor DarkGray
     Write-Host "  Windows Update installing  : $($status.WuInstallerBusy)" -ForegroundColor DarkGray
-    Write-Host "  Servicing processes        : $processText" -ForegroundColor DarkGray
+    Write-Host "  DISM processes             : $processText" -ForegroundColor DarkGray
+    Write-Host "  TiWorker (info only)       : $tiWorkerText" -ForegroundColor DarkGray
 
     $needsRestart = (@($status.PendingReboot).Count -gt 0) -or ($status.WuRebootRequired -eq $true)
     $wuInstalling = ($status.WuInstallerBusy -eq $true)
     $servicingActive = (@($status.ServicingProcesses).Count -gt 0)
 
-    # TiWorker keeps running for a while after updates finish (cleanup).
-    # When that is the only signal, wait for it instead of stopping at once.
+    # A DISM host can linger briefly after its session closes. When that is
+    # the only signal, wait for it instead of stopping at once.
     if ($servicingActive -and -not $needsRestart -and -not $wuInstalling) {
-        Write-Host '  Windows の内部処理の終了を待っています... / Waiting for Windows servicing to finish...' -ForegroundColor DarkGray
+        Write-Host '  DISM の処理の終了を待っています... / Waiting for the DISM operation to finish...' -ForegroundColor DarkGray
         $stopwatch = [Diagnostics.Stopwatch]::StartNew()
         $nextReport = $ServicingWaitReportSeconds
         while ($servicingActive -and $stopwatch.Elapsed.TotalSeconds -lt $ServicingWaitSeconds) {
@@ -515,10 +526,10 @@ function Test-WindowsUpdateReady {
         Write-Host '[Windows Update] Windows Update is currently installing or processing updates.' -ForegroundColor Yellow
     }
     elseif ($servicingActive) {
-        Write-Host '[Windows] Windowsの更新・機能の内部処理 (TiWorker など) が実行中です。' -ForegroundColor Yellow
-        Write-Host '[Windows] Windows servicing (TiWorker etc.) is still running.' -ForegroundColor Yellow
-        Write-Host '          Windows Update が「最新の状態です」でも、更新後の後処理が続くことがあります。' -ForegroundColor DarkGray
-        Write-Host '          It can keep running for a while even when Windows Update shows "You are up to date".' -ForegroundColor DarkGray
+        Write-Host '[Windows] 別の DISM の処理 (Windows の機能の変更など) が実行中です。' -ForegroundColor Yellow
+        Write-Host '[Windows] Another DISM operation (such as a Windows feature change) is still running.' -ForegroundColor Yellow
+        Write-Host '          以前のセットアップで始めた機能の有効化が、裏で続いている場合があります。' -ForegroundColor DarkGray
+        Write-Host '          A feature enablement started by an earlier setup run may still be running.' -ForegroundColor DarkGray
     }
     if ($needsRestart) {
         Write-Host '[Windows Update] 更新を完了するためにWindowsの再起動が必要な状態です。' -ForegroundColor Yellow
