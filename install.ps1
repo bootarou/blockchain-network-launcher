@@ -19,6 +19,8 @@ $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
 $LogPath             = Join-Path $StateDir 'install.log'
 $TranscriptStarted   = $false
+$ServicingWaitSeconds       = 180
+$ServicingWaitReportSeconds = 30
 
 function Write-Step([string]$Message) {
     Write-Host "`n============================================================" -ForegroundColor DarkCyan
@@ -482,17 +484,41 @@ function Test-WindowsUpdateReady {
     Write-Host "  Servicing processes        : $processText" -ForegroundColor DarkGray
 
     $needsRestart = (@($status.PendingReboot).Count -gt 0) -or ($status.WuRebootRequired -eq $true)
-    $busy = ($status.WuInstallerBusy -eq $true) -or (@($status.ServicingProcesses).Count -gt 0)
+    $wuInstalling = ($status.WuInstallerBusy -eq $true)
+    $servicingActive = (@($status.ServicingProcesses).Count -gt 0)
 
-    if (-not $needsRestart -and -not $busy) {
+    # TiWorker keeps running for a while after updates finish (cleanup).
+    # When that is the only signal, wait for it instead of stopping at once.
+    if ($servicingActive -and -not $needsRestart -and -not $wuInstalling) {
+        Write-Host '  Windows の内部処理の終了を待っています... / Waiting for Windows servicing to finish...' -ForegroundColor DarkGray
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        $nextReport = $ServicingWaitReportSeconds
+        while ($servicingActive -and $stopwatch.Elapsed.TotalSeconds -lt $ServicingWaitSeconds) {
+            Start-Sleep -Seconds 5
+            $processes = @((Get-WindowsUpdateStatus).ServicingProcesses)
+            $servicingActive = ($processes.Count -gt 0)
+            if ($servicingActive -and $stopwatch.Elapsed.TotalSeconds -ge $nextReport) {
+                Write-Host ("  {0:mm\:ss} 経過 / elapsed: {1}" -f $stopwatch.Elapsed, ($processes -join ', ')) -ForegroundColor DarkGray
+                $nextReport += $ServicingWaitReportSeconds
+            }
+        }
+    }
+
+    if (-not $needsRestart -and -not $wuInstalling -and -not $servicingActive) {
         Write-Ok 'Windows Update is idle'
         return $true
     }
 
     Write-Host ''
-    if ($busy) {
+    if ($wuInstalling) {
         Write-Host '[Windows Update] 更新プログラムの処理中です。' -ForegroundColor Yellow
         Write-Host '[Windows Update] Windows Update is currently installing or processing updates.' -ForegroundColor Yellow
+    }
+    elseif ($servicingActive) {
+        Write-Host '[Windows] Windowsの更新・機能の内部処理 (TiWorker など) が実行中です。' -ForegroundColor Yellow
+        Write-Host '[Windows] Windows servicing (TiWorker etc.) is still running.' -ForegroundColor Yellow
+        Write-Host '          Windows Update が「最新の状態です」でも、更新後の後処理が続くことがあります。' -ForegroundColor DarkGray
+        Write-Host '          It can keep running for a while even when Windows Update shows "You are up to date".' -ForegroundColor DarkGray
     }
     if ($needsRestart) {
         Write-Host '[Windows Update] 更新を完了するためにWindowsの再起動が必要な状態です。' -ForegroundColor Yellow
