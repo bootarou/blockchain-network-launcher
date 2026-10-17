@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v23 beta)
+﻿# BNL One-Line Installer for Windows + WSL2 (v23 beta)
 # Usage (PowerShell):
 #   $p = Join-Path $env:TEMP 'bnl-install.ps1'
 #   Invoke-WebRequest 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1' -OutFile $p
@@ -427,6 +427,89 @@ function Test-WslDistroLaunchable {
     }
 }
 
+function Get-WindowsUpdateStatus {
+    # Read-only snapshot of Windows Update / servicing activity. Enabling a
+    # Windows feature queues behind Windows Update, so check this first.
+    $status = [ordered]@{
+        PendingReboot      = @()
+        WuRebootRequired   = $null
+        WuInstallerBusy    = $null
+        ServicingProcesses = @()
+    }
+
+    $rebootKeys = @(
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'; Label = 'CBS RebootPending' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootInProgress'; Label = 'CBS RebootInProgress' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\PackagesPending'; Label = 'CBS PackagesPending' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'; Label = 'Windows Update RebootRequired' }
+    )
+    foreach ($key in $rebootKeys) {
+        try {
+            if (Test-Path -LiteralPath $key.Path) { $status.PendingReboot += $key.Label }
+        } catch {}
+    }
+
+    # SessionsPending exists on healthy systems too; only a non-zero
+    # Exclusive value means a servicing session is waiting for a restart.
+    try {
+        $sessions = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\SessionsPending' -ErrorAction Stop
+        $exclusive = $sessions.PSObject.Properties['Exclusive']
+        if ($exclusive -and [int]$exclusive.Value -ne 0) {
+            $status.PendingReboot += "CBS SessionsPending (Exclusive=$($exclusive.Value))"
+        }
+    } catch {}
+
+    try { $status.WuRebootRequired = [bool](New-Object -ComObject 'Microsoft.Update.SystemInfo').RebootRequired } catch {}
+    try { $status.WuInstallerBusy = [bool](New-Object -ComObject 'Microsoft.Update.Installer').IsBusy } catch {}
+
+    $status.ServicingProcesses = @(Get-Process -Name 'TiWorker', 'DismHost', 'dism' -ErrorAction SilentlyContinue |
+        ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" })
+
+    return [pscustomobject]$status
+}
+
+function Test-WindowsUpdateReady {
+    # Prints the Windows Update status and returns $true when it is safe to
+    # enable Windows features now.
+    Write-Step 'Checking Windows Update status'
+
+    $status = Get-WindowsUpdateStatus
+    $pendingText = if (@($status.PendingReboot).Count -gt 0) { @($status.PendingReboot) -join ', ' } else { 'none' }
+    $processText = if (@($status.ServicingProcesses).Count -gt 0) { @($status.ServicingProcesses) -join ', ' } else { 'none' }
+    Write-Host "  Pending restart keys       : $pendingText" -ForegroundColor DarkGray
+    Write-Host "  Windows Update restart req.: $($status.WuRebootRequired)" -ForegroundColor DarkGray
+    Write-Host "  Windows Update installing  : $($status.WuInstallerBusy)" -ForegroundColor DarkGray
+    Write-Host "  Servicing processes        : $processText" -ForegroundColor DarkGray
+
+    $needsRestart = (@($status.PendingReboot).Count -gt 0) -or ($status.WuRebootRequired -eq $true)
+    $busy = ($status.WuInstallerBusy -eq $true) -or (@($status.ServicingProcesses).Count -gt 0)
+
+    if (-not $needsRestart -and -not $busy) {
+        Write-Ok 'Windows Update is idle'
+        return $true
+    }
+
+    Write-Host ''
+    if ($busy) {
+        Write-Host '[Windows Update] 更新プログラムの処理中です。' -ForegroundColor Yellow
+        Write-Host '[Windows Update] Windows Update is currently installing or processing updates.' -ForegroundColor Yellow
+    }
+    if ($needsRestart) {
+        Write-Host '[Windows Update] 更新を完了するためにWindowsの再起動が必要な状態です。' -ForegroundColor Yellow
+        Write-Host '[Windows Update] Windows needs a restart to finish installing updates.' -ForegroundColor Yellow
+    }
+    Write-Host ''
+    Write-Host '先に Windows Update を完了してください。' -ForegroundColor Yellow
+    Write-Host '  1. 設定 > Windows Update を開き、更新のダウンロード・インストールが終わるまで待つ' -ForegroundColor Yellow
+    Write-Host '  2. 「再起動が必要です」と表示されたら再起動する' -ForegroundColor Yellow
+    Write-Host '  3. 「最新の状態です」になったら、BNL-Setup.bat をもう一度実行する' -ForegroundColor Yellow
+    Write-Host 'Please complete Windows Update first.' -ForegroundColor Yellow
+    Write-Host '  1. Open Settings > Windows Update and wait until downloads and installs finish' -ForegroundColor Yellow
+    Write-Host '  2. Restart Windows if it says a restart is required' -ForegroundColor Yellow
+    Write-Host '  3. When it shows "You are up to date", run BNL-Setup.bat again' -ForegroundColor Yellow
+    return $false
+}
+
 function Start-BnlRuntime {
     Write-Step 'Starting Ubuntu and BNL runtime'
 
@@ -585,8 +668,30 @@ try {
         # ---------------------------------------------------------------------
         Write-Step 'Checking WSL2 Windows features'
 
+        $wslFeatureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
+        $featuresToEnable = @($wslFeatureNames | Where-Object {
+            (Get-WindowsOptionalFeature -Online -FeatureName $_).State -ne 'Enabled'
+        })
+
+        # Enabling a feature while Windows Update is busy or waiting for a
+        # restart can stall indefinitely. Stop early with clear guidance.
+        if ($featuresToEnable.Count -gt 0) {
+            Write-Host "Features to enable: $($featuresToEnable -join ', ')"
+            if (-not (Test-WindowsUpdateReady)) {
+                Write-Host ''
+                Write-Host "Log: $LogPath" -ForegroundColor DarkGray
+                if ($TranscriptStarted) {
+                    try { Stop-Transcript | Out-Null } catch {}
+                    $TranscriptStarted = $false
+                }
+                Write-Host 'Press Enter to close this window.' -ForegroundColor Yellow
+                [void](Read-Host)
+                return
+            }
+        }
+
         $rebootRequired = $false
-        foreach ($featureName in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
+        foreach ($featureName in $wslFeatureNames) {
             $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName
             if ($feature.State -ne 'Enabled') {
                 Write-Host "Enabling $featureName ..."
