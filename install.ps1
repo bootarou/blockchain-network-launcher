@@ -19,7 +19,7 @@ $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
 $LogPath             = Join-Path $StateDir 'install.log'
 $TranscriptStarted   = $false
-$ServicingWaitSeconds       = 180
+$ServicingWaitSeconds       = 60
 $ServicingWaitReportSeconds = 30
 
 function Write-Step([string]$Message) {
