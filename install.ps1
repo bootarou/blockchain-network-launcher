@@ -510,6 +510,26 @@ function Test-WindowsUpdateReady {
     return $false
 }
 
+function Read-WindowsUpdateAction {
+    Write-Host ''
+    Write-Host '  1) 中止する (推奨・既定) / Stop now (recommended, default)' -ForegroundColor White
+    Write-Host '  2) 無視して続行する / Ignore and continue' -ForegroundColor White
+    Write-Host '     Windows Update の完了を待たずに機能の有効化を始めます。長時間止まる場合があります。' -ForegroundColor DarkGray
+    Write-Host '     Enables the features without waiting for Windows Update. Setup may stall for a long time.' -ForegroundColor DarkGray
+    Write-Host ''
+
+    while ($true) {
+        $value = Read-Host 'Select [1]'
+        if ([string]::IsNullOrWhiteSpace($value) -or $value.Trim() -eq '1') {
+            return 'stop'
+        }
+        if ($value.Trim() -eq '2') {
+            return 'continue'
+        }
+        Write-Warn 'Select 1 or 2.'
+    }
+}
+
 function Start-BnlRuntime {
     Write-Step 'Starting Ubuntu and BNL runtime'
 
@@ -678,15 +698,18 @@ try {
         if ($featuresToEnable.Count -gt 0) {
             Write-Host "Features to enable: $($featuresToEnable -join ', ')"
             if (-not (Test-WindowsUpdateReady)) {
-                Write-Host ''
-                Write-Host "Log: $LogPath" -ForegroundColor DarkGray
-                if ($TranscriptStarted) {
-                    try { Stop-Transcript | Out-Null } catch {}
-                    $TranscriptStarted = $false
+                if ((Read-WindowsUpdateAction) -eq 'stop') {
+                    Write-Host ''
+                    Write-Host "Log: $LogPath" -ForegroundColor DarkGray
+                    if ($TranscriptStarted) {
+                        try { Stop-Transcript | Out-Null } catch {}
+                        $TranscriptStarted = $false
+                    }
+                    Write-Host 'Press Enter to close this window.' -ForegroundColor Yellow
+                    [void](Read-Host)
+                    return
                 }
-                Write-Host 'Press Enter to close this window.' -ForegroundColor Yellow
-                [void](Read-Host)
-                return
+                Write-Warn 'Continuing without waiting for Windows Update (selected by user).'
             }
         }
 
