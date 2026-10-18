@@ -75,7 +75,7 @@ Windows 10（ビルド 19041 以降）/ Windows 11 では、`BNL-Setup.bat` を�
 1. **`BNL-Setup.bat` を実行**します。タスクトレイアプリ BNL Tray の配布物に同梱しているほか、リポジトリのルートにもあります。実行するたびに `main` ブランチの最新の `install.ps1` を取得して実行します。
 2. WSL2 が未導入の場合は、管理者権限（UAC）を求められます。WSL と仮想マシン プラットフォームを有効にしたあと Windows が再起動し、サインイン後にセットアップが自動で再開します。自動で再開しない場合は、もう一度 `BNL-Setup.bat` を実行してください。
 3. 途中で次の 3 点を入力します。
-   - **BNL の種類** — 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom。違いは「[ブランチ構成](#ブランチ構成)」を参照
+   - **BNL の種類** — 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom / 4) BNL PQC（試験用）。違いは「[ブランチ構成](#ブランチ構成)」を参照
    - **`BIND_ADDRESS`** — 通常は `127.0.0.1`（この PC からのみアクセス可）
    - **管理者パスワード** — Web UI のログイン用（8〜64 文字）
 4. 完了すると、ブラウザで BNL の Web UI（`http://127.0.0.1:5173`）が開きます。
@@ -326,17 +326,17 @@ Beacon Protocol の実装（正規化・ハッシュ・署名・ファイル形�
 
 ## ブランチ構成
 
-BNL は用途別のブランチで提供しています。`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）だけを使う標準版です。Windows インストーラー（`BNL-Setup.bat`）では、上の 3 つを「種類（edition）」として選びます。
+BNL は用途別のブランチで提供しています。`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）だけを使う標準版です。Windows インストーラー（`BNL-Setup.bat`）では、上の 4 つを「種類（edition）」として選びます。
 
 | インストーラーでの名前 | ブランチ | 既定の catapult イメージ | 内容 |
 |---|---|---|---|
 | 1) BNL client（既定） | `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` | BNL 版 catapult（chainFinalizationHeight / emptyBlockPolicy / FPG）。公式 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選択可 |
 | 2) Symbol official client | `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 公式 catapult のみ。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
 | 3) BNL Custom（開発者向け） | `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
-| （一覧には表示しない） | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
-| （一覧には表示しない） | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+| 4) BNL PQC（試験用） | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制。非公式・実験的な試験用で、mainnet / testnet には参加不可 |
+| （一覧には表示しない） | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版（空ブロック抑制なし） |
 
-PQC の 2 ブランチはインストーラーの選択肢に表示しませんが、ブランチ名を入力すればインストールできます。
+`feat-PQC-custom-catapult` はインストーラーの選択肢に表示しませんが、ブランチ名を入力すればインストールできます。
 
 派生の系統は 2 本に分かれます。ブランチ名からは読み取れませんが、**`-cf` が付く方が非 PQC** です。
 
