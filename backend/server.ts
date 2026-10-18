@@ -10776,6 +10776,14 @@ app.post('/api/network/fetch', async (req, res) => {
 // Publish Network (Cloudflare)
 // =============================================================================
 
+// Publishing is under development. The handlers below only create CNAME
+// records pointing at "localhost" (nothing becomes reachable), never create a
+// tunnel, and unpublish deletes every record whose name merely contains the
+// subdomain. Refuse both actions so the Cloudflare zone is never modified.
+const PUBLISH_IMPLEMENTED = false;
+const PUBLISH_NOT_IMPLEMENTED_MESSAGE =
+  'Cloudflare publishing is under development and currently disabled. Set up a Cloudflare Tunnel manually instead.';
+
 const PUBLISH_CONFIG_FILE = path.join(process.env.HOME || '/root', '.symbol-publish-config.json');
 let publishConfig: Record<string, unknown> = {};
 
@@ -10877,6 +10885,9 @@ app.get('/api/publish/status', async (_req, res) => {
 });
 
 app.post('/api/publish', async (req, res) => {
+  if (!PUBLISH_IMPLEMENTED) {
+    return res.status(501).json({ error: PUBLISH_NOT_IMPLEMENTED_MESSAGE });
+  }
   try {
     const { ports, subdomain } = req.body;
     const token = publishConfig.cloudflareToken as string;
@@ -10937,6 +10948,9 @@ app.post('/api/publish', async (req, res) => {
 });
 
 app.delete('/api/publish', async (_req, res) => {
+  if (!PUBLISH_IMPLEMENTED) {
+    return res.status(501).json({ error: PUBLISH_NOT_IMPLEMENTED_MESSAGE });
+  }
   try {
     const token = publishConfig.cloudflareToken as string;
     const zoneId = publishConfig.cloudflareZoneId as string;
