@@ -79,3 +79,5 @@ bda-test.symbol-network.zip
 # BNL Tray build output
 tray/dist/
 bnl-tray.exe
+/test-target
+/docker-compose.test.yml
