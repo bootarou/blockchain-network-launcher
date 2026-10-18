@@ -33,7 +33,7 @@ WSL2 Ubuntu 内で動く BNL manager を、Windows のタスクトレイから
 
 | 入力項目 | 内容 |
 |---|---|
-| BNL の種類 | 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom（開発者向け）。通常は Enter で既定のまま |
+| BNL の種類 | 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom（開発者向け）/ 4) BNL PQC（試験用）。通常は Enter で既定のまま |
 | `BIND_ADDRESS` | BNL が待ち受けるアドレス（通常は `127.0.0.1`） |
 | 管理者パスワード | BNL Web UI の管理者パスワード |
 

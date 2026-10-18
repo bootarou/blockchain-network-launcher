@@ -29,11 +29,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p
 
 | 項目 | 内容 |
 |---|---|
-| BNL の種類 | 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom（開発者向け）。違いは README の「ブランチ構成」を参照 |
+| BNL の種類 | 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom（開発者向け）/ 4) BNL PQC（試験用）。違いは README の「ブランチ構成」を参照 |
 | `BIND_ADDRESS` | Web UI と API を公開するアドレス。通常は `127.0.0.1`（この PC からのみアクセス可） |
 | 管理者パスワード | Web UI のログイン用。8〜64 文字（`A-Z a-z 0-9 ! @ # % _ . -`）。画面にもログにも表示しません |
 
-PQC の 2 ブランチ（`feat-PQC-custom-catapult` / `feat-empty-block-policy`）は選択肢に表示しませんが、ブランチ名を入力すれば選べます。
+4) BNL PQC は `feat-empty-block-policy`（PQC 版 + 空ブロック抑制）です。非公式・実験的な試験用で、Symbol mainnet / testnet には参加できません。PQC の基本版 `feat-PQC-custom-catapult` は選択肢に表示しませんが、ブランチ名を入力すれば選べます。
 
 ## 自動で行うこと
 

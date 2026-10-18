@@ -22,7 +22,7 @@ yourself.
 
 1. Double-click **`BNL-Setup.bat`**.
    It downloads the latest installer and asks you for:
-   - the BNL edition to install: 1) BNL client (default), 2) Symbol official client, or 3) BNL Custom for developers. Press Enter to keep the default,
+   - the BNL edition to install: 1) BNL client (default), 2) Symbol official client, 3) BNL Custom for developers, or 4) BNL PQC for testing. Press Enter to keep the default,
    - the address BNL listens on (`BIND_ADDRESS`, normally `127.0.0.1`),
    - an admin password for the BNL Web UI.
 
