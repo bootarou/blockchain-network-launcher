@@ -70,40 +70,61 @@ function Read-BnlBranch {
         $DefaultBranch = 'main'
     }
 
-    Write-Step 'BNL branch selection'
-    Write-Host 'Choose the BNL branch to install or update.' -ForegroundColor White
+    # The PQC branches are not listed in the menu, but stay accepted (typed by
+    # name, or as the default when already installed) so a rerun on a PQC
+    # install never switches it to main just because Enter was pressed.
+    $editionNames = @{
+        'feat-empty-block-policy-cf' = 'BNL client'
+        'main'                       = 'Symbol official client'
+        'feat-custom-catapult'       = 'BNL Custom (developer)'
+        'feat-PQC-custom-catapult'   = 'BNL PQC (not listed)'
+        'feat-empty-block-policy'    = 'BNL PQC + empty-block policy (not listed)'
+    }
+
+    Write-Step 'BNL edition selection'
+    Write-Host 'インストール / 更新する BNL の種類を選んでください。' -ForegroundColor White
+    Write-Host 'Choose the BNL edition to install or update.' -ForegroundColor White
     Write-Host ''
-    Write-Host '  1) main' -ForegroundColor Cyan
-    Write-Host '     Standard / official catapult images (1.0.3.6 / 1.0.3.7 / 1.0.3.9)' -ForegroundColor DarkGray
-    Write-Host '  2) feat-custom-catapult' -ForegroundColor Cyan
-    Write-Host '     Custom-built catapult image support (non-PQC)' -ForegroundColor DarkGray
-    Write-Host '  3) feat-empty-block-policy-cf' -ForegroundColor Cyan
-    Write-Host '     Non-PQC BNL integrated image + empty-block policy' -ForegroundColor DarkGray
-    Write-Host '  4) feat-PQC-custom-catapult' -ForegroundColor Cyan
-    Write-Host '     PQC-only version (ML-DSA / iVRF)' -ForegroundColor DarkGray
-    Write-Host '  5) feat-empty-block-policy' -ForegroundColor Cyan
-    Write-Host '     PQC + empty-block suppression policy' -ForegroundColor DarkGray
+    Write-Host '  1) BNL client                                  [branch: feat-empty-block-policy-cf]' -ForegroundColor Cyan
+    Write-Host '     BNL 独自機能を追加した Catapult で動かす版です。' -ForegroundColor White
+    Write-Host '     - Catapult : nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg (BNL 版 1.0.3.9)' -ForegroundColor DarkGray
+    Write-Host '                  公式 Catapult 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選べます' -ForegroundColor DarkGray
+    Write-Host '     - 追加機能 : chainFinalizationHeight (ファイナライズの高さの設定)' -ForegroundColor DarkGray
+    Write-Host '                  emptyBlockPolicy (空ブロック抑制: トランザクションが無い間のブロック生成を抑える)' -ForegroundColor DarkGray
+    Write-Host '                  FPG (ファイナライズ同期ガード)' -ForegroundColor DarkGray
+    Write-Host '     - 用途     : 独自ネットワーク (プライベート / データチェーン) の作成・参加、' -ForegroundColor DarkGray
+    Write-Host '                  Symbol mainnet / testnet への参加' -ForegroundColor DarkGray
+    Write-Host '     - BNL 独自の設定は自動で入ります。mainnet / testnet では公式と同じ動作になる値に固定されます。' -ForegroundColor DarkGray
     Write-Host ''
-    Write-Host "Current/default branch: $DefaultBranch" -ForegroundColor Green
+    Write-Host '  2) Symbol official client                      [branch: main]' -ForegroundColor Cyan
+    Write-Host '     Symbol 公式の Catapult をそのまま使う標準版です。' -ForegroundColor White
+    Write-Host '     - Catapult : symbolplatform/symbol-server 1.0.3.9 / 1.0.3.7 / 1.0.3.6 (公式)' -ForegroundColor DarkGray
+    Write-Host '     - 追加機能 : なし (BNL 独自の機能は含みません)' -ForegroundColor DarkGray
+    Write-Host '     - 用途     : 公式ノードと同じ構成で、Symbol mainnet / testnet や独自ネットワークを動かす' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '  3) BNL Custom (開発者向け / for developers)     [branch: feat-custom-catapult]' -ForegroundColor Cyan
+    Write-Host '     自分でビルドした Catapult イメージを試すための版です。通常は選ばないでください。' -ForegroundColor White
+    Write-Host '     - Catapult : 既定は公式 1.0.3.9。.env の CUSTOM_SERVER_IMAGE で任意のイメージを追加' -ForegroundColor DarkGray
+    Write-Host '     - 追加設定 : .env の CUSTOM_CONFIG_PATCHES で任意の config プロパティを追加' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host "Current/default: $($editionNames[$DefaultBranch]) [branch: $DefaultBranch]" -ForegroundColor Green
 
     while ($true) {
-        $value = Read-Host 'Select branch [1-5, Enter = default]'
+        $value = Read-Host 'Select [1-3, Enter = current/default]'
         if ([string]::IsNullOrWhiteSpace($value)) {
             return $DefaultBranch
         }
 
         $value = $value.Trim()
         switch ($value) {
-            '1' { return 'main' }
-            '2' { return 'feat-custom-catapult' }
-            '3' { return 'feat-empty-block-policy-cf' }
-            '4' { return 'feat-PQC-custom-catapult' }
-            '5' { return 'feat-empty-block-policy' }
+            '1' { return 'feat-empty-block-policy-cf' }
+            '2' { return 'main' }
+            '3' { return 'feat-custom-catapult' }
             default {
                 if ($allowedBranches -contains $value) {
                     return $value
                 }
-                Write-Warn 'Select 1-5, or enter one of the displayed branch names.'
+                Write-Warn 'Select 1-3.'
             }
         }
     }
