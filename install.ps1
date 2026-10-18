@@ -70,15 +70,15 @@ function Read-BnlBranch {
         $DefaultBranch = 'feat-empty-block-policy-cf'
     }
 
-    # The PQC branches are not listed in the menu, but stay accepted (typed by
-    # name, or as the default when already installed) so a rerun on a PQC
-    # install never switches it to main just because Enter was pressed.
+    # feat-PQC-custom-catapult is not listed in the menu, but stays accepted
+    # (typed by name, or as the default when already installed) so a rerun on
+    # such an install never switches it to another branch on Enter.
     $editionNames = @{
         'feat-empty-block-policy-cf' = 'BNL client'
         'main'                       = 'Symbol official client'
         'feat-custom-catapult'       = 'BNL Custom (developer)'
-        'feat-PQC-custom-catapult'   = 'BNL PQC (not listed)'
-        'feat-empty-block-policy'    = 'BNL PQC + empty-block policy (not listed)'
+        'feat-empty-block-policy'    = 'BNL PQC (test)'
+        'feat-PQC-custom-catapult'   = 'BNL PQC base (not listed)'
     }
 
     Write-Step 'BNL edition selection'
@@ -107,10 +107,18 @@ function Read-BnlBranch {
     Write-Host '     - Catapult : 既定は公式 1.0.3.9。.env の CUSTOM_SERVER_IMAGE で任意のイメージを追加' -ForegroundColor DarkGray
     Write-Host '     - 追加設定 : .env の CUSTOM_CONFIG_PATCHES で任意の config プロパティを追加' -ForegroundColor DarkGray
     Write-Host ''
+    Write-Host '  4) BNL PQC (試験用 / for testing)               [branch: feat-empty-block-policy]' -ForegroundColor Cyan
+    Write-Host '     耐量子計算機暗号 (PQC) に対応した Catapult で動かす試験用の版です。' -ForegroundColor White
+    Write-Host '     - Catapult : nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp (BNL PQC 版 1.0.3.9)' -ForegroundColor DarkGray
+    Write-Host '     - 暗号     : ML-DSA-44 (署名) / ML-KEM-768 (鍵交換・TLS) / iVRF (ブロック抽選)' -ForegroundColor DarkGray
+    Write-Host '     - 追加機能 : emptyBlockPolicy (空ブロック抑制。プライベート / データチェーンの既定は heartbeat、86400 秒間隔)' -ForegroundColor DarkGray
+    Write-Host '     - 用途     : PQC 独自ネットワークの作成・参加 (試験・検証用)' -ForegroundColor DarkGray
+    Write-Host '     - 非公式・実験的な版です。Symbol mainnet / testnet には参加できません。' -ForegroundColor Yellow
+    Write-Host ''
     Write-Host "Current/default: $($editionNames[$DefaultBranch]) [branch: $DefaultBranch]" -ForegroundColor Green
 
     while ($true) {
-        $value = Read-Host 'Select [1-3, Enter = current/default]'
+        $value = Read-Host 'Select [1-4, Enter = current/default]'
         if ([string]::IsNullOrWhiteSpace($value)) {
             return $DefaultBranch
         }
@@ -120,11 +128,12 @@ function Read-BnlBranch {
             '1' { return 'feat-empty-block-policy-cf' }
             '2' { return 'main' }
             '3' { return 'feat-custom-catapult' }
+            '4' { return 'feat-empty-block-policy' }
             default {
                 if ($allowedBranches -contains $value) {
                     return $value
                 }
-                Write-Warn 'Select 1-3.'
+                Write-Warn 'Select 1-4.'
             }
         }
     }
