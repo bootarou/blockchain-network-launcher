@@ -87,7 +87,7 @@ Docker コンテナ 1 つを起動するだけで、PQC catapult ノードの設
 
 Windows では、`main` ブランチの `BNL-Setup.bat` から WSL2 の Ubuntu に導入できます（手順の詳細は `main` の [install-windows.md](https://github.com/bootarou/blockchain-network-launcher/blob/main/install-windows.md)）。
 
-PQC 版はインストーラーの選択肢に表示されません。BNL の種類を聞かれたら、番号の代わりにブランチ名 **`feat-PQC-custom-catapult`** または **`feat-empty-block-policy`** を入力してください。再実行時は、インストール済みのブランチが既定になります。
+BNL の種類を聞かれたら **4) BNL PQC（試験用）** を選ぶと `feat-empty-block-policy`（PQC 版 + 空ブロック抑制）が入ります。PQC の基本版 `feat-PQC-custom-catapult` は選択肢に表示しないので、番号の代わりにブランチ名を入力してください。再実行時は、インストール済みのブランチが既定になります。
 
 macOS / Linux、または手動で Docker を操作する場合は、次の「クイックスタート」の手順を使います。
 
@@ -258,17 +258,17 @@ http://localhost:5173
 
 ## ブランチ構成
 
-BNL は用途別のブランチで提供しています。`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）だけを使う標準版です。Windows インストーラー（`BNL-Setup.bat`）では、上の 3 つを「種類（edition）」として選びます。
+BNL は用途別のブランチで提供しています。`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）だけを使う標準版です。Windows インストーラー（`BNL-Setup.bat`）では、上の 4 つを「種類（edition）」として選びます。
 
 | インストーラーでの名前 | ブランチ | 既定の catapult イメージ | 内容 |
 |---|---|---|---|
 | 1) BNL client（既定） | `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` | BNL 版 catapult（chainFinalizationHeight / emptyBlockPolicy / FPG）。公式 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選択可 |
 | 2) Symbol official client | `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 公式 catapult のみ。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
 | 3) BNL Custom（開発者向け） | `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
-| （一覧には表示しない） | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
-| （一覧には表示しない） | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+| 4) BNL PQC（試験用） | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制。非公式・実験的な試験用で、mainnet / testnet には参加不可 |
+| （一覧には表示しない） | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版（空ブロック抑制なし） |
 
-PQC の 2 ブランチはインストーラーの選択肢に表示しませんが、ブランチ名を入力すればインストールできます。
+`feat-PQC-custom-catapult` はインストーラーの選択肢に表示しませんが、ブランチ名を入力すればインストールできます。
 
 派生の系統は 2 本に分かれます。ブランチ名からは読み取れませんが、**`-cf` が付く方が非 PQC** です。
 
