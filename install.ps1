@@ -1,4 +1,4 @@
-# BNL One-Line Installer for Windows + WSL2 (v23 beta)
+﻿# BNL One-Line Installer for Windows + WSL2 (v23 beta)
 # Usage (PowerShell):
 #   $p = Join-Path $env:TEMP 'bnl-install.ps1'
 #   Invoke-WebRequest 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1' -OutFile $p
@@ -19,6 +19,8 @@ $LinuxInstallerPath = Join-Path $StateDir 'install-wsl.sh'
 $RunOnceName         = 'BNLInstallerResume'
 $LogPath             = Join-Path $StateDir 'install.log'
 $TranscriptStarted   = $false
+$ServicingWaitSeconds       = 60
+$ServicingWaitReportSeconds = 30
 
 function Write-Step([string]$Message) {
     Write-Host "`n============================================================" -ForegroundColor DarkCyan
@@ -54,7 +56,7 @@ function ConvertFrom-SecureStringPlain {
 
 
 function Read-BnlBranch {
-    param([string]$DefaultBranch = 'main')
+    param([string]$DefaultBranch = 'feat-empty-block-policy-cf')
 
     $allowedBranches = @(
         'main',
@@ -65,43 +67,64 @@ function Read-BnlBranch {
     )
 
     if ($allowedBranches -notcontains $DefaultBranch) {
-        $DefaultBranch = 'main'
+        $DefaultBranch = 'feat-empty-block-policy-cf'
     }
 
-    Write-Step 'BNL branch selection'
-    Write-Host 'Choose the BNL branch to install or update.' -ForegroundColor White
+    # The PQC branches are not listed in the menu, but stay accepted (typed by
+    # name, or as the default when already installed) so a rerun on a PQC
+    # install never switches it to main just because Enter was pressed.
+    $editionNames = @{
+        'feat-empty-block-policy-cf' = 'BNL client'
+        'main'                       = 'Symbol official client'
+        'feat-custom-catapult'       = 'BNL Custom (developer)'
+        'feat-PQC-custom-catapult'   = 'BNL PQC (not listed)'
+        'feat-empty-block-policy'    = 'BNL PQC + empty-block policy (not listed)'
+    }
+
+    Write-Step 'BNL edition selection'
+    Write-Host 'インストール / 更新する BNL の種類を選んでください。' -ForegroundColor White
+    Write-Host 'Choose the BNL edition to install or update.' -ForegroundColor White
     Write-Host ''
-    Write-Host '  1) main' -ForegroundColor Cyan
-    Write-Host '     Standard / official catapult images (1.0.3.6 / 1.0.3.7 / 1.0.3.9)' -ForegroundColor DarkGray
-    Write-Host '  2) feat-custom-catapult' -ForegroundColor Cyan
-    Write-Host '     Custom-built catapult image support (non-PQC)' -ForegroundColor DarkGray
-    Write-Host '  3) feat-empty-block-policy-cf' -ForegroundColor Cyan
-    Write-Host '     Non-PQC BNL integrated image + empty-block policy' -ForegroundColor DarkGray
-    Write-Host '  4) feat-PQC-custom-catapult' -ForegroundColor Cyan
-    Write-Host '     PQC-only version (ML-DSA / iVRF)' -ForegroundColor DarkGray
-    Write-Host '  5) feat-empty-block-policy' -ForegroundColor Cyan
-    Write-Host '     PQC + empty-block suppression policy' -ForegroundColor DarkGray
+    Write-Host '  1) BNL client                                  [branch: feat-empty-block-policy-cf]' -ForegroundColor Cyan
+    Write-Host '     BNL 独自機能を追加した Catapult で動かす版です。' -ForegroundColor White
+    Write-Host '     - Catapult : nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg (BNL 版 1.0.3.9)' -ForegroundColor DarkGray
+    Write-Host '                  公式 Catapult 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選べます' -ForegroundColor DarkGray
+    Write-Host '     - 追加機能 : chainFinalizationHeight (ブロック生成を停止するチェーンの高さ)' -ForegroundColor DarkGray
+    Write-Host '                  emptyBlockPolicy (空ブロック抑制: トランザクションが無い間のブロック生成を抑える)' -ForegroundColor DarkGray
+    Write-Host '                  FPG (ファイナライズ停止の修正機能)' -ForegroundColor DarkGray
+    Write-Host '     - 用途     : 独自ネットワーク (プライベート / データチェーン) の作成・参加、' -ForegroundColor DarkGray
+    Write-Host '                  Symbol mainnet / testnet への参加' -ForegroundColor DarkGray
+    Write-Host '     - BNL 独自の設定は自動で入ります。mainnet / testnet では公式と同じ動作になる値に固定されます。' -ForegroundColor DarkGray
     Write-Host ''
-    Write-Host "Current/default branch: $DefaultBranch" -ForegroundColor Green
+    Write-Host '  2) Symbol official client                      [branch: main]' -ForegroundColor Cyan
+    Write-Host '     Symbol 公式の Catapult をそのまま使う標準版です。' -ForegroundColor White
+    Write-Host '     - Catapult : symbolplatform/symbol-server 1.0.3.9 / 1.0.3.7 / 1.0.3.6 (公式)' -ForegroundColor DarkGray
+    Write-Host '     - 追加機能 : なし (BNL 独自の機能は含みません)' -ForegroundColor DarkGray
+    Write-Host '     - 用途     : 公式ノードと同じ構成で、Symbol mainnet / testnet や独自ネットワークを動かす' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '  3) BNL Custom (開発者向け / for developers)     [branch: feat-custom-catapult]' -ForegroundColor Cyan
+    Write-Host '     自分でビルドした Catapult イメージを試すための版です。通常は選ばないでください。' -ForegroundColor White
+    Write-Host '     - Catapult : 既定は公式 1.0.3.9。.env の CUSTOM_SERVER_IMAGE で任意のイメージを追加' -ForegroundColor DarkGray
+    Write-Host '     - 追加設定 : .env の CUSTOM_CONFIG_PATCHES で任意の config プロパティを追加' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host "Current/default: $($editionNames[$DefaultBranch]) [branch: $DefaultBranch]" -ForegroundColor Green
 
     while ($true) {
-        $value = Read-Host 'Select branch [1-5, Enter = default]'
+        $value = Read-Host 'Select [1-3, Enter = current/default]'
         if ([string]::IsNullOrWhiteSpace($value)) {
             return $DefaultBranch
         }
 
         $value = $value.Trim()
         switch ($value) {
-            '1' { return 'main' }
-            '2' { return 'feat-custom-catapult' }
-            '3' { return 'feat-empty-block-policy-cf' }
-            '4' { return 'feat-PQC-custom-catapult' }
-            '5' { return 'feat-empty-block-policy' }
+            '1' { return 'feat-empty-block-policy-cf' }
+            '2' { return 'main' }
+            '3' { return 'feat-custom-catapult' }
             default {
                 if ($allowedBranches -contains $value) {
                     return $value
                 }
-                Write-Warn 'Select 1-5, or enter one of the displayed branch names.'
+                Write-Warn 'Select 1-3.'
             }
         }
     }
@@ -427,6 +450,144 @@ function Test-WslDistroLaunchable {
     }
 }
 
+function Get-WindowsUpdateStatus {
+    # Read-only snapshot of Windows Update / servicing activity. Enabling a
+    # Windows feature queues behind Windows Update, so check this first.
+    $status = [ordered]@{
+        PendingReboot      = @()
+        WuRebootRequired   = $null
+        WuInstallerBusy    = $null
+        ServicingProcesses = @()
+        TiWorker           = @()
+    }
+
+    $rebootKeys = @(
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'; Label = 'CBS RebootPending' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootInProgress'; Label = 'CBS RebootInProgress' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\PackagesPending'; Label = 'CBS PackagesPending' },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'; Label = 'Windows Update RebootRequired' }
+    )
+    foreach ($key in $rebootKeys) {
+        try {
+            if (Test-Path -LiteralPath $key.Path) { $status.PendingReboot += $key.Label }
+        } catch {}
+    }
+
+    # SessionsPending exists on healthy systems too; only a non-zero
+    # Exclusive value means a servicing session is waiting for a restart.
+    try {
+        $sessions = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\SessionsPending' -ErrorAction Stop
+        $exclusive = $sessions.PSObject.Properties['Exclusive']
+        if ($exclusive -and [int]$exclusive.Value -ne 0) {
+            $status.PendingReboot += "CBS SessionsPending (Exclusive=$($exclusive.Value))"
+        }
+    } catch {}
+
+    try { $status.WuRebootRequired = [bool](New-Object -ComObject 'Microsoft.Update.SystemInfo').RebootRequired } catch {}
+    try { $status.WuInstallerBusy = [bool](New-Object -ComObject 'Microsoft.Update.Installer').IsBusy } catch {}
+
+    # DismHost / dism mean another DISM operation is running (for example a
+    # feature enablement left over from an interrupted run).
+    $status.ServicingProcesses = @(Get-Process -Name 'DismHost', 'dism' -ErrorAction SilentlyContinue |
+        ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" })
+
+    # TiWorker is informational only. The Get-WindowsOptionalFeature query
+    # this installer runs just before the check starts TiWorker itself, and it
+    # then idles for minutes, so its presence does not mean Windows is busy.
+    $status.TiWorker = @(Get-Process -Name 'TiWorker' -ErrorAction SilentlyContinue |
+        ForEach-Object { "TiWorker (PID $($_.Id))" })
+
+    return [pscustomobject]$status
+}
+
+function Test-WindowsUpdateReady {
+    # Prints the Windows Update status and returns $true when it is safe to
+    # enable Windows features now.
+    Write-Step 'Checking Windows Update status'
+
+    $status = Get-WindowsUpdateStatus
+    $pendingText = if (@($status.PendingReboot).Count -gt 0) { @($status.PendingReboot) -join ', ' } else { 'none' }
+    $processText = if (@($status.ServicingProcesses).Count -gt 0) { @($status.ServicingProcesses) -join ', ' } else { 'none' }
+    $tiWorkerText = if (@($status.TiWorker).Count -gt 0) { @($status.TiWorker) -join ', ' } else { 'none' }
+    Write-Host "  Pending restart keys       : $pendingText" -ForegroundColor DarkGray
+    Write-Host "  Windows Update restart req.: $($status.WuRebootRequired)" -ForegroundColor DarkGray
+    Write-Host "  Windows Update installing  : $($status.WuInstallerBusy)" -ForegroundColor DarkGray
+    Write-Host "  DISM processes             : $processText" -ForegroundColor DarkGray
+    Write-Host "  TiWorker (info only)       : $tiWorkerText" -ForegroundColor DarkGray
+
+    $needsRestart = (@($status.PendingReboot).Count -gt 0) -or ($status.WuRebootRequired -eq $true)
+    $wuInstalling = ($status.WuInstallerBusy -eq $true)
+    $servicingActive = (@($status.ServicingProcesses).Count -gt 0)
+
+    # A DISM host can linger briefly after its session closes. When that is
+    # the only signal, wait for it instead of stopping at once.
+    if ($servicingActive -and -not $needsRestart -and -not $wuInstalling) {
+        Write-Host '  DISM の処理の終了を待っています... / Waiting for the DISM operation to finish...' -ForegroundColor DarkGray
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        $nextReport = $ServicingWaitReportSeconds
+        while ($servicingActive -and $stopwatch.Elapsed.TotalSeconds -lt $ServicingWaitSeconds) {
+            Start-Sleep -Seconds 5
+            $processes = @((Get-WindowsUpdateStatus).ServicingProcesses)
+            $servicingActive = ($processes.Count -gt 0)
+            if ($servicingActive -and $stopwatch.Elapsed.TotalSeconds -ge $nextReport) {
+                Write-Host ("  {0:mm\:ss} 経過 / elapsed: {1}" -f $stopwatch.Elapsed, ($processes -join ', ')) -ForegroundColor DarkGray
+                $nextReport += $ServicingWaitReportSeconds
+            }
+        }
+    }
+
+    if (-not $needsRestart -and -not $wuInstalling -and -not $servicingActive) {
+        Write-Ok 'Windows Update is idle'
+        return $true
+    }
+
+    Write-Host ''
+    if ($wuInstalling) {
+        Write-Host '[Windows Update] 更新プログラムの処理中です。' -ForegroundColor Yellow
+        Write-Host '[Windows Update] Windows Update is currently installing or processing updates.' -ForegroundColor Yellow
+    }
+    elseif ($servicingActive) {
+        Write-Host '[Windows] 別の DISM の処理 (Windows の機能の変更など) が実行中です。' -ForegroundColor Yellow
+        Write-Host '[Windows] Another DISM operation (such as a Windows feature change) is still running.' -ForegroundColor Yellow
+        Write-Host '          以前のセットアップで始めた機能の有効化が、裏で続いている場合があります。' -ForegroundColor DarkGray
+        Write-Host '          A feature enablement started by an earlier setup run may still be running.' -ForegroundColor DarkGray
+    }
+    if ($needsRestart) {
+        Write-Host '[Windows Update] 更新を完了するためにWindowsの再起動が必要な状態です。' -ForegroundColor Yellow
+        Write-Host '[Windows Update] Windows needs a restart to finish installing updates.' -ForegroundColor Yellow
+    }
+    Write-Host ''
+    Write-Host '先に Windows Update を完了してください。' -ForegroundColor Yellow
+    Write-Host '  1. 設定 > Windows Update を開き、更新のダウンロード・インストールが終わるまで待つ' -ForegroundColor Yellow
+    Write-Host '  2. 「再起動が必要です」と表示されたら再起動する' -ForegroundColor Yellow
+    Write-Host '  3. 「最新の状態です」になったら、BNL-Setup.bat をもう一度実行する' -ForegroundColor Yellow
+    Write-Host 'Please complete Windows Update first.' -ForegroundColor Yellow
+    Write-Host '  1. Open Settings > Windows Update and wait until downloads and installs finish' -ForegroundColor Yellow
+    Write-Host '  2. Restart Windows if it says a restart is required' -ForegroundColor Yellow
+    Write-Host '  3. When it shows "You are up to date", run BNL-Setup.bat again' -ForegroundColor Yellow
+    return $false
+}
+
+function Read-WindowsUpdateAction {
+    Write-Host ''
+    Write-Host '  1) 中止する (推奨・既定) / Stop now (recommended, default)' -ForegroundColor White
+    Write-Host '  2) 無視して続行する / Ignore and continue' -ForegroundColor White
+    Write-Host '     Windows Update の完了を待たずに機能の有効化を始めます。長時間止まる場合があります。' -ForegroundColor DarkGray
+    Write-Host '     Enables the features without waiting for Windows Update. Setup may stall for a long time.' -ForegroundColor DarkGray
+    Write-Host ''
+
+    while ($true) {
+        $value = Read-Host 'Select [1]'
+        if ([string]::IsNullOrWhiteSpace($value) -or $value.Trim() -eq '1') {
+            return 'stop'
+        }
+        if ($value.Trim() -eq '2') {
+            return 'continue'
+        }
+        Write-Warn 'Select 1 or 2.'
+    }
+}
+
 function Start-BnlRuntime {
     Write-Step 'Starting Ubuntu and BNL runtime'
 
@@ -585,8 +746,33 @@ try {
         # ---------------------------------------------------------------------
         Write-Step 'Checking WSL2 Windows features'
 
+        $wslFeatureNames = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')
+        $featuresToEnable = @($wslFeatureNames | Where-Object {
+            (Get-WindowsOptionalFeature -Online -FeatureName $_).State -ne 'Enabled'
+        })
+
+        # Enabling a feature while Windows Update is busy or waiting for a
+        # restart can stall indefinitely. Stop early with clear guidance.
+        if ($featuresToEnable.Count -gt 0) {
+            Write-Host "Features to enable: $($featuresToEnable -join ', ')"
+            if (-not (Test-WindowsUpdateReady)) {
+                if ((Read-WindowsUpdateAction) -eq 'stop') {
+                    Write-Host ''
+                    Write-Host "Log: $LogPath" -ForegroundColor DarkGray
+                    if ($TranscriptStarted) {
+                        try { Stop-Transcript | Out-Null } catch {}
+                        $TranscriptStarted = $false
+                    }
+                    Write-Host 'Press Enter to close this window.' -ForegroundColor Yellow
+                    [void](Read-Host)
+                    return
+                }
+                Write-Warn 'Continuing without waiting for Windows Update (selected by user).'
+            }
+        }
+
         $rebootRequired = $false
-        foreach ($featureName in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
+        foreach ($featureName in $wslFeatureNames) {
             $feature = Get-WindowsOptionalFeature -Online -FeatureName $featureName
             if ($feature.State -ne 'Enabled') {
                 Write-Host "Enabling $featureName ..."
@@ -750,7 +936,7 @@ fi
     # Choose which BNL branch to install/update before application settings.
     # Reuse the currently checked-out supported branch as the default.
     # ---------------------------------------------------------------------
-    $existingBranch = 'main'
+    $existingBranch = 'feat-empty-block-policy-cf'
     $branchCheckCommand = "if [ -d /opt/bnl/.git ]; then git -C /opt/bnl branch --show-current 2>/dev/null || true; fi"
     try {
         $branchCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $branchCheckCommand 2>$null | Out-String).Trim()
