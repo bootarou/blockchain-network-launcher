@@ -1143,6 +1143,8 @@ export const ja: TranslationDict = {
   'publish.unpublishConfirm': 'Cloudflare の DNS レコードを削除してネットワークの公開を取消しますか？',
   'publish.refreshStatus': '状態を更新',
   'publish.noStatus': '設定を保存すると公開状態を確認できます。',
+  'publish.underDevelopmentTitle': 'この機能は実装中です',
+  'publish.underDevelopmentBody': '現在の実装ではノードを公開できないため、「公開する」「公開を取消」は無効にしています。公開するには Cloudflare Tunnel を手動で設定してください（REST 3000 のみ。P2P 7900 は Cloudflare 経由では公開できません）。',
 
   // ===========================================================================
   // Management

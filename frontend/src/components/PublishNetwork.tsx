@@ -30,6 +30,11 @@ interface PublishStatus {
   };
 }
 
+// Publishing is under development: the backend only creates CNAME records
+// pointing at "localhost" (nothing becomes reachable) and unpublish matched
+// unrelated DNS records. Keep the actions disabled until it is reimplemented.
+const PUBLISH_IMPLEMENTED = false;
+
 interface PublishConfig {
   cloudflareToken: string;
   cloudflareZoneId: string;
@@ -168,6 +173,16 @@ export function PublishNetwork() {
         </div>
         <p className="text-zinc-400 text-sm">{t("publish.description")}</p>
       </div>
+
+      {!PUBLISH_IMPLEMENTED && (
+        <div className="flex items-start gap-2 p-4 bg-amber-900/30 border border-amber-700 rounded-lg text-amber-200 text-sm">
+          <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold">{t("publish.underDevelopmentTitle")}</p>
+            <p className="mt-1 text-amber-200/80">{t("publish.underDevelopmentBody")}</p>
+          </div>
+        </div>
+      )}
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 space-y-4">
         <div className="flex items-center justify-between mb-4">
@@ -352,7 +367,8 @@ export function PublishNetwork() {
               {!status.isPublished ? (
                 <button
                   onClick={handlePublish}
-                  disabled={publishing}
+                  disabled={!PUBLISH_IMPLEMENTED || publishing}
+                  title={PUBLISH_IMPLEMENTED ? undefined : t("publish.underDevelopmentTitle")}
                   className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   {publishing && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -361,7 +377,8 @@ export function PublishNetwork() {
               ) : (
                 <button
                   onClick={handleUnpublish}
-                  disabled={unpublishing}
+                  disabled={!PUBLISH_IMPLEMENTED || unpublishing}
+                  title={PUBLISH_IMPLEMENTED ? undefined : t("publish.underDevelopmentTitle")}
                   className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   {unpublishing && <Loader2 className="w-4 h-4 animate-spin" />}
