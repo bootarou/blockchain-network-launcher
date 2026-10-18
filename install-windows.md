@@ -1,96 +1,95 @@
-BNL One-Line Windows Installer
+# BNL Windows インストーラー（WSL2）
 
-Windows + WSL2 上で Blockchain Network Launcher (BNL) を 1 行から導入するためのインストーラです。
+Windows + WSL2 上に Blockchain Network Launcher（BNL）を導入・更新するインストーラーです。
 Docker Desktop は使用しません。WSL2 の Ubuntu 内へ Docker Engine / Docker Compose Plugin / Git を直接導入します。
 
-ユーザーが実行するコマンド
+## 動作要件
 
-install.ps1 と install-wsl.sh を BNL リポジトリの main ブランチ直下へ追加した後、PowerShell で次の 1 行だけを実行します。
+| 項目 | 要件 |
+|---|---|
+| OS | Windows 10（ビルド 19041 以降）/ Windows 11 |
+| 権限 | WSL2 の初回導入時のみ管理者権限（UAC で自動的に昇格を求めます） |
+| ネットワーク | GitHub・Ubuntu / Docker のパッケージ配布元・Windows Update に接続できること |
 
-irm https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1 | iex
+## 実行方法
 
-管理者権限でない場合は UAC を表示して自動的に昇格します。
+`BNL-Setup.bat` をダブルクリックします。タスクトレイアプリ BNL Tray の配布物（`tray/build/`）に同梱しているほか、リポジトリのルートにもあります。
 
-自動で行うこと
+`BNL-Setup.bat` は、実行するたびに `main` ブランチの最新の `install.ps1` を一時フォルダへダウンロードし、`powershell.exe -File` で実行します。
 
-Windows / 管理者権限を確認
+PowerShell から直接実行する場合は次のとおりです。
 
-WSL と Virtual Machine Platform を有効化
+```powershell
+$p = Join-Path $env:TEMP 'bnl-install.ps1'
+Invoke-WebRequest 'https://raw.githubusercontent.com/bootarou/blockchain-network-launcher/main/install.ps1' -OutFile $p
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p
+```
 
-初回だけ必要なら Windows を再起動
+## 途中で入力する項目
 
-再起動後にインストーラを自動再開
+| 項目 | 内容 |
+|---|---|
+| BNL の種類 | 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom（開発者向け）。違いは README の「ブランチ構成」を参照 |
+| `BIND_ADDRESS` | Web UI と API を公開するアドレス。通常は `127.0.0.1`（この PC からのみアクセス可） |
+| 管理者パスワード | Web UI のログイン用。8〜64 文字（`A-Z a-z 0-9 ! @ # % _ . -`）。画面にもログにも表示しません |
 
-Ubuntu を WSL2 として導入（未導入の場合）
+PQC の 2 ブランチ（`feat-PQC-custom-catapult` / `feat-empty-block-policy`）は選択肢に表示しませんが、ブランチ名を入力すれば選べます。
 
-Ubuntu を root で初期化し、対話式の Linux ユーザー作成を回避
+## 自動で行うこと
 
-Docker Engine / Docker Compose Plugin / Git を導入
+1. 管理者権限を確認し、WSL2 の初回導入が必要なら UAC で昇格する
+2. Windows のビルド（19041 以降）を確認する
+3. WSL の機能が無効なら、先に **Windows Update の状態を確認**する
+   - 更新のインストール中、または再起動待ちの場合は、Windows Update を先に完了するよう案内して止まる（「無視して続行」も選べる）
+4. 「Linux 用 Windows サブシステム」と「仮想マシン プラットフォーム」を有効化する
+5. 必要なら Windows を再起動し、サインイン後にインストーラーを自動で再開する
+6. WSL を更新し、Ubuntu を WSL2 として導入する（未導入の場合）
+7. Ubuntu を root で初期化し、対話式の Linux ユーザー作成を回避する。systemd を有効にする
+8. Ubuntu 内に Docker Engine / Docker Compose Plugin / Git を導入する
+9. 選んだブランチで BNL を `/opt/bnl` に clone する（導入済みなら、そのブランチに切り替えて更新）
+10. `.env` を作成し（既存の `.env` は維持）、`BIND_ADDRESS` と管理者パスワードを設定する
+11. `docker compose up -d --build` で BNL を起動し、Web UI が応答したらブラウザで開く
 
-bootarou/blockchain-network-launcher を /opt/bnl へ clone
+## 再実行・更新
 
-.env.example から .env を作成（既存 .env は維持）
+`BNL-Setup.bat` は何度実行しても構いません。再実行すると更新になります。
 
-COMPOSE_BAKE=false docker compose build
+- BNL の種類の既定値は、現在インストールされているブランチです
+- 既存の `.env` は上書きしません。管理者パスワードは「そのまま / 変更」を選べます
+- `/opt/bnl` にローカルの変更がある場合は、自動更新（fast-forward）をスキップします。ブランチを切り替える場合は、変更を退避するまで止まります
+- Docker が導入済みなら再インストールしません
 
-docker compose up -d
+## BNL の操作
 
-BNL API の起動を確認
+起動 / 停止は、タスクトレイアプリ **BNL Tray** から行えます（[tray/build/dist-README.ja.md](tray/build/dist-README.ja.md)）。
 
-Windows の既定ブラウザで http://localhost:5173 を開く
+PowerShell から直接操作する場合:
 
-再実行
-
-同じ 1 行を再度実行して構いません。
-
-既存 .env は上書きしません。
-
-BNL リポジトリにローカル変更がなければ git pull --ff-only します。
-
-ローカル変更がある場合は自動更新をスキップします。
-
-Docker が既に導入済みなら再インストールしません。
-
-BNL の操作
-
-Windows PowerShell から直接操作できます。
-
-起動:
-
+```powershell
+# 起動
 wsl -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose up -d"
-
-停止:
-
-wsl -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose down"
-
-状態確認:
-
+# 停止
+wsl -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose stop"
+# 状態確認
 wsl -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose ps"
-
-ログ:
-
+# ログ
 wsl -d Ubuntu -u root -- bash -lc "cd /opt/bnl && docker compose logs -f"
+```
 
-現時点の設計上の注意
+## ログと状態ファイル
 
-この v1 は Ubuntu という WSL ディストリビューションを利用します。既に Ubuntu を使っている PC では、その Ubuntu に Docker Engine と BNL が導入されます。
+`%LOCALAPPDATA%\BNL\` に保存します。
 
-一般ユーザー向け正式配布では、既存 WSL 環境と完全に分離するために BNL という専用 WSL ディストリビューション（.wsl / import 用 rootfs）を配布する v2 を推奨します。そうすればアンインストールも wsl --unregister BNL で完結し、ユーザーの Ubuntu を一切変更しません。
+| ファイル | 内容 |
+|---|---|
+| `install.log` | インストーラーの実行ログ |
+| `install.ps1` | 再起動後の自動再開と UAC 昇格に使うインストーラーのコピー |
 
-配布時のセキュリティ推奨
+## アンインストール
 
-irm ... | iex は導入体験として非常に短い一方、URL 先のスクリプトをそのまま実行します。正式版では次を推奨します。
+BNL Tray の配布物に同梱している `BNL-Uninstall.bat` を実行します。削除するのは BNL manager アプリ（`/opt/bnl`）だけです。Symbol ノードのデータ（`/opt/symbol-target`）、Docker、Ubuntu / WSL は残ります。
 
-main ではなくバージョン固定 URL を用意する
+## 注意事項
 
-install.ps1 をコード署名する
-
-HTTPS の自社ドメイン (https://bnl.nftdrive.net/install.ps1) から配布する
-
-SHA-256 をリリースページへ掲載する
-
-インストールログを %ProgramData%\BNL\ に残す
-
-最終的な表向きコマンドは次の形にできます。
-
-irm https://bnl.nftdrive.net/install.ps1 | iex
+- BNL は `Ubuntu` という名前の WSL ディストリビューションを利用します。既に `Ubuntu` を使っている PC では、その環境に Docker Engine と BNL が追加されます。
+- 破壊的な復旧処理（`wsl --unregister` など）は行いません。既存の Ubuntu ディストリビューションを削除することはありません。
