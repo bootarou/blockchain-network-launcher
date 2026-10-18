@@ -14,7 +14,6 @@ export function TerminalLogs() {
   const [logs, setLogs] = useState<string[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [connected, setConnected] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // ── WebSocket lifecycle ────────────────────────────────────────────────
@@ -71,12 +70,17 @@ export function TerminalLogs() {
   }, []);
 
   // ── Auto-scroll ────────────────────────────────────────────────────────
+  // Scroll only the log container. scrollIntoView would also scroll every
+  // scrollable ancestor, dragging the whole page down on each new log line.
+
+  const scrollToBottom = useCallback(() => {
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
-    if (autoScroll) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [logs, autoScroll]);
+    if (autoScroll) scrollToBottom();
+  }, [logs, autoScroll, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -107,7 +111,7 @@ export function TerminalLogs() {
             <button
               onClick={() => {
                 setAutoScroll(true);
-                bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+                scrollToBottom();
               }}
               className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
             >
@@ -139,7 +143,6 @@ export function TerminalLogs() {
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   );
