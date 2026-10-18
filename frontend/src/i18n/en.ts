@@ -972,6 +972,8 @@ export const en: TranslationDict = {
   'publish.unpublishConfirm': 'Delete Cloudflare DNS records and unpublish the network?',
   'publish.refreshStatus': 'Refresh status',
   'publish.noStatus': 'Save configuration to check publish status.',
+  'publish.underDevelopmentTitle': 'This feature is under development',
+  'publish.underDevelopmentBody': 'The current implementation cannot publish the node, so Publish and Unpublish are disabled. To publish, set up a Cloudflare Tunnel manually (REST port 3000 only; P2P port 7900 cannot be published through Cloudflare).',
 
   // ===========================================================================
   // Management
