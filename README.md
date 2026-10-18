@@ -68,7 +68,29 @@ Docker コンテナ 1 つを起動するだけで、Symbol ノードの設定・
 
 > 💡 **推奨**: ネイティブ Linux + Docker Engine（Docker Desktop 不要）
 
-## クイックスタート
+## Windows へのインストール（WSL2）
+
+Windows 10（ビルド 19041 以降）/ Windows 11 では、`BNL-Setup.bat` を実行するだけで、WSL2 の Ubuntu に BNL を導入できます。Docker Desktop は使いません（Ubuntu 内に Docker Engine を導入します）。
+
+1. **`BNL-Setup.bat` を実行**します。タスクトレイアプリ BNL Tray の配布物に同梱しているほか、リポジトリのルートにもあります。実行するたびに `main` ブランチの最新の `install.ps1` を取得して実行します。
+2. WSL2 が未導入の場合は、管理者権限（UAC）を求められます。WSL と仮想マシン プラットフォームを有効にしたあと Windows が再起動し、サインイン後にセットアップが自動で再開します。自動で再開しない場合は、もう一度 `BNL-Setup.bat` を実行してください。
+3. 途中で次の 3 点を入力します。
+   - **BNL の種類** — 1) BNL client（既定）/ 2) Symbol official client / 3) BNL Custom。違いは「[ブランチ構成](#ブランチ構成)」を参照
+   - **`BIND_ADDRESS`** — 通常は `127.0.0.1`（この PC からのみアクセス可）
+   - **管理者パスワード** — Web UI のログイン用（8〜64 文字）
+4. 完了すると、ブラウザで BNL の Web UI（`http://127.0.0.1:5173`）が開きます。
+
+補足:
+
+- WSL の機能を有効にする前に **Windows Update の状態を確認**します。更新のインストール中や再起動待ちの場合は、先に Windows Update を完了するよう案内します（「無視して続行」も選べます）。
+- BNL は `Ubuntu` という名前の WSL ディストリビューションの `/opt/bnl` に導入されます。既に `Ubuntu` を使っている PC では、その環境に Docker Engine と BNL が追加されます。
+- インストールのログは `%LOCALAPPDATA%\BNL\install.log` に保存されます。
+- **再実行すると更新**になります。既存の `.env` は維持され、管理者パスワードは「そのまま / 変更」を選べます。種類の既定値は、現在インストールされているブランチです。
+- 起動 / 停止はタスクトレイアプリ **BNL Tray** から行えます（[tray/build/dist-README.ja.md](tray/build/dist-README.ja.md)）。
+
+詳細は [install-windows.md](install-windows.md) を参照してください。macOS / Linux、または手動で Docker を操作する場合は、次の「クイックスタート」の手順を使います。
+
+## クイックスタート（Docker）
 
 ### 1. リポジトリをクローン
 
@@ -221,11 +243,17 @@ Beacon Protocol の実装（正規化・ハッシュ・署名・ファイル形�
 │   │   └── theme/          # テーマ管理
 │   ├── index.html
 │   └── vite.config.ts
-├── shared/
-│   └── custom-preset.yml   # symbol-bootstrap カスタムプリセット
-├── docs/
-│   ├── backup-restore.md   # バックアップ/リストア手順書
+├── shared/                 # 実行時データ（custom-preset.yml などを生成。Git 管理外）
+├── docs/                   # 手順書・障害レポート（「ドキュメント」参照）
 │   └── screenshots/        # スクリーンショット
+├── tray/                   # Windows タスクトレイアプリ BNL Tray（Go）と配布物
+├── build/windows/          # 旧方式（Docker Desktop 前提）の Inno Setup インストーラー定義
+├── draft/                  # 設計メモ・試作中の配布物
+├── BNL-Setup.bat           # Windows 用インストール / 更新ランチャー（install.ps1 を取得して実行）
+├── install.ps1             # Windows インストーラー本体（WSL2 の準備、BNL の種類の選択）
+├── install-wsl.sh          # WSL2 Ubuntu 内のセットアップ（Docker Engine 導入・clone・起動）
+├── install-windows.md      # Windows インストールの説明
+├── install-dependencies.sh # backend / frontend の npm 依存を必要なときだけ再インストール
 ├── .env.example            # 環境設定のテンプレート
 ├── docker-compose.yml
 ├── Dockerfile
@@ -277,23 +305,38 @@ Beacon Protocol の実装（正規化・ハッシュ・署名・ファイル形�
 
 ## ドキュメント
 
+利用・運用:
+
 - [MANUAL.md](MANUAL.md) — 詳細なユーザーマニュアル（Docker Host Mode、nodeEqualityStrategy、トラブルシューティング等）
+- [install-windows.md](install-windows.md) — Windows（WSL2）へのインストールと更新
+- [tray/build/dist-README.ja.md](tray/build/dist-README.ja.md) — タスクトレイアプリ BNL Tray の取扱説明書
+- [docs/setup-update.ja.md](docs/setup-update.ja.md) — 再セットアップ時の依存更新とディスク容量
 - [docs/backup-restore.md](docs/backup-restore.md) — バックアップ / リストア手順書（バックアップの種類、ケース別の復元動作、注意事項）
+- [docs/fast-sync.ja.md](docs/fast-sync.ja.md) — 高速同期（新規ノードの初回起動前に、パッケージやフルバックアップのチェーンデータを取り込む）
+- [docs/local-recovery.md](docs/local-recovery.md) — ローカルのチェーンデータ復旧（英語）
+- [docs/certificate-renewal.ja.md](docs/certificate-renewal.ja.md) — CA 鍵を維持した証明書の更新
+- [docs/node-runtime-settings.ja.md](docs/node-runtime-settings.ja.md) — Debug ログとファイルディスクリプター上限の設定
 - [docs/wsl-lan-setup.md](docs/wsl-lan-setup.md) — WSL2 ホストの LAN 公開手順書（mirrored モード / portproxy、ファイアウォール設定）
+
+調査・障害レポート:
+
 - [docs/join-config-sync-audit.md](docs/join-config-sync-audit.md) — 参加ノードに同期されない設定の棚卸し（REST から取得できない設定と、同期が途中で止まる原因）
 - [docs/incident-2026-07-04-join-node-crash.md](docs/incident-2026-07-04-join-node-crash.md) — 障害レポート：JOIN ノードがエポック2到達後にクラッシュループする問題
+- [docs/incident-2026-09-23-broker-recovery.ja.md](docs/incident-2026-09-23-broker-recovery.ja.md) — 障害レポート：Windows 再起動後に broker が起動しなくなった問題の調査と復旧
 
 ## ブランチ構成
 
-`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）を使う標準版です。派生ブランチは用途別に分かれており、**いずれも main の内容を取り込み済み**です。
+BNL は用途別のブランチで提供しています。`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）だけを使う標準版です。Windows インストーラー（`BNL-Setup.bat`）では、上の 3 つを「種類（edition）」として選びます。
 
-| ブランチ | 既定の catapult イメージ | 用途 |
-|---|---|---|
-| `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 標準版。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
-| `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
-| `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp` | 非 PQC の BNL 統合イメージ版 |
-| `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
-| `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+| インストーラーでの名前 | ブランチ | 既定の catapult イメージ | 内容 |
+|---|---|---|---|
+| 1) BNL client（既定） | `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` | BNL 版 catapult（chainFinalizationHeight / emptyBlockPolicy / FPG）。公式 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選択可 |
+| 2) Symbol official client | `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 公式 catapult のみ。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
+| 3) BNL Custom（開発者向け） | `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
+| （一覧には表示しない） | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
+| （一覧には表示しない） | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+
+PQC の 2 ブランチはインストーラーの選択肢に表示しませんが、ブランチ名を入力すればインストールできます。
 
 派生の系統は 2 本に分かれます。ブランチ名からは読み取れませんが、**`-cf` が付く方が非 PQC** です。
 
@@ -311,7 +354,19 @@ main
 
 ### feat-empty-block-policy-cf
 
-`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `1.0.3.9-cf1-ebp`（chainFinalizationHeight + 空ブロックポリシー）を既定で提供し、既知の BNL イメージには必要な config パッチを自動注入します。
+`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` を既定で提供します。公式 catapult 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も引き続き選べます。
+
+| 機能 | 内容 |
+|---|---|
+| `chainFinalizationHeight` | ブロック生成を停止するチェーンの高さ |
+| `emptyBlockPolicy` | 空ブロック抑制（トランザクションが無い間のブロック生成を抑える） |
+| FPG | ファイナライズ停止の修正機能 |
+
+BNL イメージを選ぶと、必要な config プロパティ（`config-network.properties` の `[chain]`）が自動で注入されます。既定値は `chainFinalizationHeight = 0`、`emptyBlockPolicy = normal`、`emptyBlockHeartbeatInterval = 86400s` です。プライベートネットワークでは Configuration 画面で変更できます。
+
+mainnet / testnet でも、Configuration の Server Image で「BNL Catapult 1.0.3.9 FPG」を選べます。この場合、BNL 独自の設定は公式ネットワークと同じ動作になる上記の既定値に固定されます。
+
+旧イメージ `1.0.3.9-cf1-ebp`（FPG なし）で作成したノードは引き続き読み込めますが、新規ノードの選択肢には表示されません。
 
 ### feat-PQC-custom-catapult
 
@@ -324,6 +379,11 @@ main
 `feat-PQC-custom-catapult` の子孫です。空ブロック抑制ポリシー（`emptyBlockPolicy`）を追加し、private / data chain では `heartbeat`（既定 86400 秒間隔）を既定値にします。トランザクションが無い間もブロックを生成し続ける従来動作（`normal`）に対して、ディスク消費を抑えられます。
 
 ### 派生ブランチを運用する場合
+
+`main` の取り込み状況は次のとおりです（2026-10-18 時点）。
+
+- `feat-custom-catapult` / `feat-empty-block-policy-cf` — 取り込み済み。ただし Windows インストーラー（`install.ps1`）関連の変更は含みません。インストーラーは常に `main` の `install.ps1` が使われるため、動作への影響はありません。
+- `feat-PQC-custom-catapult` / `feat-empty-block-policy` — 2026-08-18 以降の `main` の変更は、個別に適用した一部の修正を除いて取り込んでいません。
 
 **main の修正は定期的に取り込んでください。** 取り込みが遅れると、JOIN ノードの `proof.index.dat` 問題やクラッシュ自動復旧、インフレーション設定の不一致対策といった既知の障害対策が入らないまま運用することになります。これらは catapult のバージョンや PQC の有無に依存しないため、どの派生ブランチでも同じ問題が発生します。
 
