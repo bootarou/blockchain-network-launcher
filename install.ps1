@@ -56,7 +56,7 @@ function ConvertFrom-SecureStringPlain {
 
 
 function Read-BnlBranch {
-    param([string]$DefaultBranch = 'main')
+    param([string]$DefaultBranch = 'feat-empty-block-policy-cf')
 
     $allowedBranches = @(
         'main',
@@ -67,7 +67,7 @@ function Read-BnlBranch {
     )
 
     if ($allowedBranches -notcontains $DefaultBranch) {
-        $DefaultBranch = 'main'
+        $DefaultBranch = 'feat-empty-block-policy-cf'
     }
 
     # The PQC branches are not listed in the menu, but stay accepted (typed by
@@ -89,9 +89,9 @@ function Read-BnlBranch {
     Write-Host '     BNL 独自機能を追加した Catapult で動かす版です。' -ForegroundColor White
     Write-Host '     - Catapult : nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg (BNL 版 1.0.3.9)' -ForegroundColor DarkGray
     Write-Host '                  公式 Catapult 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選べます' -ForegroundColor DarkGray
-    Write-Host '     - 追加機能 : chainFinalizationHeight (ファイナライズの高さの設定)' -ForegroundColor DarkGray
+    Write-Host '     - 追加機能 : chainFinalizationHeight (ブロック生成を停止するチェーンの高さ)' -ForegroundColor DarkGray
     Write-Host '                  emptyBlockPolicy (空ブロック抑制: トランザクションが無い間のブロック生成を抑える)' -ForegroundColor DarkGray
-    Write-Host '                  FPG (ファイナライズ同期ガード)' -ForegroundColor DarkGray
+    Write-Host '                  FPG (ファイナライズ停止の修正機能)' -ForegroundColor DarkGray
     Write-Host '     - 用途     : 独自ネットワーク (プライベート / データチェーン) の作成・参加、' -ForegroundColor DarkGray
     Write-Host '                  Symbol mainnet / testnet への参加' -ForegroundColor DarkGray
     Write-Host '     - BNL 独自の設定は自動で入ります。mainnet / testnet では公式と同じ動作になる値に固定されます。' -ForegroundColor DarkGray
@@ -936,7 +936,7 @@ fi
     # Choose which BNL branch to install/update before application settings.
     # Reuse the currently checked-out supported branch as the default.
     # ---------------------------------------------------------------------
-    $existingBranch = 'main'
+    $existingBranch = 'feat-empty-block-policy-cf'
     $branchCheckCommand = "if [ -d /opt/bnl/.git ]; then git -C /opt/bnl branch --show-current 2>/dev/null || true; fi"
     try {
         $branchCheck = (& wsl.exe -d $DistroName -u root -- bash -lc $branchCheckCommand 2>$null | Out-String).Trim()
