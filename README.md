@@ -25,6 +25,8 @@ Docker コンテナ 1 つを起動するだけで、PQC catapult ノードの設
 | ファイナリティ投票 | ML-DSA-44（BM ツリー温存） |
 | 鍵交換・TLS | ML-KEM-768 (FIPS 203) / ML-DSA-44 証明書 |
 
+> ℹ️ 本 README は `feat-PQC-custom-catapult` と `feat-empty-block-policy` の共通です。`feat-empty-block-policy` では、これに加えて空ブロック抑制ポリシー（`emptyBlockPolicy`）を使えます（catapult イメージ `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp`。private / data chain の既定は `heartbeat`、86400 秒間隔）。
+
 - 🖥️ **Web UI** — React + Tailwind CSS によるモダンなダッシュボード
 - 🔧 **ノード管理** — 起動 / 停止 / 再起動 / フルリセットをワンクリック
 - 🌐 **ネットワーク参加** — Seed ファイルのインポートまたはノード URL 指定で既存の PQC カスタムネットワークへ参加（公式 mainnet / testnet は非対応）
@@ -81,7 +83,15 @@ Docker コンテナ 1 つを起動するだけで、PQC catapult ノードの設
 
 > 💡 **推奨**: ネイティブ Linux + Docker Engine（Docker Desktop 不要）
 
-## クイックスタート
+## Windows へのインストール（WSL2）
+
+Windows では、`main` ブランチの `BNL-Setup.bat` から WSL2 の Ubuntu に導入できます（手順の詳細は `main` の [install-windows.md](https://github.com/bootarou/blockchain-network-launcher/blob/main/install-windows.md)）。
+
+PQC 版はインストーラーの選択肢に表示されません。BNL の種類を聞かれたら、番号の代わりにブランチ名 **`feat-PQC-custom-catapult`** または **`feat-empty-block-policy`** を入力してください。再実行時は、インストール済みのブランチが既定になります。
+
+macOS / Linux、または手動で Docker を操作する場合は、次の「クイックスタート」の手順を使います。
+
+## クイックスタート（Docker）
 
 ### 1. リポジトリをクローン
 
@@ -184,11 +194,11 @@ http://localhost:5173
 │   │   └── theme/          # テーマ管理
 │   ├── index.html
 │   └── vite.config.ts
-├── shared/
-│   └── custom-preset.yml   # symbol-bootstrap カスタムプリセット
-├── docs/
-│   ├── backup-restore.md   # バックアップ/リストア手順書
+├── shared/                 # 実行時データ（custom-preset.yml などを生成。Git 管理外）
+├── docs/                   # 手順書・障害レポート（「ドキュメント」参照）
 │   └── screenshots/        # スクリーンショット
+├── build/windows/          # 旧方式（Docker Desktop 前提）の Inno Setup インストーラー定義
+├── draft/                  # 設計メモ・試作中の配布物
 ├── .env.example            # 環境設定のテンプレート
 ├── docker-compose.yml
 ├── Dockerfile
@@ -248,15 +258,17 @@ http://localhost:5173
 
 ## ブランチ構成
 
-`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）を使う標準版です。派生ブランチは用途別に分かれており、**いずれも main の内容を取り込み済み**です。
+BNL は用途別のブランチで提供しています。`main` は公式 catapult イメージ（`symbolplatform/symbol-server`）だけを使う標準版です。Windows インストーラー（`BNL-Setup.bat`）では、上の 3 つを「種類（edition）」として選びます。
 
-| ブランチ | 既定の catapult イメージ | 用途 |
-|---|---|---|
-| `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 標準版。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
-| `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
-| `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp` | 非 PQC の BNL 統合イメージ版 |
-| `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
-| `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+| インストーラーでの名前 | ブランチ | 既定の catapult イメージ | 内容 |
+|---|---|---|---|
+| 1) BNL client（既定） | `feat-empty-block-policy-cf` | `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` | BNL 版 catapult（chainFinalizationHeight / emptyBlockPolicy / FPG）。公式 1.0.3.9 / 1.0.3.7 / 1.0.3.6 も選択可 |
+| 2) Symbol official client | `main` | `symbolplatform/symbol-server:gcc-1.0.3.9` | 公式 catapult のみ。1.0.3.6 / 1.0.3.7 / 1.0.3.9 から選択 |
+| 3) BNL Custom（開発者向け） | `feat-custom-catapult` | 同上（公式のまま） | 自前ビルドの catapult イメージを検証する土台 |
+| （一覧には表示しない） | `feat-PQC-custom-catapult` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl` | 耐量子計算機暗号（PQC）専用版 |
+| （一覧には表示しない） | `feat-empty-block-policy` | `nftdrive/bnl-catapult-server-pqc:1.0.3.9-bnl-ebp` | PQC 版 + 空ブロック抑制 |
+
+PQC の 2 ブランチはインストーラーの選択肢に表示しませんが、ブランチ名を入力すればインストールできます。
 
 派生の系統は 2 本に分かれます。ブランチ名からは読み取れませんが、**`-cf` が付く方が非 PQC** です。
 
@@ -274,7 +286,7 @@ main
 
 ### feat-empty-block-policy-cf
 
-`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `1.0.3.9-cf1-ebp`（chainFinalizationHeight + 空ブロックポリシー）を既定で提供し、既知の BNL イメージには必要な config パッチを自動注入します。
+`feat-custom-catapult` の子孫です。非 PQC の統合 BNL イメージ `nftdrive/bnl-catapult-server:1.0.3.9-cf1-ebp-fpg` を既定で提供します。`chainFinalizationHeight`（ブロック生成を停止するチェーンの高さ）、`emptyBlockPolicy`（空ブロック抑制）、FPG（ファイナライズ停止の修正機能）に対応し、必要な config プロパティを自動注入します。mainnet / testnet でも「BNL Catapult 1.0.3.9 FPG」を選べます。詳細は `main` の README を参照してください。
 
 ### feat-PQC-custom-catapult
 
@@ -287,6 +299,11 @@ main
 `feat-PQC-custom-catapult` の子孫です。空ブロック抑制ポリシー（`emptyBlockPolicy`）を追加し、private / data chain では `heartbeat`（既定 86400 秒間隔）を既定値にします。トランザクションが無い間もブロックを生成し続ける従来動作（`normal`）に対して、ディスク消費を抑えられます。
 
 ### 派生ブランチを運用する場合
+
+`main` の取り込み状況は次のとおりです（2026-10-18 時点）。
+
+- `feat-custom-catapult` / `feat-empty-block-policy-cf` — 取り込み済み。ただし Windows インストーラー（`install.ps1`）関連の変更は含みません。インストーラーは常に `main` の `install.ps1` が使われるため、動作への影響はありません。
+- `feat-PQC-custom-catapult` / `feat-empty-block-policy` — 2026-08-18 以降の `main` の変更は、個別に適用した一部の修正を除いて取り込んでいません。
 
 **main の修正は定期的に取り込んでください。** 取り込みが遅れると、JOIN ノードの `proof.index.dat` 問題やクラッシュ自動復旧、インフレーション設定の不一致対策といった既知の障害対策が入らないまま運用することになります。これらは catapult のバージョンや PQC の有無に依存しないため、どの派生ブランチでも同じ問題が発生します。
 
