@@ -68,3 +68,5 @@ shared/seed/
 
 # sample-share
 bda-test.symbol-network.zip
+/test-target
+/docker-compose.test.yml
