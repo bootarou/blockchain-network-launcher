@@ -1,8 +1,12 @@
 # =============================================================================
 # Symbol Custom Network Manager — Docker Image
-# Includes: Node.js 20, Docker CLI, docker-compose, symbol-bootstrap
+# Includes: Node.js 24, Docker CLI, docker-compose, symbol-bootstrap
 # =============================================================================
-FROM node:20-bookworm
+# Pin the exact Node.js release. A floating tag such as node:24-bookworm keeps
+# using whatever copy is already cached on the host, so security releases are
+# silently skipped on rebuild; an exact tag forces the patched image to be
+# pulled. 24.22.1 includes the October 2026 security release.
+FROM node:24.22.1-bookworm
 
 # Install Docker CLI to interact with host docker daemon (DinD pattern)
 RUN apt-get update && apt-get install -y \
