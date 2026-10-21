@@ -218,7 +218,7 @@ http://localhost:5173
 
 ### Backend
 
-- **Node.js 20** + **TypeScript** (tsx)
+- **Node.js 24** + **TypeScript** (tsx)
 - **Express 5** — REST API
 - **WebSocket (ws)** — ターミナルログ配信
 - **symbol-bootstrap（PQC edition）** — ノード構成・起動管理（ML-DSA-44 鍵/証明書・iVRF・PQC nemesis）
