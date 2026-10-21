@@ -273,7 +273,7 @@ Beacon Protocol の実装（正規化・ハッシュ・署名・ファイル形�
 
 ### Backend
 
-- **Node.js 20** + **TypeScript** (tsx)
+- **Node.js 24** + **TypeScript** (tsx)
 - **Express 5** — REST API
 - **WebSocket (ws)** — ターミナルログ配信
 - **symbol-bootstrap** — ノード構成・起動管理
