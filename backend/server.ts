@@ -1676,6 +1676,11 @@ const EXPLORER_IMAGE = 'symbol-explorer-local';
 const EXPLORER_CONTAINER = 'symbol-explorer';
 const EXPLORER_REPO = 'https://github.com/bootarou/explorer-smd.git';
 const EXPLORER_BRANCH = 'main';
+// Pin the exact Node.js release (same version as the manager image in the
+// Dockerfile). A floating tag such as node:lts-alpine keeps using whatever copy
+// is already cached on the host, so security releases are silently skipped on
+// rebuild; an exact tag forces the patched image to be pulled.
+const EXPLORER_NODE_IMAGE = 'node:24.22.1-alpine';
 let explorerBuildStatus: 'none' | 'building' | 'built' | 'error' = 'none';
 let explorerBuildErrorMessage = '';
 /** Network name displayed in the Explorer header (persisted across restarts) */
@@ -1733,7 +1738,7 @@ app.post('/api/explorer/build', async (_req, res) => {
   // Pages), so we generate one on the fly that clones the main branch and
   // performs the build inside the container.
   const dockerfile = [
-    'FROM node:lts-alpine AS builder',
+    `FROM ${EXPLORER_NODE_IMAGE} AS builder`,
     'RUN apk add --no-cache python3 make g++ git',
     'ENV NODE_OPTIONS="--dns-result-order=ipv4first --openssl-legacy-provider"',
     'WORKDIR /app',
@@ -1775,7 +1780,7 @@ srv.on("upgrade",function(q,s){var u=normalizePath(q.url);var targetHost=RE.test
 srv.listen(4000);console.log("Explorer proxy on 4000, original on 4001");
 PROXYEOF`,
     '',
-    'FROM node:lts-alpine AS runner',
+    `FROM ${EXPLORER_NODE_IMAGE} AS runner`,
     'WORKDIR /app',
     'COPY --from=builder /app /app',
     'EXPOSE 4000',
